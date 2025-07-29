@@ -107,7 +107,20 @@ class OpenXRDevice(DeviceBase):
         self._previous_joint_poses_right = {name: default_pose.copy() for name in HAND_JOINT_NAMES}
         self._previous_headpose = default_pose.copy()
 
-        xr_anchor = SingleXFormPrim("/XRAnchor", position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot)
+        # Create XR anchor based on configuration
+        if self._xr_cfg.anchor_prim_path is not None:
+            # Create XR anchor as child of specified prim for dynamic positioning
+            xr_anchor_path = f"{self._xr_cfg.anchor_prim_path}/XRAnchor"
+            # Use relative positioning when attached to a prim
+            xr_anchor = SingleXFormPrim(
+                xr_anchor_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
+            )
+        else:
+            # Use static positioning at root level (original behavior)
+            xr_anchor = SingleXFormPrim(
+                "/XRAnchor", position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
+            )
+
         carb.settings.get_settings().set_float("/persistent/xr/profile/ar/render/nearPlane", self._xr_cfg.near_plane)
         carb.settings.get_settings().set_string("/persistent/xr/profile/ar/anchorMode", "custom anchor")
         carb.settings.get_settings().set_string("/xrstage/profile/ar/customAnchor", xr_anchor.prim_path)
@@ -136,6 +149,10 @@ class OpenXRDevice(DeviceBase):
         msg = f"OpenXR Hand Tracking Device: {self.__class__.__name__}\n"
         msg += f"\tAnchor Position: {self._xr_cfg.anchor_pos}\n"
         msg += f"\tAnchor Rotation: {self._xr_cfg.anchor_rot}\n"
+        if self._xr_cfg.anchor_prim_path is not None:
+            msg += f"\tAnchor Prim Path: {self._xr_cfg.anchor_prim_path} (Dynamic Anchoring)\n"
+        else:
+            msg += f"\tAnchor Mode: Static (Root Level)\n"
 
         # Add retargeter information
         if self._retargeters:

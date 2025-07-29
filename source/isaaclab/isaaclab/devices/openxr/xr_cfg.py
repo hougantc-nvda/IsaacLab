@@ -30,6 +30,16 @@ class XrCfg:
     This quantity is only effective if :attr:`xr_anchor_pos` is set.
     """
 
+    anchor_prim_path: str | None = None
+    """Specifies the prim path to attach the XR anchor to for dynamic positioning.
+
+    When set, the XR anchor will be attached to the specified prim (e.g., robot root prim),
+    allowing the XR camera to move with the prim. This is particularly useful for locomotion
+    robot teleoperation where the robot moves and the XR camera should follow it.
+
+    If None, the anchor will use the static :attr:`anchor_pos` and :attr:`anchor_rot` values.
+    """
+
     near_plane: float = 0.15
     """Specifies the near plane distance for the XR device.
 
