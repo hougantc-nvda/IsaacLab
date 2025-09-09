@@ -14,6 +14,11 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-yellow.svg)](https://opensource.org/license/apache-2-0)
 
 
+Please note that this branch is currently under active development in preparation for the Isaac Lab 2.3.0 release.
+Some features may not be fully functional while we continue development.
+Additional features may depend on unreleased Isaac Sim features that will be available in Isaac Sim 5.1.0.
+
+
 **Isaac Lab** is a GPU-accelerated, open-source framework designed to unify and simplify robotics research workflows,
 such as reinforcement learning, imitation learning, and motion planning. Built on [NVIDIA Isaac Sim](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html),
 it combines fast and accurate physics and sensor simulation, making it an ideal choice for sim-to-real
@@ -37,6 +42,92 @@ Isaac Lab offers a comprehensive set of tools and environments designed to facil
 
 ## Getting Started
 
+### Getting Started with Open-Source Isaac Sim
+
+Isaac Sim is now open source and available on GitHub!
+
+For detailed Isaac Sim installation instructions, please refer to
+[Isaac Sim README](https://github.com/isaac-sim/IsaacSim?tab=readme-ov-file#quick-start).
+
+1. Clone Isaac Sim
+
+    ```
+    git clone https://github.com/isaac-sim/IsaacSim.git
+    ```
+
+2. Build Isaac Sim
+
+    ```
+    cd IsaacSim
+    ./build.sh
+    ```
+
+    On Windows, please use `build.bat` instead.
+
+3. Clone Isaac Lab
+
+    ```
+    cd ..
+    git clone https://github.com/isaac-sim/IsaacLab.git
+    cd isaaclab
+    ```
+
+4. Set up symlink in Isaac Lab
+
+    Linux:
+
+    ```
+    ln -s ../IsaacSim/_build/linux-x86_64/release _isaac_sim
+    ```
+
+    Windows:
+
+    ```
+    mklink /D _isaac_sim ..\IsaacSim\_build\windows-x86_64\release
+    ```
+
+5. Install Isaac Lab
+
+    Linux:
+
+    ```
+    ./isaaclab.sh -i
+    ```
+
+    Windows:
+
+    ```
+    isaaclab.bat -i
+    ```
+
+6. [Optional] Set up a virtual python environment (e.g. for Conda)
+
+    Linux:
+
+    ```
+    source _isaac_sim/setup_conda_env.sh
+    ```
+
+    Windows:
+
+    ```
+    _isaac_sim\setup_python_env.bat
+    ```
+
+7. Train!
+
+    Linux:
+
+    ```
+    ./isaaclab.sh -p scripts/reinforcement_learning/skrl/train.py --task Isaac-Ant-v0 --headless
+    ```
+
+    Windows:
+
+    ```
+    isaaclab.bat -p scripts\reinforcement_learning\skrl\train.py --task Isaac-Ant-v0 --headless
+    ```
+
 ### Documentation
 
 Our [documentation page](https://isaac-sim.github.io/IsaacLab) provides everything you need to get started, including
@@ -56,7 +147,7 @@ dependency versions for Isaac Sim.
 
 | Isaac Lab Version             | Isaac Sim Version         |
 | ----------------------------- | ------------------------- |
-| `main` branch                 | Isaac Sim 4.5 / 5.0 / 5.1 |
+| `main` branch                 | Isaac Sim 4.5 / 5.0       |
 | `v2.3.X`                      | Isaac Sim 4.5 / 5.0 / 5.1 |
 | `v2.2.X`                      | Isaac Sim 4.5 / 5.0       |
 | `v2.1.X`                      | Isaac Sim 4.5             |
@@ -87,7 +178,7 @@ innovation in robotics and simulation.
 Please see the [troubleshooting](https://isaac-sim.github.io/IsaacLab/main/source/refs/troubleshooting.html) section for
 common fixes or [submit an issue](https://github.com/isaac-sim/IsaacLab/issues).
 
-For issues related to Isaac Sim, we recommend checking its [documentation](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html)
+For issues related to Isaac Sim, we recommend checking its [documentation](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/overview.html)
 or opening a question on its [forums](https://forums.developer.nvidia.com/c/agx-autonomous-machines/isaac/67).
 
 ## Support
