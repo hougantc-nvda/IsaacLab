@@ -100,7 +100,7 @@ class ActionsCfg:
         ],
         policy_output_scale=0.25,
         obs_group_name="lower_body_policy",  # need to be the same name as the on in ObservationCfg
-        policy_path=f"{ISAACLAB_NUCLEUS_DIR}/Policies/Agile/agile_locomotion.pt",
+        policy_path="omniverse://isaac-dev.ov.nvidia.com/Projects/agile/policy_checkpoints/agile_locomotion.pt",
     )
 
 
@@ -188,7 +188,7 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
 
     # Position of the XR anchor in the world frame
     xr: XrCfg = XrCfg(
-        anchor_pos=(0.0, 0.0, -0.35),
+        anchor_pos=(0.0, 0.0, 0.3),
         anchor_rot=(1.0, 0.0, 0.0, 0.0),
     )
 

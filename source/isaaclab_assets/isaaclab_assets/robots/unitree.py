@@ -15,7 +15,6 @@ The following configurations are available:
 * :obj:`G1_CFG`: G1 humanoid robot
 * :obj:`G1_MINIMAL_CFG`: G1 humanoid robot with minimal collision bodies
 * :obj:`G1_29DOF_CFG`: G1 humanoid robot configured for locomanipulation tasks
-* :obj:`G1_INSPIRE_FTP_CFG`: G1 29DOF humanoid robot with Inspire 5-finger hand
 
 Reference: https://github.com/unitreerobotics/unitree_ros
 """
@@ -527,8 +526,8 @@ G1_29DOF_CFG = ArticulationCfg(
             ],
             effort_limit=300,
             velocity_limit=100,
-            stiffness=20,
-            damping=2,
+            stiffness=4000,
+            damping=50,
             armature=0.001,
         ),
     },
@@ -554,58 +553,3 @@ Usage examples:
     mobile_cfg = G1_29DOF_CFG.copy()
     mobile_cfg.spawn.articulation_props.fix_root_link = False
 """
-
-"""
-Configuration for the Unitree G1 Humanoid robot with Inspire 5fingers hand.
-The Unitree G1 URDF can be found here: https://github.com/unitreerobotics/unitree_ros/tree/master/robots/g1_description/g1_29dof_with_hand_rev_1_0.urdf
-The Inspire hand URDF is available at: https://github.com/unitreerobotics/xr_teleoperate/tree/main/assets/inspire_hand
-The merging code for the hand and robot can be found here: https://github.com/unitreerobotics/unitree_ros/blob/master/robots/g1_description/merge_g1_29dof_and_inspire_hand.ipynb,
-Necessary modifications should be made to ensure the correct parent–child relationship.
-"""
-# Inherit PD settings from G1_29DOF_CFG, with minor adjustments for grasping task
-G1_INSPIRE_FTP_CFG = G1_29DOF_CFG.copy()
-G1_INSPIRE_FTP_CFG.spawn.usd_path = f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1_29dof_inspire_hand.usd"
-G1_INSPIRE_FTP_CFG.spawn.activate_contact_sensors = True
-G1_INSPIRE_FTP_CFG.spawn.rigid_props.disable_gravity = True
-G1_INSPIRE_FTP_CFG.spawn.articulation_props.fix_root_link = True
-G1_INSPIRE_FTP_CFG.init_state = ArticulationCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 1.0),
-    joint_pos={".*": 0.0},
-    joint_vel={".*": 0.0},
-)
-# Actuator configuration for arms (stability focused for manipulation)
-# Increased damping improves stability of arm movements
-G1_INSPIRE_FTP_CFG.actuators["arms"] = ImplicitActuatorCfg(
-    joint_names_expr=[
-        ".*_shoulder_pitch_joint",
-        ".*_shoulder_roll_joint",
-        ".*_shoulder_yaw_joint",
-        ".*_elbow_joint",
-        ".*_wrist_.*_joint",
-    ],
-    effort_limit=300,
-    velocity_limit=100,
-    stiffness=3000.0,
-    damping=100.0,
-    armature={
-        ".*_shoulder_.*": 0.001,
-        ".*_elbow_.*": 0.001,
-        ".*_wrist_.*_joint": 0.001,
-    },
-)
-# Actuator configuration for hands (flexibility focused for grasping)
-# Lower stiffness and damping to improve finger flexibility when grasping objects
-G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
-    joint_names_expr=[
-        ".*_index_.*",
-        ".*_middle_.*",
-        ".*_thumb_.*",
-        ".*_ring_.*",
-        ".*_pinky_.*",
-    ],
-    effort_limit_sim=30.0,
-    velocity_limit_sim=10.0,
-    stiffness=10.0,
-    damping=0.2,
-    armature=0.001,
-)
