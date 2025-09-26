@@ -10,7 +10,7 @@ import isaaclab.envs.mdp as base_mdp
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.devices.device_base import DevicesCfg
-from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg
+from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg, XrAnchorRotationMode
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.g1_lower_body_standing import G1LowerBodyStandingRetargeterCfg
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.trihand.g1_upper_body_retargeter import (
     G1TriHandUpperBodyRetargeterCfg,
@@ -209,6 +209,7 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
 
         self.xr.anchor_prim_path = "/World/envs/env_0/Robot/pelvis"
         self.xr.anchor_pos = (0.0, 0.0, -1.0)
+        self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM
 
         self.teleop_devices = DevicesCfg(
             devices={

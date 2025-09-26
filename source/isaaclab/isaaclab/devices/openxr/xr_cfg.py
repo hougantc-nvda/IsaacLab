@@ -7,8 +7,22 @@
 # pyright: reportPrivateUsage=none
 
 from __future__ import annotations
+import enum
 
 from isaaclab.utils import configclass
+
+
+class XrAnchorRotationMode(enum.Enum):
+    """Enumeration for XR anchor rotation modes."""
+
+    FIXED = "fixed"
+    """Fixed rotation mode: sets rotation once and doesn't change it."""
+
+    FOLLOW_PRIM = "follow_prim"
+    """Follow prim rotation mode: rotation follows prim's rotation exactly."""
+
+    SMOOTH_FOLLOW = "smooth_follow"
+    """Smooth follow rotation mode: smoothly interpolates to prim's rotation."""
 
 
 @configclass
@@ -38,6 +52,15 @@ class XrCfg:
     robot teleoperation where the robot moves and the XR camera should follow it.
 
     If None, the anchor will use the static :attr:`anchor_pos` and :attr:`anchor_rot` values.
+    """
+
+    anchor_rotation_mode: XrAnchorRotationMode = XrAnchorRotationMode.FIXED
+    """Specifies how the XR anchor rotation should behave when attached to a prim.
+
+    The available modes are:
+    - :attr:`XrAnchorRotationMode.FIXED`: Sets rotation once to anchor_rot value
+    - :attr:`XrAnchorRotationMode.FOLLOW_PRIM`: Rotation follows prim's rotation exactly
+    - :attr:`XrAnchorRotationMode.SMOOTH_FOLLOW`: Smoothly interpolates to prim's rotation
     """
 
     near_plane: float = 0.15

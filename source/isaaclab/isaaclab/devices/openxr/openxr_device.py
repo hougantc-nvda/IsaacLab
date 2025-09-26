@@ -27,7 +27,7 @@ from omni.kit.xr.core import XRCore
 
 
 from ..device_base import DeviceBase, DeviceCfg
-from .xr_cfg import XrCfg
+from .xr_cfg import XrCfg, XrAnchorRotationMode
 
 # For testing purposes, we need to mock the XRCore, XRPoseValidityFlags classes
 XRCore = None
@@ -368,6 +368,15 @@ class OpenXRDevice(DeviceBase):
         pxr_cfg_quat = pxrGf.Quatd(w, pxrGf.Vec3d(x, y, z))
 
         pxr_anchor_quat = pxr_cfg_quat
+
+        if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
+            rt_prim_quat = rt_matrix.ExtractRotationQuat()
+
+            w, imaginary = rt_prim_quat.GetReal(), rt_prim_quat.GetImaginary()
+            pxr_prim_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
+            
+            quat_rot_x_180 = pxrGf.Quatd(0.5, pxrGf.Vec3d(1.0, 0.0, 0.0))
+            pxr_anchor_quat = quat_rot_x_180 * pxr_prim_quat
 
         # Create the final matrix with combined rotation and adjusted position
         pxr_mat = pxrGf.Matrix4d()
