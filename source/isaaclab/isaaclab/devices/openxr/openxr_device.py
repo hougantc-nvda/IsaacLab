@@ -5,6 +5,7 @@
 
 """OpenXR-powered device for teleoperation and interaction."""
 
+import torch
 import contextlib
 import numpy as np
 from collections.abc import Callable
@@ -13,9 +14,17 @@ from enum import Enum
 from typing import Any
 
 import carb
+import usdrt
+from pxr import Gf as pxrGf
+from usdrt import Rt
 
+import isaaclab.sim as sim_utils
+from isaaclab.sim import SimulationContext
 from isaaclab.devices.openxr.common import HAND_JOINT_NAMES
 from isaaclab.devices.retargeter_base import RetargeterBase
+
+from omni.kit.xr.core import XRCore
+
 
 from ..device_base import DeviceBase, DeviceCfg
 from .xr_cfg import XrCfg
@@ -107,23 +116,20 @@ class OpenXRDevice(DeviceBase):
         self._previous_joint_poses_right = {name: default_pose.copy() for name in HAND_JOINT_NAMES}
         self._previous_headpose = default_pose.copy()
 
-        # Create XR anchor based on configuration
         if self._xr_cfg.anchor_prim_path is not None:
-            # Create XR anchor as child of specified prim for dynamic positioning
-            xr_anchor_path = f"{self._xr_cfg.anchor_prim_path}/XRAnchor"
-            # Use relative positioning when attached to a prim
-            xr_anchor = SingleXFormPrim(
-                xr_anchor_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
-            )
+            self.__xr_anchor_headset_path = f"{self._xr_cfg.anchor_prim_path}/XRAnchor"
         else:
-            # Use static positioning at root level (original behavior)
-            xr_anchor = SingleXFormPrim(
-                "/XRAnchor", position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
-            )
+            self.__xr_anchor_headset_path = "/XRAnchor"
+
+        self.__initial_prim_quat = None
+
+        xr_anchor = SingleXFormPrim(
+            self.__xr_anchor_headset_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
+        )
 
         carb.settings.get_settings().set_float("/persistent/xr/profile/ar/render/nearPlane", self._xr_cfg.near_plane)
         carb.settings.get_settings().set_string("/persistent/xr/profile/ar/anchorMode", "custom anchor")
-        carb.settings.get_settings().set_string("/xrstage/profile/ar/customAnchor", xr_anchor.prim_path)
+        carb.settings.get_settings().set_string("/xrstage/profile/ar/customAnchor", self.__xr_anchor_headset_path )
 
     def __del__(self):
         """Clean up resources when the object is destroyed.
@@ -194,6 +200,8 @@ class OpenXRDevice(DeviceBase):
         self._previous_joint_poses_right = {name: default_pose.copy() for name in HAND_JOINT_NAMES}
         self._previous_headpose = default_pose.copy()
 
+        self.__initial_prim_quat = None
+
     def add_callback(self, key: str, func: Callable):
         """Add additional functions to bind to client messages.
 
@@ -227,6 +235,10 @@ class OpenXRDevice(DeviceBase):
             ),
             self.TrackingTarget.HEAD: self._calculate_headpose(),
         }
+
+    def advance(self) -> torch.Tensor:
+        self._sync_headset_to_anchor()
+        return super().advance()
 
     """
     Internal helpers.
@@ -320,3 +332,46 @@ class OpenXRDevice(DeviceBase):
         elif "reset" in msg:
             if "RESET" in self._additional_callbacks:
                 self._additional_callbacks["RESET"]()
+
+    def _sync_headset_to_anchor(self):
+        """Sync the headset to the anchor.
+        The prim is assumed to be in Fabric/usdrt.
+        The XR system can currently only handle anchors in usd.
+        Therefore, we need to query the anchor_prim's transform from usdrt and set it to the XR anchor in usd.
+        """
+        if self._xr_cfg.anchor_prim_path is None:
+            return
+
+        stage_id = sim_utils.get_current_stage_id()
+        rt_stage = usdrt.Usd.Stage.Attach(stage_id)
+        if rt_stage is None:
+            return
+
+        rt_prim = rt_stage.GetPrimAtPath(self._xr_cfg.anchor_prim_path)
+        if rt_prim is None:
+            return
+
+        rt_xformable = Rt.Xformable(rt_prim)
+        if rt_xformable is None:
+            return
+
+        world_matrix_attr = rt_xformable.GetFabricHierarchyWorldMatrixAttr()
+        if world_matrix_attr is None:
+            return
+
+        rt_matrix = world_matrix_attr.Get()
+        rt_pos = rt_matrix.ExtractTranslation()
+
+        pxr_anchor_pos = pxrGf.Vec3d(*rt_pos) + pxrGf.Vec3d(*self._xr_cfg.anchor_pos)
+
+        w, x, y, z = self._xr_cfg.anchor_rot
+        pxr_cfg_quat = pxrGf.Quatd(w, pxrGf.Vec3d(x, y, z))
+
+        pxr_anchor_quat = pxr_cfg_quat
+
+        # Create the final matrix with combined rotation and adjusted position
+        pxr_mat = pxrGf.Matrix4d()
+        pxr_mat.SetRotateOnly(pxr_anchor_quat)
+        pxr_mat.SetTranslateOnly(pxr_anchor_pos)
+
+        XRCore.get_singleton().set_world_transform_matrix(self.__xr_anchor_headset_path, pxr_mat)

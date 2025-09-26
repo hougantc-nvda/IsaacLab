@@ -207,6 +207,9 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
         # Retrieve local paths for the URDF and mesh files. Will be cached for call after the first time.
         self.actions.upper_body_ik.controller.urdf_path = retrieve_file_path(urdf_omniverse_path)
 
+        self.xr.anchor_prim_path = "/World/envs/env_0/Robot/pelvis"
+        self.xr.anchor_pos = (0.0, 0.0, -1.0)
+
         self.teleop_devices = DevicesCfg(
             devices={
                 "handtracking": OpenXRDeviceCfg(
