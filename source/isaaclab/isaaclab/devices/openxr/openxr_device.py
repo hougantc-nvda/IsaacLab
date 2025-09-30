@@ -362,6 +362,9 @@ class OpenXRDevice(DeviceBase):
         rt_matrix = world_matrix_attr.Get()
         rt_pos = rt_matrix.ExtractTranslation()
 
+        if self.__initial_prim_quat is None:
+            self.__initial_prim_quat = rt_matrix.ExtractRotationQuat()
+
         pxr_anchor_pos = pxrGf.Vec3d(*rt_pos) + pxrGf.Vec3d(*self._xr_cfg.anchor_pos)
 
         w, x, y, z = self._xr_cfg.anchor_rot
@@ -371,12 +374,26 @@ class OpenXRDevice(DeviceBase):
 
         if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
             rt_prim_quat = rt_matrix.ExtractRotationQuat()
+            rt_delta_quat = rt_prim_quat * self.__initial_prim_quat.GetInverse()
 
-            w, imaginary = rt_prim_quat.GetReal(), rt_prim_quat.GetImaginary()
-            pxr_prim_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
-            
-            quat_rot_x_180 = pxrGf.Quatd(0.5, pxrGf.Vec3d(1.0, 0.0, 0.0))
-            pxr_anchor_quat = quat_rot_x_180 * pxr_prim_quat
+            # Convert from usdrt to pxr quaternion.
+            w, imaginary = rt_delta_quat.GetReal(), rt_delta_quat.GetImaginary()
+            pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
+
+            pxr_anchor_quat = pxr_cfg_quat * pxr_delta_quat
+
+        elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.CUSTOM:
+            if self._xr_cfg.anchor_rotation_custom_func is not None:
+                rt_prim_quat = rt_matrix.ExtractRotationQuat()
+
+                anchor_prim_pose = np.array([rt_pos[0], rt_pos[1], rt_pos[2], rt_prim_quat.GetReal(), rt_prim_quat.GetImaginary()[0], rt_prim_quat.GetImaginary()[1], rt_prim_quat.GetImaginary()[2]], dtype=np.float64)
+                np_array_quat = self._xr_cfg.anchor_rotation_custom_func(self._previous_headpose, anchor_prim_pose)
+
+                w, x, y, z = np_array_quat
+                pxr_anchor_quat = pxrGf.Quatd(w, pxrGf.Vec3d(x, y, z))
+            else:
+                print("[WARNING]: Anchor rotation custom function is not set. Using default rotation.")
+
 
         # Create the final matrix with combined rotation and adjusted position
         pxr_mat = pxrGf.Matrix4d()

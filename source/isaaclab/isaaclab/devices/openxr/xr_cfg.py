@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 import enum
+import numpy as np
+from typing import Callable
 
 from isaaclab.utils import configclass
 
@@ -19,10 +21,10 @@ class XrAnchorRotationMode(enum.Enum):
     """Fixed rotation mode: sets rotation once and doesn't change it."""
 
     FOLLOW_PRIM = "follow_prim"
-    """Follow prim rotation mode: rotation follows prim's rotation exactly."""
+    """Follow prim rotation mode: rotation follows prim's rotation."""
 
-    SMOOTH_FOLLOW = "smooth_follow"
-    """Smooth follow rotation mode: smoothly interpolates to prim's rotation."""
+    CUSTOM = "custom_rotation"
+    """Custom rotation mode: user provided function to calculate the rotation."""
 
 
 @configclass
@@ -59,8 +61,19 @@ class XrCfg:
 
     The available modes are:
     - :attr:`XrAnchorRotationMode.FIXED`: Sets rotation once to anchor_rot value
-    - :attr:`XrAnchorRotationMode.FOLLOW_PRIM`: Rotation follows prim's rotation exactly
-    - :attr:`XrAnchorRotationMode.SMOOTH_FOLLOW`: Smoothly interpolates to prim's rotation
+    - :attr:`XrAnchorRotationMode.FOLLOW_PRIM`: Rotation follows prim's rotation
+    - :attr:`XrAnchorRotationMode.CUSTOM`: user provided function to calculate the rotation
+    """
+
+    anchor_rotation_custom_func: Callable[[np.ndarray, np.ndarray], np.ndarray] = lambda headpose, primpose: np.array([1, 0, 0, 0], dtype=np.float64)
+    """Specifies the function to calculate the rotation of the XR anchor when anchor_rotation_mode is CUSTOM.
+    
+    Args:
+        headpose: Previous head pose as numpy array [x, y, z, w, x, y, z] (position + quaternion)
+        pose: Anchor prim pose as numpy array [x, y, z, w, x, y, z] (position + quaternion)
+        
+    Returns:
+        np.ndarray: Quaternion as numpy array [w, x, y, z]
     """
 
     near_plane: float = 0.15

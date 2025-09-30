@@ -3,11 +3,14 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import numpy as np
+from pxr import UsdShade, Gf as pxrGf
 
 from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
 import isaaclab.envs.mdp as base_mdp
 import isaaclab.sim as sim_utils
+from isaacsim.core.utils.stage import get_current_stage
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.devices.device_base import DevicesCfg
 from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg, XrAnchorRotationMode
@@ -209,6 +212,11 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
 
         self.xr.anchor_prim_path = "/World/envs/env_0/Robot/pelvis"
         self.xr.anchor_pos = (0.0, 0.0, -1.0)
+
+        # Rotate 180 degrees about the X-Axis.
+        # There is some conversion happening in the Isaac stack that requires it.
+        # https://docs.isaacsim.omniverse.nvidia.com/latest/reference_material/reference_conventions.html#default-camera-axes
+        self.xr.anchor_rot = (0.5, 1.0, 0.0, 0.0)
         self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM
 
         self.teleop_devices = DevicesCfg(
@@ -231,3 +239,17 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
                 ),
             }
         )
+
+    def on_environment_initialized(self):
+        if self.xr.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
+            stage = get_current_stage()
+            # Change the material of the ground plane for comfort when we are using FOLLOW_PRIM.
+            ground_prim = stage.GetPrimAtPath("/World/GroundPlane/Environment/Geometry")
+            if ground_prim is not None and ground_prim.IsValid():
+                # Change material to robot's default material, which doesn't have a grid.
+                material_path = "/World/envs/env_0/Robot/Looks/DefaultMaterial"
+                material_prim = stage.GetPrimAtPath(material_path)
+                if material_prim and material_prim.IsValid():
+                    # Apply the material to the ground prim
+                    material = UsdShade.Material(material_prim)
+                    UsdShade.MaterialBindingAPI(ground_prim).Bind(material)
