@@ -13,7 +13,7 @@ import isaaclab.sim as sim_utils
 from isaacsim.core.utils.stage import get_current_stage
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.devices.device_base import DevicesCfg
-from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg, XrAnchorRotationMode
+from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg, XrAnchorRotationMode, Quest3OpenXRDeviceCfg
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.g1_lower_body_standing import G1LowerBodyStandingRetargeterCfg
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.trihand.g1_upper_body_retargeter import (
     G1TriHandUpperBodyRetargeterCfg,
@@ -227,6 +227,22 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
                             enable_visualization=True,
                             # OpenXR hand tracking has 26 joints per hand
                             num_open_xr_hand_joints=2 * 26,
+                            sim_device=self.sim.device,
+                            hand_joint_names=self.actions.upper_body_ik.hand_joint_names,
+                        ),
+                        G1LowerBodyStandingRetargeterCfg(
+                            sim_device=self.sim.device,
+                        ),
+                    ],
+                    sim_device=self.sim.device,
+                    xr_cfg=self.xr,
+                ),
+                "quest3_controllers": Quest3OpenXRDeviceCfg(
+                    retargeters=[
+                        G1TriHandUpperBodyRetargeterCfg(
+                            enable_visualization=False,
+                            # Quest3 controllers don't have hand tracking, so use 0 joints
+                            num_open_xr_hand_joints=0,
                             sim_device=self.sim.device,
                             hand_joint_names=self.actions.upper_body_ik.hand_joint_names,
                         ),

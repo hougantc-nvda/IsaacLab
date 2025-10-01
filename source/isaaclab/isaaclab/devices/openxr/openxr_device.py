@@ -23,9 +23,6 @@ from isaaclab.sim import SimulationContext
 from isaaclab.devices.openxr.common import HAND_JOINT_NAMES
 from isaaclab.devices.retargeter_base import RetargeterBase
 
-from omni.kit.xr.core import XRCore
-
-
 from ..device_base import DeviceBase, DeviceCfg
 from .xr_cfg import XrCfg, XrAnchorRotationMode
 

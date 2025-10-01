@@ -41,7 +41,7 @@ if args_cli.enable_pinocchio:
     # not the one installed by Isaac Sim pinocchio is required by the Pink IK controllers and the
     # GR1T2 retargeter
     import pinocchio  # noqa: F401
-if "handtracking" in args_cli.teleop_device.lower():
+if "handtracking" in args_cli.teleop_device.lower() or "quest3_controllers" in args_cli.teleop_device.lower():
     app_launcher_args["xr"] = True
 
 # launch omniverse app
