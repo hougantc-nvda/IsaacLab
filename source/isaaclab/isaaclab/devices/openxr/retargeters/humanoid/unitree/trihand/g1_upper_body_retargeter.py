@@ -344,16 +344,13 @@ class G1TriHandControllerUpperBodyRetargeter(RetargeterBase):
         return hand_joints
 
     def _retarget_abs(self, wrist: np.ndarray, is_left: bool) -> np.ndarray:
-        """Handle absolute pose retargeting (same as original retargeter)."""
+        """Handle absolute pose retargeting for controller wrists."""
         wrist_pos = torch.tensor(wrist[:3], dtype=torch.float32)
         wrist_quat = torch.tensor(wrist[3:], dtype=torch.float32)
 
-        if is_left:
-            # Corresponds to a rotation of (0, 90, 90) in euler angles (x,y,z)
-            combined_quat = torch.tensor([0.7071, 0, 0.7071, 0], dtype=torch.float32)
-        else:
-            # Corresponds to a rotation of (0, -90, -90) in euler angles (x,y,z)
-            combined_quat = torch.tensor([0, -0.7071, 0, 0.7071], dtype=torch.float32)
+        # Combined -75° (rather than -90° for wrist comfort) Y rotation + 90° Z rotation
+        # This is equivalent to (0, -75, 90) in euler angles
+        combined_quat = torch.tensor([0.5358, -0.4619, 0.5358, 0.4619], dtype=torch.float32)
 
         openxr_pose = PoseUtils.make_pose(wrist_pos, PoseUtils.matrix_from_quat(wrist_quat))
         transform_pose = PoseUtils.make_pose(torch.zeros(3), PoseUtils.matrix_from_quat(combined_quat))
