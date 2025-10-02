@@ -8,4 +8,4 @@
 from .manus_vive import ManusVive, ManusViveCfg
 from .openxr_device import OpenXRDevice, OpenXRDeviceCfg
 from .xr_cfg import XrCfg, remove_camera_configs, XrAnchorRotationMode
-from .quest3_openxr_device import Quest3OpenXRDevice, Quest3OpenXRDeviceCfg
+from .quest3_openxr_device import Quest3OpenXRDevice, Quest3OpenXRDeviceCfg, Quest3ControllerData, Quest3ControllerInputMapping

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as PoseUtils
 from isaaclab.devices import OpenXRDevice
+from isaaclab.devices.openxr.quest3_openxr_device import Quest3TrackingTarget, Quest3ControllerData, Quest3ControllerInputMapping
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
@@ -146,6 +147,204 @@ class G1TriHandUpperBodyRetargeter(RetargeterBase):
         Returns:
             Retargeted wrist pose in USD control frame.
         """
+        wrist_pos = torch.tensor(wrist[:3], dtype=torch.float32)
+        wrist_quat = torch.tensor(wrist[3:], dtype=torch.float32)
+
+        if is_left:
+            # Corresponds to a rotation of (0, 90, 90) in euler angles (x,y,z)
+            combined_quat = torch.tensor([0.7071, 0, 0.7071, 0], dtype=torch.float32)
+        else:
+            # Corresponds to a rotation of (0, -90, -90) in euler angles (x,y,z)
+            combined_quat = torch.tensor([0, -0.7071, 0, 0.7071], dtype=torch.float32)
+
+        openxr_pose = PoseUtils.make_pose(wrist_pos, PoseUtils.matrix_from_quat(wrist_quat))
+        transform_pose = PoseUtils.make_pose(torch.zeros(3), PoseUtils.matrix_from_quat(combined_quat))
+
+        result_pose = PoseUtils.pose_in_A_to_pose_in_B(transform_pose, openxr_pose)
+        pos, rot_mat = PoseUtils.unmake_pose(result_pose)
+        quat = PoseUtils.quat_from_matrix(rot_mat)
+
+        return np.concatenate([pos.numpy(), quat.numpy()])
+
+
+@dataclass
+class G1TriHandControllerUpperBodyRetargeterCfg(RetargeterCfg):
+    """Configuration for the G1 Controller Upper Body retargeter."""
+
+    enable_visualization: bool = False
+    hand_joint_names: list[str] | None = None  # List of robot hand joint names
+
+
+class G1TriHandControllerUpperBodyRetargeter(RetargeterBase):
+    """Simple retargeter that maps Quest3 controller inputs to G1 hand joints.
+
+    Mapping:
+    - A button (digital 0/1) → Thumb joints
+    - Trigger (analog 0-1) → Index finger joints  
+    - Squeeze (analog 0-1) → Middle finger joints
+    """
+
+    def __init__(self, cfg: G1TriHandControllerUpperBodyRetargeterCfg):
+        """Initialize the retargeter."""
+        self._sim_device = cfg.sim_device
+        self._hand_joint_names = cfg.hand_joint_names
+        self._enable_visualization = cfg.enable_visualization
+
+        if cfg.hand_joint_names is None:
+            raise ValueError("hand_joint_names must be provided")
+
+
+        # Initialize visualization if enabled
+        if self._enable_visualization:
+            marker_cfg = VisualizationMarkersCfg(
+                prim_path="/Visuals/g1_controller_markers",
+                markers={
+                    "joint": sim_utils.SphereCfg(
+                        radius=0.01,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                    ),
+                },
+            )
+            self._markers = VisualizationMarkers(marker_cfg)
+
+    def retarget(self, data: dict) -> torch.Tensor:
+        """Convert controller inputs to robot commands.
+
+        Args:
+            data: Dictionary with Quest3TrackingTarget.CONTROLLER_LEFT/RIGHT keys
+                 Each value is a 2D array: [pose(7), inputs(7)]
+
+        Returns:
+            Tensor: [left_wrist(7), right_wrist(7), hand_joints(14)]
+            hand_joints order: [left_proximal(3), right_proximal(3), left_distal(2), left_thumb_middle(1), right_distal(2), right_thumb_middle(1), left_thumb_tip(1), right_thumb_tip(1)]
+        """
+
+
+        # Get controller data
+        left_controller_data = data.get(Quest3TrackingTarget.CONTROLLER_LEFT, np.array([]))
+        right_controller_data = data.get(Quest3TrackingTarget.CONTROLLER_RIGHT, np.array([]))
+
+        # Default wrist poses (position + quaternion)
+        default_wrist = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+        
+        # Extract poses from controller data
+        left_wrist = self._extract_wrist_pose(left_controller_data, default_wrist)
+        right_wrist = self._extract_wrist_pose(right_controller_data, default_wrist)
+        
+        # Map controller inputs to hand joints
+        left_hand_joints = self._map_to_hand_joints(left_controller_data, is_left=True)
+        right_hand_joints = self._map_to_hand_joints(right_controller_data, is_left=False)
+        
+        # Negate left hand joints for proper mirroring
+        left_hand_joints = -left_hand_joints
+        
+        # Combine joints in the expected order: [left_proximal(3), right_proximal(3), left_distal(2), left_thumb_middle(1), right_distal(2), right_thumb_middle(1), left_thumb_tip(1), right_thumb_tip(1)]
+        all_hand_joints = np.array([
+            left_hand_joints[3],   # left_hand_index_0_joint
+            left_hand_joints[5],   # left_hand_middle_0_joint  
+            left_hand_joints[0],   # left_hand_thumb_0_joint
+            right_hand_joints[3],  # right_hand_index_0_joint
+            right_hand_joints[5],  # right_hand_middle_0_joint
+            right_hand_joints[0],  # right_hand_thumb_0_joint
+            left_hand_joints[4],   # left_hand_index_1_joint
+            left_hand_joints[6],   # left_hand_middle_1_joint
+            left_hand_joints[1],   # left_hand_thumb_1_joint
+            right_hand_joints[4],  # right_hand_index_1_joint
+            right_hand_joints[6],  # right_hand_middle_1_joint
+            right_hand_joints[1],  # right_hand_thumb_1_joint
+            left_hand_joints[2],   # left_hand_thumb_2_joint
+            right_hand_joints[2],  # right_hand_thumb_2_joint
+        ])
+        
+        # Convert to tensors
+        left_wrist_tensor = torch.tensor(
+            self._retarget_abs(left_wrist, is_left=True), dtype=torch.float32, device=self._sim_device
+        )
+        right_wrist_tensor = torch.tensor(
+            self._retarget_abs(right_wrist, is_left=False), dtype=torch.float32, device=self._sim_device
+        )
+        hand_joints_tensor = torch.tensor(all_hand_joints, dtype=torch.float32, device=self._sim_device)
+
+        return torch.cat([left_wrist_tensor, right_wrist_tensor, hand_joints_tensor])
+
+    def _extract_wrist_pose(self, controller_data: np.ndarray, default_pose: np.ndarray) -> np.ndarray:
+        """Extract wrist pose from controller data.
+
+        Args:
+            controller_data: 2D array [pose(7), inputs(7)]
+            default_pose: Default pose to use if no data
+
+        Returns:
+            Wrist pose array [x, y, z, w, x, y, z]
+        """
+        if len(controller_data) > Quest3ControllerData.POSE.value:
+            return controller_data[Quest3ControllerData.POSE.value]
+        return default_pose
+
+    def _map_to_hand_joints(self, controller_data: np.ndarray, is_left: bool) -> np.ndarray:
+        """Map controller inputs to hand joint angles.
+
+        Args:
+            controller_data: 2D array [pose(7), inputs(7)]
+            is_left: True for left hand, False for right hand
+
+        Returns:
+            Hand joint angles (7 joints per hand) in radians
+        """
+        from isaaclab.devices.openxr.quest3_openxr_device import Quest3ControllerData, Quest3ControllerInputMapping
+        
+        # Initialize all joints to zero
+        hand_joints = np.zeros(7)
+        
+        if len(controller_data) <= Quest3ControllerData.INPUTS.value:
+            return hand_joints
+            
+        # Extract inputs from second row
+        inputs = controller_data[Quest3ControllerData.INPUTS.value]
+        
+        if len(inputs) <= Quest3ControllerInputMapping.BUTTON_0.value:
+            return hand_joints
+            
+        # Extract specific inputs using enum
+        trigger = inputs[Quest3ControllerInputMapping.TRIGGER.value]  # 0.0 to 1.0 (analog)
+        squeeze = inputs[Quest3ControllerInputMapping.SQUEEZE.value]  # 0.0 to 1.0 (analog)
+        # thumb_button = inputs[Quest3ControllerInputMapping.BUTTON_0.value]  # 0 or 1 (digital)
+
+        # Grasping logic: If trigger is pressed, we grasp with index and thumb. If squeeze is pressed, we grasp with middle and thumb.
+        # If both are pressed, we grasp with index, middle, and thumb.
+        # The thumb rotates towards the direction of the pressing finger. If both are pressed, the thumb stays in the middle.
+
+        thumb_button = max(trigger, squeeze)
+        
+        # Map to G1 hand joints (in radians)
+        # Thumb joints (3 joints) - controlled by A button (digital)
+        thumb_angle = -thumb_button  # Max 1 radian ≈ 57°
+        
+        # Thumb rotation: trigger pushes toward +0.5, squeeze pushes toward -0.5
+        # trigger=1,squeeze=0 → 0.5; trigger=0,squeeze=1 → -0.5; both=1 → 0
+        thumb_rotation = 0.5 * trigger - 0.5 * squeeze
+
+        if not is_left:
+            thumb_rotation = -thumb_rotation
+
+        hand_joints[0] = thumb_rotation     # thumb_0_joint (base)
+        hand_joints[1] = thumb_angle * 0.5  # thumb_1_joint (middle)
+        hand_joints[2] = thumb_angle * 0.8  # thumb_2_joint (tip)
+        
+        # Index finger joints (2 joints) - controlled by trigger (analog)
+        index_angle = trigger * 1.5  # Max 1.5 radians ≈ 86°
+        hand_joints[3] = index_angle      # index_0_joint (proximal)
+        hand_joints[4] = index_angle * 0.8  # index_1_joint (distal)
+        
+        # Middle finger joints (2 joints) - controlled by squeeze (analog)
+        middle_angle = squeeze * 1.4  # Max 1.4 radians ≈ 80°
+        hand_joints[5] = middle_angle      # middle_0_joint (proximal)
+        hand_joints[6] = middle_angle * 0.8  # middle_1_joint (distal)
+
+        return hand_joints
+
+    def _retarget_abs(self, wrist: np.ndarray, is_left: bool) -> np.ndarray:
+        """Handle absolute pose retargeting (same as original retargeter)."""
         wrist_pos = torch.tensor(wrist[:3], dtype=torch.float32)
         wrist_quat = torch.tensor(wrist[3:], dtype=torch.float32)
 

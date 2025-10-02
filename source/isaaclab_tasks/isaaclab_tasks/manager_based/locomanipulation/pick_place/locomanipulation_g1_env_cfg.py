@@ -17,6 +17,7 @@ from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg, XrAnchorRotationMode
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.g1_lower_body_standing import G1LowerBodyStandingRetargeterCfg
 from isaaclab.devices.openxr.retargeters.humanoid.unitree.trihand.g1_upper_body_retargeter import (
     G1TriHandUpperBodyRetargeterCfg,
+    G1TriHandControllerUpperBodyRetargeterCfg,
 )
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -239,10 +240,8 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
                 ),
                 "quest3_controllers": Quest3OpenXRDeviceCfg(
                     retargeters=[
-                        G1TriHandUpperBodyRetargeterCfg(
-                            enable_visualization=False,
-                            # Quest3 controllers don't have hand tracking, so use 0 joints
-                            num_open_xr_hand_joints=0,
+                        G1TriHandControllerUpperBodyRetargeterCfg(
+                            enable_visualization=True,
                             sim_device=self.sim.device,
                             hand_joint_names=self.actions.upper_body_ik.hand_joint_names,
                         ),

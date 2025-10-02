@@ -7,7 +7,7 @@ import torch
 from dataclasses import dataclass
 
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
-from isaaclab.devices.openxr.quest3_openxr_device import Quest3TrackingTarget
+from isaaclab.devices.openxr.quest3_openxr_device import Quest3TrackingTarget, Quest3ControllerData, Quest3ControllerInputMapping
 from isaaclab.sim import SimulationContext
 
 
@@ -17,6 +17,9 @@ class G1LowerBodyStandingRetargeterCfg(RetargeterCfg):
 
     hip_height: float = 0.72
     """Height of the G1 robot hip in meters. The value is a fixed height suitable for G1 to do tabletop manipulation."""
+
+    movement_scale: float = 0.5
+    """Scale the movement of the robot to the range of [-movement_scale, movement_scale]."""
 
 
 class G1LowerBodyStandingRetargeter(RetargeterBase):
@@ -33,22 +36,28 @@ class G1LowerBodyStandingRetargeter(RetargeterBase):
         right_thumbstick_x = 0.0
         right_thumbstick_y = 0.0
 
-        # TODO: Make the indices defined in the enum. Currently these are coming from quest3_openxr_device.py.
+        # Get controller data using enums
         if Quest3TrackingTarget.CONTROLLER_LEFT in data and data[Quest3TrackingTarget.CONTROLLER_LEFT] is not None:
-            left_hand_data = data[Quest3TrackingTarget.CONTROLLER_LEFT]            
-            if len(left_hand_data) >= 2:
-                left_thumbstick_x = left_hand_data[0]
-                left_thumbstick_y = left_hand_data[1]
+            left_controller_data = data[Quest3TrackingTarget.CONTROLLER_LEFT]
+            if len(left_controller_data) > Quest3ControllerData.INPUTS.value:
+                left_inputs = left_controller_data[Quest3ControllerData.INPUTS.value]
+                if len(left_inputs) > Quest3ControllerInputMapping.THUMBSTICK_Y.value:
+                    left_thumbstick_x = left_inputs[Quest3ControllerInputMapping.THUMBSTICK_X.value]
+                    left_thumbstick_y = left_inputs[Quest3ControllerInputMapping.THUMBSTICK_Y.value]
 
         if Quest3TrackingTarget.CONTROLLER_RIGHT in data and data[Quest3TrackingTarget.CONTROLLER_RIGHT] is not None:
-            right_hand_data = data[Quest3TrackingTarget.CONTROLLER_RIGHT]
-            if len(right_hand_data) >= 2:
-                right_thumbstick_x = right_hand_data[0]
-                right_thumbstick_y = right_hand_data[1]
+            right_controller_data = data[Quest3TrackingTarget.CONTROLLER_RIGHT]
+            if len(right_controller_data) > Quest3ControllerData.INPUTS.value:
+                right_inputs = right_controller_data[Quest3ControllerData.INPUTS.value]
+                if len(right_inputs) > Quest3ControllerInputMapping.THUMBSTICK_Y.value:
+                    right_thumbstick_x = right_inputs[Quest3ControllerInputMapping.THUMBSTICK_X.value]
+                    right_thumbstick_y = right_inputs[Quest3ControllerInputMapping.THUMBSTICK_Y.value]
 
+        # Thumbstick values are in the range of [-1, 1], so we need to scale them to the range of [-movement_clamp, movement_clamp]
+        left_thumbstick_x = left_thumbstick_x * self.cfg.movement_scale
+        left_thumbstick_y = left_thumbstick_y * self.cfg.movement_scale
+        
         dt = SimulationContext.instance().get_physics_dt()
         self._hip_height -= right_thumbstick_y * dt
-
-        # print(f"left_thumbstick_x: {left_thumbstick_x}, left_thumbstick_y: {left_thumbstick_y}, right_thumbstick_x: {right_thumbstick_x}, right_thumbstick_y: {right_thumbstick_y}, self._hip_height: {self._hip_height}")
 
         return torch.tensor([-left_thumbstick_y, -left_thumbstick_x, -right_thumbstick_x, self._hip_height], device=self.cfg.sim_device, dtype=torch.float32)

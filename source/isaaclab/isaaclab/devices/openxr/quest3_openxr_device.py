@@ -25,6 +25,21 @@ from omni.kit.xr.core import XRCore, XRInputDevice
 # Extend TrackingTarget enum for controllers
 from enum import Enum
 
+class Quest3ControllerInputMapping(Enum):
+    """Enum for Quest3 controller input indices."""
+    THUMBSTICK_X = 0
+    THUMBSTICK_Y = 1
+    TRIGGER = 2
+    SQUEEZE = 3
+    BUTTON_0 = 4  # X for left controller, A for right controller
+    BUTTON_1 = 5  # Y for left controller, B for right controller
+
+
+class Quest3ControllerData(Enum):
+    """Enum for Quest3 controller data row indices."""
+    POSE = 0      # [x, y, z, w, x, y, z] - position and quaternion
+    INPUTS = 1    # Quest3ControllerInputMapping: [thumbstick_x, thumbstick_y, trigger, squeeze, button_0, button_1]
+
 # Create a new enum that includes all TrackingTarget values plus new ones
 class Quest3TrackingTarget(Enum):
     """Extended tracking targets for Quest3 controllers."""
@@ -65,40 +80,36 @@ class Quest3OpenXRDevice(OpenXRDevice):
         """Get the latest tracking data from the OpenXR runtime.
 
         Returns:
-            Dictionary with TrackingTarget enum keys (HAND_LEFT, HAND_RIGHT, HEAD) containing:
-                - Left motion controller pose: Dictionary of 26 joints with position and orientation
-                - Right motion controller pose: Dictionary of 26 joints with position and orientation
-                - Head pose: Single 7-element array with position and orientation
+            Dictionary with TrackingTarget enum keys containing:
+                - HEAD: Single 7-element array with position and orientation
+                - CONTROLLER_LEFT: 2D array [pose(7), inputs(7)]
+                - CONTROLLER_RIGHT: 2D array [pose(7), inputs(7)]
 
-        Each pose is represented as a 7-element array: [x, y, z, qw, qx, qy, qz]
-        where the first 3 elements are position and the last 4 are quaternion orientation.
+        Controller data format:
+            - Row 0 (pose): [x, y, z, w, x, y, z] - position and quaternion
+            - Row 1 (inputs): [thumbstick_x, thumbstick_y, trigger, squeeze, button_0, button_1, padding]
+
+        Hand tracking data format:
+            Each pose is represented as a 7-element array: [x, y, z, qw, qx, qy, qz]
+            where the first 3 elements are position and the last 4 are quaternion orientation.
         """
-        data = super()._get_raw_data()
-
-        left_input_device = XRCore.get_singleton().get_input_device("/user/hand/left")
-        right_input_device = XRCore.get_singleton().get_input_device("/user/hand/right")
-
-        data.update({
-            Quest3TrackingTarget.CONTROLLER_LEFT: self._query_controller_input_values(
+        return {
+            Quest3TrackingTarget.CONTROLLER_LEFT: self._query_controller(
                 Quest3TrackingTarget.CONTROLLER_LEFT,
-                left_input_device
+                XRCore.get_singleton().get_input_device("/user/hand/left")
             ),
-            Quest3TrackingTarget.CONTROLLER_RIGHT: self._query_controller_input_values(
+            Quest3TrackingTarget.CONTROLLER_RIGHT: self._query_controller(
                 Quest3TrackingTarget.CONTROLLER_RIGHT,
-                right_input_device
-            )
-        })
-
-        # Since we are using controller data, we need to overwrite the wrist pose.
-        self._set_wrist_pose(left_input_device, data[OpenXRDevice.TrackingTarget.HAND_LEFT])
-        self._set_wrist_pose(right_input_device, data[OpenXRDevice.TrackingTarget.HAND_RIGHT])
-        return data
+                XRCore.get_singleton().get_input_device("/user/hand/right")
+            ),
+            OpenXRDevice.TrackingTarget.HEAD: self._calculate_headpose(),
+        }
 
     """
     Internal helpers.
     """
 
-    def _query_controller_input_values(
+    def _query_controller(
         self, tracking_target : Quest3TrackingTarget, input_device
     ) -> np.array:
         """Calculate and update input device data
@@ -108,14 +119,16 @@ class Quest3OpenXRDevice(OpenXRDevice):
         if input_device is None:
             return np.array([])
 
+        pose = input_device.get_virtual_world_pose()
+        position = pose.ExtractTranslation()
+        quat = pose.ExtractRotationQuat()
+        
         thumbstick_x = 0.0
         thumbstick_y = 0.0
         trigger = 0.0
         squeeze = 0.0
-        a = 0.0
-        b = 0.0
-        x = 0.0
-        y = 0.0
+        button_0 = 0.0
+        button_1 = 0.0
 
         if input_device.has_input_gesture("thumbstick", "x"):
             thumbstick_x: float = input_device.get_input_gesture_value("thumbstick", "x")
@@ -129,24 +142,35 @@ class Quest3OpenXRDevice(OpenXRDevice):
         if input_device.has_input_gesture("squeeze", "value"):
             squeeze: float = input_device.get_input_gesture_value("squeeze", "value")
 
-        if input_device.has_input_gesture("a", "click"):
-            a: float = input_device.get_input_gesture_value("a", "click")
+        if tracking_target == Quest3TrackingTarget.CONTROLLER_LEFT:
+            if input_device.has_input_gesture("x", "click"):
+                button_0 = input_device.get_input_gesture_value("x", "click")
 
-        if input_device.has_input_gesture("b", "click"):
-            b: float = input_device.get_input_gesture_value("b", "click")
+            if input_device.has_input_gesture("y", "click"):
+                button_1 = input_device.get_input_gesture_value("y", "click")
+        else:
+            if input_device.has_input_gesture("a", "click"):
+                button_0 = input_device.get_input_gesture_value("a", "click")
 
-        if input_device.has_input_gesture("x", "click"):
-            x: float = input_device.get_input_gesture_value("x", "click")
+            if input_device.has_input_gesture("b", "click"):
+                button_1 = input_device.get_input_gesture_value("b", "click")
 
-        if input_device.has_input_gesture("y", "click"):
-            y: float = input_device.get_input_gesture_value("y", "click")
-
-        return np.array([thumbstick_x, thumbstick_y, trigger, squeeze, a, b, x, y], dtype=np.float32)
-
-    def _set_wrist_pose(self, input_device, data):
-        """Set the wrist pose in the data dictionary."""
-        if input_device is not None and data is not None and "wrist" in data:
-            pose = input_device.get_virtual_world_pose()
-            position = pose.ExtractTranslation()
-            quat = pose.ExtractRotationQuat()
-            data["wrist"] = np.array([position[0], position[1], position[2], quat.GetReal(), quat.GetImaginary()[0], quat.GetImaginary()[1], quat.GetImaginary()[2]], dtype=np.float32)
+        # First row: position and quaternion (7 values)
+        pose_row = [
+            position[0], position[1], position[2],  # x, y, z position
+            quat.GetReal(), quat.GetImaginary()[0], quat.GetImaginary()[1], quat.GetImaginary()[2]  # w, x, y, z quaternion
+        ]
+        
+        # Second row: controller input values (6 values + 1 padding)
+        input_row = [
+            thumbstick_x,  # Quest3ControllerInputMapping.THUMBSTICK_X
+            thumbstick_y,  # Quest3ControllerInputMapping.THUMBSTICK_Y
+            trigger,       # Quest3ControllerInputMapping.TRIGGER
+            squeeze,       # Quest3ControllerInputMapping.SQUEEZE
+            button_0,      # Quest3ControllerInputMapping.BUTTON_0
+            button_1,      # Quest3ControllerInputMapping.BUTTON_1
+            0.0,           # Padding to make 7 elements
+        ]
+        
+        # Combine into 2D array: [pose(7), inputs(7)]
+        return np.array([pose_row, input_row], dtype=np.float32)
