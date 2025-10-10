@@ -23,6 +23,9 @@ class XrAnchorRotationMode(enum.Enum):
     FOLLOW_PRIM = "follow_prim"
     """Follow prim rotation mode: rotation follows prim's rotation."""
 
+    FOLLOW_PRIM_SMOOTHED = "follow_prim_smoothed"
+    """Follow prim rotation mode with smooth interpolation: rotation smoothly follows prim's rotation using slerp."""
+
     CUSTOM = "custom_rotation"
     """Custom rotation mode: user provided function to calculate the rotation."""
 
@@ -62,7 +65,16 @@ class XrCfg:
     The available modes are:
     - :attr:`XrAnchorRotationMode.FIXED`: Sets rotation once to anchor_rot value
     - :attr:`XrAnchorRotationMode.FOLLOW_PRIM`: Rotation follows prim's rotation
+    - :attr:`XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED`: Rotation smoothly follows prim's rotation using slerp
     - :attr:`XrAnchorRotationMode.CUSTOM`: user provided function to calculate the rotation
+    """
+
+    anchor_rotation_smoothing_time: float = 0.2
+    """Time constant for rotation smoothing in seconds when using FOLLOW_PRIM_SMOOTHED mode.
+    
+    Smaller values (e.g., 0.1) result in faster/snappier response but less smoothing.
+    Larger values (e.g., 0.5) result in slower/smoother response but more lag.
+    Typical range: 0.1 - 0.5 seconds.
     """
 
     anchor_rotation_custom_func: Callable[[np.ndarray, np.ndarray], np.ndarray] = lambda headpose, primpose: np.array([1, 0, 0, 0], dtype=np.float64)

@@ -120,6 +120,7 @@ class OpenXRDevice(DeviceBase):
             self.__xr_anchor_headset_path = "/World/XRAnchor"
 
         self.__anchor_prim_initial_quat = None
+        self.__smoothed_anchor_quat = None  # For FOLLOW_PRIM_SMOOTHED mode
 
         xr_anchor_headset = SingleXFormPrim(
             self.__xr_anchor_headset_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
@@ -384,6 +385,35 @@ class OpenXRDevice(DeviceBase):
             pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
 
             pxr_anchor_quat = pxr_delta_quat * pxr_cfg_quat
+
+        elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED:
+            # Get target rotation (same as FOLLOW_PRIM)
+            rt_prim_quat = rt_matrix.ExtractRotationQuat()
+            rt_delta_quat = rt_prim_quat * self.__anchor_prim_initial_quat.GetInverse()
+
+            # Convert from usdrt to pxr quaternion
+            w, imaginary = rt_delta_quat.GetReal(), rt_delta_quat.GetImaginary()
+            pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
+            target_quat = pxr_delta_quat * pxr_cfg_quat
+
+            # Initialize smoothed quaternion on first run
+            if self.__smoothed_anchor_quat is None:
+                self.__smoothed_anchor_quat = target_quat
+                pxr_anchor_quat = target_quat
+            else:
+                # Calculate smoothing alpha from time constant
+                # alpha = 1 - exp(-dt / time_constant)
+                # This gives exponential smoothing behavior
+                from isaaclab.sim import SimulationContext
+                import math
+                dt = SimulationContext.instance().get_physics_dt()
+                alpha = 1.0 - math.exp(-dt / max(self._xr_cfg.anchor_rotation_smoothing_time, 0.001))
+                alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
+
+                # Perform spherical linear interpolation (slerp)
+                # Use Gf.Slerp(alpha, quat_from, quat_to)
+                self.__smoothed_anchor_quat = pxrGf.Slerp(alpha, self.__smoothed_anchor_quat, target_quat)
+                pxr_anchor_quat = self.__smoothed_anchor_quat
 
         elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.CUSTOM:
             if self._xr_cfg.anchor_rotation_custom_func is not None:

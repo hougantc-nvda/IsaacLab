@@ -218,7 +218,7 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
         # There is some conversion happening in the Isaac stack that requires it.
         # https://docs.isaacsim.omniverse.nvidia.com/latest/reference_material/reference_conventions.html#default-camera-axes
         self.xr.anchor_rot = (0.5, 1.0, 0.0, 0.0)
-        self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM
+        self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED
 
         self.teleop_devices = DevicesCfg(
             devices={
