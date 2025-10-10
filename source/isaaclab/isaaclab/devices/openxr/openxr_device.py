@@ -19,6 +19,7 @@ from pxr import Gf as pxrGf
 from usdrt import Rt
 
 import isaaclab.sim as sim_utils
+from isaacsim.core.utils.stage import get_current_stage
 from isaaclab.sim import SimulationContext
 from isaaclab.devices.openxr.common import HAND_JOINT_NAMES
 from isaaclab.devices.retargeter_base import RetargeterBase
@@ -116,13 +117,18 @@ class OpenXRDevice(DeviceBase):
         if self._xr_cfg.anchor_prim_path is not None:
             self.__xr_anchor_headset_path = f"{self._xr_cfg.anchor_prim_path}/XRAnchor"
         else:
-            self.__xr_anchor_headset_path = "/XRAnchor"
+            self.__xr_anchor_headset_path = "/World/XRAnchor"
 
-        self.__initial_prim_quat = None
+        self.__anchor_prim_initial_quat = None
 
-        xr_anchor = SingleXFormPrim(
+        xr_anchor_headset = SingleXFormPrim(
             self.__xr_anchor_headset_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
         )
+
+        # Get the layer where it was created
+        prim_stack = xr_anchor_headset.prim.GetPrimStack()
+        if prim_stack:
+            self.__anchor_headset_layer_identifier = prim_stack[0].layer.identifier
 
         carb.settings.get_settings().set_float("/persistent/xr/profile/ar/render/nearPlane", self._xr_cfg.near_plane)
         carb.settings.get_settings().set_string("/persistent/xr/profile/ar/anchorMode", "custom anchor")
@@ -197,7 +203,7 @@ class OpenXRDevice(DeviceBase):
         self._previous_joint_poses_right = {name: default_pose.copy() for name in HAND_JOINT_NAMES}
         self._previous_headpose = default_pose.copy()
 
-        self.__initial_prim_quat = None
+        self.__anchor_prim_initial_quat = None
 
     def add_callback(self, key: str, func: Callable):
         """Add additional functions to bind to client messages.
@@ -359,8 +365,8 @@ class OpenXRDevice(DeviceBase):
         rt_matrix = world_matrix_attr.Get()
         rt_pos = rt_matrix.ExtractTranslation()
 
-        if self.__initial_prim_quat is None:
-            self.__initial_prim_quat = rt_matrix.ExtractRotationQuat()
+        if self.__anchor_prim_initial_quat is None:
+            self.__anchor_prim_initial_quat = rt_matrix.ExtractRotationQuat()
 
         pxr_anchor_pos = pxrGf.Vec3d(*rt_pos) + pxrGf.Vec3d(*self._xr_cfg.anchor_pos)
 
@@ -371,13 +377,13 @@ class OpenXRDevice(DeviceBase):
 
         if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
             rt_prim_quat = rt_matrix.ExtractRotationQuat()
-            rt_delta_quat = rt_prim_quat * self.__initial_prim_quat.GetInverse()
+            rt_delta_quat = rt_prim_quat * self.__anchor_prim_initial_quat.GetInverse()
 
             # Convert from usdrt to pxr quaternion.
             w, imaginary = rt_delta_quat.GetReal(), rt_delta_quat.GetImaginary()
             pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
 
-            pxr_anchor_quat = pxr_cfg_quat * pxr_delta_quat
+            pxr_anchor_quat = pxr_delta_quat * pxr_cfg_quat
 
         elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.CUSTOM:
             if self._xr_cfg.anchor_rotation_custom_func is not None:
@@ -391,10 +397,9 @@ class OpenXRDevice(DeviceBase):
             else:
                 print("[WARNING]: Anchor rotation custom function is not set. Using default rotation.")
 
-
         # Create the final matrix with combined rotation and adjusted position
         pxr_mat = pxrGf.Matrix4d()
         pxr_mat.SetRotateOnly(pxr_anchor_quat)
-        pxr_mat.SetTranslateOnly(pxr_anchor_pos)
+        pxr_mat.SetTranslateOnly(pxr_anchor_pos)        
 
-        XRCore.get_singleton().set_world_transform_matrix(self.__xr_anchor_headset_path, pxr_mat)
+        XRCore.get_singleton().set_world_transform_matrix(self.__xr_anchor_headset_path, pxr_mat, self.__anchor_headset_layer_identifier)
