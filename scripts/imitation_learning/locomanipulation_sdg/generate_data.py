@@ -34,7 +34,7 @@ parser.add_argument(
         " lifting the object"
     ),
 )
-parser.add_argument("--demo", type=str, default=None, help="The demo in the input dataset to use.")
+parser.add_argument("--demo", type=str, default="demo_0", help="The demo in the input dataset to use.")
 parser.add_argument("--num_runs", type=int, default=1, help="The number of trajectories to generate.")
 parser.add_argument(
     "--draw_visualization", type=bool, default=False, help="Draw the occupancy map and path planning visualization."
@@ -111,7 +111,6 @@ simulation_app = app_launcher.app
 
 import enum
 import gymnasium as gym
-import random
 import torch
 
 import omni.kit
@@ -120,16 +119,20 @@ from isaaclab.utils import configclass
 from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 
 import isaaclab_mimic.locomanipulation_sdg.envs  # noqa: F401
-from isaaclab_mimic.locomanipulation_sdg.data_classes import LocomanipulationSDGOutputData
 from isaaclab_mimic.locomanipulation_sdg.envs.locomanipulation_sdg_env import LocomanipulationSDGEnv
+from isaaclab_mimic.locomanipulation_sdg.data_classes import LocomanipulationSDGOutputData
+from isaaclab_mimic.locomanipulation_sdg.path_utils import ParameterizedPath, plan_path
+from isaaclab_mimic.locomanipulation_sdg.scene_utils import RelativePose, place_randomly
+from isaaclab_mimic.locomanipulation_sdg.transform_utils import (
+    transform_inv,
+    transform_mul,
+    transform_relative_pose,
+)
 from isaaclab_mimic.locomanipulation_sdg.occupancy_map_utils import (
     OccupancyMap,
     merge_occupancy_maps,
     occupancy_map_add_to_stage,
 )
-from isaaclab_mimic.locomanipulation_sdg.path_utils import ParameterizedPath, plan_path
-from isaaclab_mimic.locomanipulation_sdg.scene_utils import RelativePose, place_randomly
-from isaaclab_mimic.locomanipulation_sdg.transform_utils import transform_inv, transform_mul, transform_relative_pose
 
 from isaaclab_tasks.utils import parse_env_cfg
 
@@ -246,10 +249,7 @@ def load_and_transform_recording_data(
 
 
 def setup_navigation_scene(
-    env: LocomanipulationSDGEnv,
-    input_episode_data: EpisodeData,
-    approach_distance: float,
-    randomize_placement: bool = True,
+    env: LocomanipulationSDGEnv, input_episode_data: EpisodeData, approach_distance: float, randomize_placement: bool = True
 ) -> tuple[OccupancyMap, ParameterizedPath, RelativePose, RelativePose]:
     """Set up the navigation scene with occupancy map and path planning.
 
@@ -325,13 +325,12 @@ def handle_grasp_state(
         recording_item.left_hand_pose_target, recording_item.object_pose, env.get_object().get_pose()
     )[0]
     output_data.right_hand_pose_target = transform_relative_pose(
-        recording_item.right_hand_pose_target, recording_item.base_pose, env.get_base().get_pose()
+        recording_item.right_hand_pose_target, recording_item.object_pose, env.get_object().get_pose()
     )[0]
     output_data.left_hand_joint_positions_target = recording_item.left_hand_joint_positions_target
     output_data.right_hand_joint_positions_target = recording_item.right_hand_joint_positions_target
 
     # Update state
-
     next_recording_step = recording_step + 1
     next_state = (
         LocomanipulationSDGDataGenerationState.LIFT_OBJECT
@@ -373,7 +372,7 @@ def handle_lift_state(
         recording_item.left_hand_pose_target, recording_item.base_pose, env.get_base().get_pose()
     )[0]
     output_data.right_hand_pose_target = transform_relative_pose(
-        recording_item.right_hand_pose_target, recording_item.object_pose, env.get_object().get_pose()
+        recording_item.right_hand_pose_target, recording_item.base_pose, env.get_base().get_pose()
     )[0]
     output_data.left_hand_joint_positions_target = recording_item.left_hand_joint_positions_target
     output_data.right_hand_joint_positions_target = recording_item.right_hand_joint_positions_target
@@ -742,15 +741,9 @@ if __name__ == "__main__":
         # Load input data
         input_dataset_file_handler = HDF5DatasetFileHandler()
         input_dataset_file_handler.open(args_cli.dataset)
+        input_episode_data = input_dataset_file_handler.load_episode(args_cli.demo, args_cli.device)
 
         for i in range(args_cli.num_runs):
-
-            if args_cli.demo is None:
-                demo = random.choice(list(input_dataset_file_handler.get_episode_names()))
-            else:
-                demo = args_cli.demo
-
-            input_episode_data = input_dataset_file_handler.load_episode(demo, args_cli.device)
 
             replay(
                 env=env,

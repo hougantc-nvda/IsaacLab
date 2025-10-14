@@ -9,7 +9,10 @@ from isaaclab.envs.manager_based_rl_env import ManagerBasedRLEnv
 from isaaclab.managers.recorder_manager import RecorderTerm
 from isaaclab.utils.datasets import EpisodeData
 
-from isaaclab_mimic.locomanipulation_sdg.data_classes import LocomanipulationSDGInputData, LocomanipulationSDGOutputData
+from isaaclab_mimic.locomanipulation_sdg.data_classes import (
+    LocomanipulationSDGInputData,
+    LocomanipulationSDGOutputData,
+)
 from isaaclab_mimic.locomanipulation_sdg.scene_utils import HasPose, SceneFixture
 
 
