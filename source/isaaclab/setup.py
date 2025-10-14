@@ -26,7 +26,7 @@ INSTALL_REQUIRES = [
     # devices
     "hidapi==0.14.0.post2",
     # reinforcement learning
-    "gymnasium==1.2.1",
+    "gymnasium==1.2.0",
     # procedural-generation
     "trimesh",
     "pyglet<2",
@@ -47,12 +47,10 @@ INSTALL_REQUIRES = [
 ]
 
 # Append Linux x86_64 and ARM64 deps via PEP 508 markers
-SUPPORTED_ARCHS_ARM = "platform_machine in 'x86_64,AMD64,aarch64,arm64'"
-SUPPORTED_ARCHS = "platform_machine in 'x86_64,AMD64'"
+SUPPORTED_ARCHS = "platform_machine in 'x86_64,AMD64,aarch64,arm64'"
 INSTALL_REQUIRES += [
     # required by isaaclab.isaaclab.controllers.pink_ik
-    f"pin-pink==3.1.0 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS_ARM})",
-    f"daqp==0.7.2 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS_ARM})",
+    f"pin-pink==3.1.0 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS})",
     # required by isaaclab.devices.openxr.retargeters.humanoid.fourier.gr1_t2_dex_retargeting_utils
     f"dex-retargeting==0.4.6 ; platform_system == 'Linux' and ({SUPPORTED_ARCHS})",
 ]
