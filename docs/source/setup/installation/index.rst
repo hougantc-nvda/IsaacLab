@@ -62,10 +62,8 @@ Drivers other than those recommended on `Omniverse Technical Requirements <https
 may work but have not been validated against all Omniverse tests.
 
 - Use the **latest NVIDIA production branch driver**.
-- On Linux, version ``580.65.06`` or later is recommended, especially when upgrading to
+- On Linux, version ``535.216.01`` or later is recommended, especially when upgrading to
   **Ubuntu 22.04.5 with kernel 6.8.0-48-generic** or newer.
-- On Spark, version ``580.95.05`` is recommended.
-- On Windows, version ``580.88`` is recommended.
 - If you are using a new GPU or encounter driver issues, install the latest production branch
   driver from the `Unix Driver Archive <https://www.nvidia.com/en-us/drivers/unix/>`_
   using the ``.run`` installer.
@@ -77,21 +75,17 @@ The DGX spark is a standalone machine learning device with aarch64 architecture.
 features of Isaac Lab are not currently supported on the DGX spark. The most noteworthy is that the architecture *requires* CUDA ≥ 13, and thus the cu13 build of PyTorch or newer.
 Other notable limitations with respect to Isaac Lab include...
 
-#. `SkillGen <https://isaac-sim.github.io/IsaacLab/main/source/overview/imitation-learning/skillgen.html>`_ is not supported out of the box. This
-   is because cuRobo builds native CUDA/C++ extensions that requires specific tooling and library versions which are not validated for use with DGX spark.
+#. `SkillGen <https://isaac-sim.github.io/IsaacLab/main/source/overview/imitation-learning/skillgen.html>`_ is not explicitly supported out of the box. This
+   is because cuRobo builds native CUDA/C++ extensions that requires specific tooling and library versions which may not have been explicitly documented
+   and validated for use with DGX spark. Use at your own risk!
 
 #. Extended reality teleoperation tools such as `OpenXR <https://isaac-sim.github.io/IsaacLab/release/2.3.0/source/api/lab/isaaclab.devices.html#openxr>`_ is not supported. This is due
    to encoding performance limitations that have not yet been fully investigated.
 
-#. SKRL training with `JAX <https://docs.jax.dev/en/latest/notebooks/thinking_in_jax.html>`_ has not been explicitly validated or tested in Isaac Lab on the DGX Spark.
-   JAX provides pre-built CUDA wheels only for Linux on x86_64, so on aarch64 systems (e.g., DGX Spark) it runs on CPU only by default.
-   GPU support requires building JAX from source, which has not been validated in Isaac Lab.
+#. SKRL training with `JAX <https://docs.jax.dev/en/latest/notebooks/thinking_in_jax.html>`_ has not been explicitly validated or tested in Isaac Lab on the DGX spark, and so this functionality may be limited or
+   different than expected out of the box.
 
 #. Livestream and Hub Workstation Cache are not supported on the DGX spark.
-
-#. Multi-node training may require direct connections between Spark machines or additional network configurations.
-
-#. :ref:`Running Cosmos Transfer1 <running-cosmos>` is not currently supported on the DGX Spark.
 
 Troubleshooting
 ~~~~~~~~~~~~~~~
