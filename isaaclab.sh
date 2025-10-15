@@ -104,32 +104,46 @@ is_arm() {
 ensure_cuda_torch() {
     local py="$1"
 
-    # read installed torch version (e.g., "2.7.0+cu128"), empty if missing
-    local v=""
-    if "$py" -m pip show torch >/dev/null 2>&1; then
-        v="$("$py" -m pip show torch 2>/dev/null | awk -F': ' '/^Version/{print $2}')"
-        echo "[INFO] Found PyTorch version ${v}."
+    # base indexes per arch
+    local base_index_arm="https://download.pytorch.org/whl/test"
+    local base_index_x86="https://download.pytorch.org/whl"
+
+    # choose pins per arch
+    local torch_ver tv_ver cuda_ver
+    if is_arm; then
+        torch_ver="2.9.0"
+        tv_ver="0.24.0"
+        cuda_ver="130"
+    else
+        torch_ver="2.7.0"
+        tv_ver="0.22.0"
+        cuda_ver="128"
     fi
 
+    local index
     if is_arm; then
-        # ARM wants cu130 nightly
-        if [[ "$v" != *"+cu130" ]]; then
-            echo "[INFO] Installing PyTorch (nightly cu130, ARM)..."
-            "$py" -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
-            "$py" -m pip install -U --pre --index-url https://download.pytorch.org/whl/nightly/cu130 torch torchvision
-        else
-            echo "[INFO] PyTorch already has +cu130."
-        fi
+        index="${base_index_arm}/cu${cuda_ver}"
     else
-        # x86_64 path: keep pinned stable versions on cu128
-        if [[ "$v" != "2.7.0+cu128" ]]; then
-            echo "[INFO] Installing PyTorch 2.7.0 + torchvision 0.22.0 (cu128)..."
-            "$py" -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
-            "$py" -m pip install -U --index-url https://download.pytorch.org/whl/cu128 torch==2.7.0 torchvision==0.22.0
-        else
-            echo "[INFO] PyTorch 2.7.0+cu128 already installed."
-        fi
+        index="${base_index_x86}/cu${cuda_ver}"
     fi
+
+    local want_torch="${torch_ver}+cu${cuda_ver}"
+
+    # check current torch version (may be empty)
+    local cur=""
+    if "$py" -m pip show torch >/dev/null 2>&1; then
+        cur="$("$py" -m pip show torch 2>/dev/null | awk -F': ' '/^Version/{print $2}')"
+    fi
+
+    # skip install if version is already satisfied
+    if [[ "$cur" == "$want_torch" ]]; then
+        return 0
+    fi
+
+    # clean install torch
+    echo "[INFO] Installing torch==${torch_ver} and torchvision==${tv_ver} (cu${cuda_ver}) from ${index}..."
+    "$py" -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
+    "$py" -m pip install -U --index-url "${index}" "torch==${torch_ver}" "torchvision==${tv_ver}"
 }
 
 # extract isaac sim path
@@ -226,6 +240,65 @@ install_isaaclab_extension() {
     fi
 }
 
+# Resolve Torch-bundled libgomp and prepend to LD_PRELOAD, once per shell session
+write_torch_gomp_hooks() {
+  mkdir -p "${CONDA_PREFIX}/etc/conda/activate.d" "${CONDA_PREFIX}/etc/conda/deactivate.d"
+
+  # activation: resolve Torch's libgomp via this env's Python and prepend to LD_PRELOAD
+  cat > "${CONDA_PREFIX}/etc/conda/activate.d/torch_gomp.sh" <<'EOS'
+# Resolve Torch-bundled libgomp and prepend to LD_PRELOAD (quiet + idempotent)
+: "${_IL_PREV_LD_PRELOAD:=${LD_PRELOAD-}}"
+
+__gomp="$("$CONDA_PREFIX/bin/python" - <<'PY' 2>/dev/null || true
+import pathlib
+try:
+    import torch
+    p = pathlib.Path(torch.__file__).parent / 'lib' / 'libgomp.so.1'
+    print(p if p.exists() else "", end="")
+except Exception:
+    pass
+PY
+)"
+
+if [ -n "$__gomp" ] && [ -r "$__gomp" ]; then
+  case ":${LD_PRELOAD:-}:" in
+    *":$__gomp:"*) : ;;  # already present
+    *) export LD_PRELOAD="$__gomp${LD_PRELOAD:+:$LD_PRELOAD}";;
+  esac
+fi
+unset __gomp
+EOS
+
+  # deactivation: restore original LD_PRELOAD
+  cat > "${CONDA_PREFIX}/etc/conda/deactivate.d/torch_gomp_unset.sh" <<'EOS'
+# restore LD_PRELOAD to pre-activation value
+if [ -v _IL_PREV_LD_PRELOAD ]; then
+  export LD_PRELOAD="$_IL_PREV_LD_PRELOAD"
+  unset _IL_PREV_LD_PRELOAD
+fi
+EOS
+}
+
+# Temporarily unset LD_PRELOAD (ARM only) for a block of commands
+begin_arm_install_sandbox() {
+    if is_arm && [[ -n "${LD_PRELOAD:-}" ]]; then
+        export _IL_SAVED_LD_PRELOAD="$LD_PRELOAD"
+        unset LD_PRELOAD
+        echo "[INFO] ARM install sandbox: temporarily unsetting LD_PRELOAD for installation."
+    fi
+    # ensure we restore even if a command fails (set -e)
+    trap 'end_arm_install_sandbox' EXIT
+}
+
+end_arm_install_sandbox() {
+    if [[ -n "${_IL_SAVED_LD_PRELOAD:-}" ]]; then
+        export LD_PRELOAD="$_IL_SAVED_LD_PRELOAD"
+        unset _IL_SAVED_LD_PRELOAD
+    fi
+    # remove trap so later exits don’t re-run restore
+    trap - EXIT
+}
+
 # setup anaconda environment for Isaac Lab
 setup_conda_env() {
     # get environment name from input
@@ -290,6 +363,7 @@ setup_conda_env() {
         'export RESOURCE_NAME="IsaacSim"' \
         '' > ${CONDA_PREFIX}/etc/conda/activate.d/setenv.sh
 
+    write_torch_gomp_hooks
     # check if we have _isaac_sim directory -> if so that means binaries were installed.
     # we need to setup conda variables to load the binaries
     local isaacsim_setup_conda_env_script=${ISAACLAB_PATH}/_isaac_sim/setup_conda_env.sh
@@ -398,8 +472,12 @@ while [[ $# -gt 0 ]]; do
             # install the python packages in IsaacLab/source directory
             echo "[INFO] Installing extensions inside the Isaac Lab repository..."
             python_exe=$(extract_python_exe)
-            # check if pytorch is installed and its version
-            # install pytorch with cuda 12.8 for blackwell support
+
+            # if on ARM arch, temporarily clear LD_PRELOAD
+            # LD_PRELOAD is restored below, after installation
+            begin_arm_install_sandbox
+
+            # install pytorch (version based on arch)
             ensure_cuda_torch ${python_exe}
             # recursively look into directories and install them
             # this does not check dependencies between extensions
@@ -429,6 +507,10 @@ while [[ $# -gt 0 ]]; do
             # in some rare cases, torch might not be installed properly by setup.py, add one more check here
             # can prevent that from happening
             ensure_cuda_torch ${python_exe}
+
+            # restore LD_PRELOAD if we cleared it
+            end_arm_install_sandbox
+
             # check if we are inside a docker container or are building a docker image
             # in that case don't setup VSCode since it asks for EULA agreement which triggers user interaction
             if is_docker; then
@@ -482,6 +564,7 @@ while [[ $# -gt 0 ]]; do
             if [ -n "${CONDA_DEFAULT_ENV}" ]; then
                 export PYTHONPATH=${cache_pythonpath}
             fi
+
             shift # past argument
             # exit neatly
             break
