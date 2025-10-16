@@ -195,13 +195,13 @@
   },
   {
     "package": "cmeel-boost",
-    "license": "BSL-1.0",
+    "license": "UNKNOWN",
     "comment": "BSL"
   },
   {
     "package": "cmeel-console-bridge",
-    "license": "Zlib",
-    "comment": "ZLIBL"
+    "license": "UNKNOWN",
+    "comment": "BSD"
   },
   {
     "package": "cmeel-octomap",
@@ -215,7 +215,7 @@
   },
   {
     "package": "cmeel-tinyxml",
-    "license": "Zlib",
+    "license": "UNKNOWN",
     "comment": "ZLIBL"
   },
   {
@@ -225,7 +225,7 @@
   },
   {
     "package": "cmeel-zlib",
-    "license": "Zlib",
+    "license": "UNKNOWN",
     "comment": "ZLIBL"
   },
   {
@@ -293,7 +293,7 @@
   },
   {
     "package": "filelock",
-    "license": "Unlicense",
+    "license": "The Unlicense (Unlicense)",
     "comment": "no condition"
   },
   {
@@ -435,10 +435,5 @@
     "package": "onnx-ir",
     "license": "UNKNOWN",
     "comment": "Apache 2.0"
-  },
-  {
-    "package": "matplotlib-inline",
-    "license": "UNKNOWN",
-    "comment": "BSD-3"
   }
 ]
