@@ -164,7 +164,6 @@ autodoc_mock_imports = [
     "isaacsim.core.api",
     "isaacsim.core.cloner",
     "isaacsim.core.version",
-    "isaacsim.core.utils",
     "isaacsim.robot_motion.motion_generation",
     "isaacsim.gui.components",
     "isaacsim.asset.importer.urdf",
