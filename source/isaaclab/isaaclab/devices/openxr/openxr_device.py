@@ -120,6 +120,7 @@ class OpenXRDevice(DeviceBase):
             self.__xr_anchor_headset_path = "/World/XRAnchor"
 
         self.__anchor_prim_initial_quat = None
+        self.__anchor_prim_initial_height = None
         self.__smoothed_anchor_quat = None  # For FOLLOW_PRIM_SMOOTHED mode
 
         xr_anchor_headset = SingleXFormPrim(
@@ -205,6 +206,8 @@ class OpenXRDevice(DeviceBase):
         self._previous_headpose = default_pose.copy()
 
         self.__anchor_prim_initial_quat = None
+        self.__anchor_prim_initial_height = None
+        self.__smoothed_anchor_quat = None
 
     def add_callback(self, key: str, func: Callable):
         """Add additional functions to bind to client messages.
@@ -368,6 +371,13 @@ class OpenXRDevice(DeviceBase):
 
         if self.__anchor_prim_initial_quat is None:
             self.__anchor_prim_initial_quat = rt_matrix.ExtractRotationQuat()
+
+        # For comfort, we keep the anchor at a constant height instead of bobbing up and down when following robot joint.
+        # We will need to update this value when robot crouches/stands.
+        if self.__anchor_prim_initial_height is None:
+            self.__anchor_prim_initial_height = rt_pos[2]
+
+        rt_pos[2] = self.__anchor_prim_initial_height
 
         pxr_anchor_pos = pxrGf.Vec3d(*rt_pos) + pxrGf.Vec3d(*self._xr_cfg.anchor_pos)
 

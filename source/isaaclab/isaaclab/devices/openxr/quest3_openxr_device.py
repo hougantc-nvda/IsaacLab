@@ -19,8 +19,8 @@ from isaaclab.devices.retargeter_base import RetargeterBase
 
 from .openxr_device import OpenXRDevice, OpenXRDeviceCfg
 
-#with contextlib.suppress(ModuleNotFoundError):
-from omni.kit.xr.core import XRCore, XRInputDevice
+with contextlib.suppress(ModuleNotFoundError):
+    from omni.kit.xr.core import XRCore, XRInputDevice
 
 # Extend TrackingTarget enum for controllers
 from enum import Enum

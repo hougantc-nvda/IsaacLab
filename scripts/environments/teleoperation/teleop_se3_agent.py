@@ -240,7 +240,7 @@ def main() -> None:
                     # process actions
                     actions = action.repeat(env.num_envs, 1)
                     # apply actions
-                    env.step(actions)
+                    env.step(actions, teleop_interface)
                 else:
                     env.sim.render()
 
