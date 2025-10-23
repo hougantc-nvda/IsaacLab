@@ -227,9 +227,27 @@ def main() -> None:
 
     print("Teleoperation started. Press 'R' to reset the environment.")
 
+    last_a_button_click = 0
+
+    def update_toggle_rotation() -> None:
+        from omni.kit.xr.core import XRCore
+        nonlocal last_a_button_click
+        nonlocal teleop_interface
+        right_input_device = XRCore.get_singleton().get_input_device("/user/hand/right")
+        if right_input_device and right_input_device.has_input_gesture("a", "click"):
+            a_button = right_input_device.get_input_gesture_value("a", "click")
+            if a_button == 1:
+                if last_a_button_click != a_button:
+                    teleop_interface.update_rotation = not teleop_interface.update_rotation
+                    print(f"Rotation updated to: {teleop_interface.update_rotation}")
+
+            last_a_button_click = a_button
+
     # simulate environment
     while simulation_app.is_running():
         try:
+            update_toggle_rotation()
+            
             # run everything in inference mode
             with torch.inference_mode():
                 # get device command

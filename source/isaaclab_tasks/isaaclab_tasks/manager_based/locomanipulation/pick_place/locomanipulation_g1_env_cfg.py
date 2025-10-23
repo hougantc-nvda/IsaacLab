@@ -214,10 +214,6 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
         self.xr.anchor_prim_path = "/World/envs/env_0/Robot/pelvis"
         self.xr.anchor_pos = (0.0, 0.0, -1.0)
 
-        # Rotate 180 degrees about the X-Axis.
-        # There is some conversion happening in the Isaac stack that requires it.
-        # https://docs.isaacsim.omniverse.nvidia.com/latest/reference_material/reference_conventions.html#default-camera-axes
-        self.xr.anchor_rot = (0.5, 1.0, 0.0, 0.0)
         self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED
 
         self.teleop_devices = DevicesCfg(

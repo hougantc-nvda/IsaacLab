@@ -5,6 +5,7 @@
 
 """OpenXR-powered device for teleoperation and interaction."""
 
+import math
 import torch
 import contextlib
 import numpy as np
@@ -122,6 +123,9 @@ class OpenXRDevice(DeviceBase):
         self.__anchor_prim_initial_quat = None
         self.__anchor_prim_initial_height = None
         self.__smoothed_anchor_quat = None  # For FOLLOW_PRIM_SMOOTHED mode
+
+        self.__last_anchor_quat = None
+        self.update_rotation = True
 
         xr_anchor_headset = SingleXFormPrim(
             self.__xr_anchor_headset_path, position=self._xr_cfg.anchor_pos, orientation=self._xr_cfg.anchor_rot
@@ -386,44 +390,45 @@ class OpenXRDevice(DeviceBase):
 
         pxr_anchor_quat = pxr_cfg_quat
 
-        if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
+
+        # XrAnchorRotationMode.FOLLOW_PRIM or XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED
+        if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM or self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED:
+            # Calculate the delta rotation between the prim and the initial rotation
             rt_prim_quat = rt_matrix.ExtractRotationQuat()
             rt_delta_quat = rt_prim_quat * self.__anchor_prim_initial_quat.GetInverse()
-
-            # Convert from usdrt to pxr quaternion.
-            w, imaginary = rt_delta_quat.GetReal(), rt_delta_quat.GetImaginary()
-            pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
-
-            pxr_anchor_quat = pxr_delta_quat * pxr_cfg_quat
-
-        elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED:
-            # Get target rotation (same as FOLLOW_PRIM)
-            rt_prim_quat = rt_matrix.ExtractRotationQuat()
-            rt_delta_quat = rt_prim_quat * self.__anchor_prim_initial_quat.GetInverse()
-
             # Convert from usdrt to pxr quaternion
-            w, imaginary = rt_delta_quat.GetReal(), rt_delta_quat.GetImaginary()
-            pxr_delta_quat = pxrGf.Quatd(w, pxrGf.Vec3d(*imaginary))
-            target_quat = pxr_delta_quat * pxr_cfg_quat
+            pxr_delta_quat = pxrGf.Quatd(rt_delta_quat.GetReal(), pxrGf.Vec3d(*rt_delta_quat.GetImaginary()))
 
-            # Initialize smoothed quaternion on first run
-            if self.__smoothed_anchor_quat is None:
-                self.__smoothed_anchor_quat = target_quat
-                pxr_anchor_quat = target_quat
-            else:
-                # Calculate smoothing alpha from time constant
-                # alpha = 1 - exp(-dt / time_constant)
-                # This gives exponential smoothing behavior
-                from isaaclab.sim import SimulationContext
-                import math
-                dt = SimulationContext.instance().get_physics_dt()
-                alpha = 1.0 - math.exp(-dt / max(self._xr_cfg.anchor_rotation_smoothing_time, 0.001))
-                alpha = max(0.0, min(1.0, alpha))  # Clamp to [0, 1]
+            # Only keep yaw rotation (assumes Z up axis):
+            w = pxr_delta_quat.GetReal()
+            ix, iy, iz = pxr_delta_quat.GetImaginary()
 
-                # Perform spherical linear interpolation (slerp)
-                # Use Gf.Slerp(alpha, quat_from, quat_to)
-                self.__smoothed_anchor_quat = pxrGf.Slerp(alpha, self.__smoothed_anchor_quat, target_quat)
-                pxr_anchor_quat = self.__smoothed_anchor_quat
+            # yaw around Z (right-handed, Z-up)
+            yaw = math.atan2(2.0 * (w*iz + ix*iy), 1.0 - 2.0 * (iy*iy + iz*iz))
+
+            # yaw-only quaternion about Z
+            cy = math.cos(yaw * 0.5)
+            sy = math.sin(yaw * 0.5)
+            pxr_delta_yaw_only_quat = pxrGf.Quatd(cy, pxrGf.Vec3d(0.0, 0.0, sy))
+            pxr_anchor_quat = pxr_delta_yaw_only_quat * pxr_cfg_quat
+
+            if self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED:
+                # Initialize smoothed quaternion on first run
+                if self.__smoothed_anchor_quat is None:
+                    self.__smoothed_anchor_quat = pxr_anchor_quat
+                else:
+                    # Calculate smoothing alpha from time constant using wall clock time
+                    # alpha = 1 - exp(-dt / time_constant)
+                    # This gives exponential smoothing behavior
+                    
+                    dt = SimulationContext.instance().get_physics_dt()
+                    alpha = 1.0 - math.exp(-dt / max(self._xr_cfg.anchor_rotation_smoothing_time, 0.001))
+                    alpha = max(0.01, min(1.0, alpha))  # Minimum 1% blend prevents very slow updates
+
+                    # Perform spherical linear interpolation (slerp)
+                    # Use Gf.Slerp(alpha, quat_from, quat_to)
+                    self.__smoothed_anchor_quat = pxrGf.Slerp(alpha, self.__smoothed_anchor_quat, pxr_anchor_quat)
+                    pxr_anchor_quat = self.__smoothed_anchor_quat
 
         elif self._xr_cfg.anchor_rotation_mode == XrAnchorRotationMode.CUSTOM:
             if self._xr_cfg.anchor_rotation_custom_func is not None:
@@ -439,7 +444,14 @@ class OpenXRDevice(DeviceBase):
 
         # Create the final matrix with combined rotation and adjusted position
         pxr_mat = pxrGf.Matrix4d()
-        pxr_mat.SetRotateOnly(pxr_anchor_quat)
-        pxr_mat.SetTranslateOnly(pxr_anchor_pos)        
+
+        if self.update_rotation:
+            pxr_mat.SetRotateOnly(pxr_anchor_quat)
+            self.__last_anchor_quat = pxr_anchor_quat
+        else:
+            pxr_mat.SetRotateOnly(self.__last_anchor_quat)
+            self.__smoothed_anchor_quat = self.__last_anchor_quat
+
+        pxr_mat.SetTranslateOnly(pxr_anchor_pos)
 
         XRCore.get_singleton().set_world_transform_matrix(self.__xr_anchor_headset_path, pxr_mat, self.__anchor_headset_layer_identifier)
