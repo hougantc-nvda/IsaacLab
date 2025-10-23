@@ -424,7 +424,7 @@ class ManagerBasedEnv:
         # return observations
         return self.obs_buf, self.extras
 
-    def step(self, action: torch.Tensor) -> tuple[VecEnvObs, dict]:
+    def step(self, action: torch.Tensor, teleop_interface) -> tuple[VecEnvObs, dict]:
         """Execute one time-step of the environment's dynamics.
 
         The environment steps forward at a fixed time-step, while the physics simulation is

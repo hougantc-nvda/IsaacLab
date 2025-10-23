@@ -151,7 +151,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
     Operations - MDP
     """
 
-    def step(self, action: torch.Tensor) -> VecEnvStepReturn:
+    def step(self, action: torch.Tensor, teleop_interface) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics and reset terminated environments.
 
         Unlike the :class:`ManagerBasedEnv.step` class, the function performs the following operations:
@@ -193,6 +193,8 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             # note: we assume the render interval to be the shortest accepted rendering interval.
             #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
             if self._sim_step_counter % self.cfg.sim.render_interval == 0 and is_rendering:
+                # TODO: HACK for PICO DEMO. Remove this once we have a proper way to sync the headset to the anchor.
+                teleop_interface._sync_headset_to_anchor()
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import numpy as np
-from pxr import UsdShade, Gf as pxrGf
+from pxr import UsdShade, Sdf, UsdGeom
 
 from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
@@ -256,7 +256,24 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
         )
 
     def on_environment_initialized(self):
-        if self.xr.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM:
+        stage = get_current_stage()
+
+        inst_root_path = "/World/envs/env_0/Robot/torso_link/visuals"
+        target_path    = "/World/envs/env_0/Robot/torso_link/visuals/head_link/mesh"
+
+        inst_root = stage.GetPrimAtPath(inst_root_path)
+        if inst_root:
+            # Uninstance this robot's visuals so children are editable
+            if inst_root.IsInstance():
+                with Sdf.ChangeBlock():
+                    inst_root.SetInstanceable(False)
+
+        # Now hide the head mesh on this instance only
+        target = stage.GetPrimAtPath(target_path)
+        if target:
+            UsdGeom.Imageable(target).MakeInvisible()
+
+        if self.xr.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM or self.xr.anchor_rotation_mode == XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED:
             stage = get_current_stage()
             # Change the material of the ground plane for comfort when we are using FOLLOW_PRIM.
             ground_prim = stage.GetPrimAtPath("/World/GroundPlane/Environment/Geometry")
