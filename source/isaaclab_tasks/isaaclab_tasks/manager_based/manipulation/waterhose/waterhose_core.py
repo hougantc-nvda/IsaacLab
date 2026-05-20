@@ -2610,13 +2610,28 @@ def _define_missing_kit_body_prims(stage, builder) -> None:
 
 
 def configure_newton_viewer(sim) -> None:
-    """Enable useful interaction and contact display in the Newton viewer."""
+    """Enable useful interaction and debug geometry in the Newton viewer."""
+    visualizer_types = set(sim.resolve_visualizer_types()) if hasattr(sim, "resolve_visualizer_types") else set()
+    if "newton" in visualizer_types and not sim.visualizers and hasattr(sim, "initialize_visualizers"):
+        sim.initialize_visualizers()
+
     for visualizer in sim.visualizers:
         viewer = getattr(visualizer, "_viewer", None)
         if viewer is None:
             continue
         if hasattr(viewer, "show_contacts"):
             viewer.show_contacts = True
+        # The RBY1DF is imported into Newton with URDF visuals hidden because
+        # Kit owns the pretty robot USD. In the native Newton viewer, collision
+        # geometry is therefore the only way to see the robot and static scene.
+        if hasattr(viewer, "show_collision"):
+            viewer.show_collision = True
+        if hasattr(viewer, "show_static"):
+            viewer.show_static = True
+        if hasattr(viewer, "show_visual"):
+            viewer.show_visual = True
+        if hasattr(viewer, "show_triangles"):
+            viewer.show_triangles = True
         if hasattr(viewer, "picking_enabled"):
             viewer.picking_enabled = True
         if hasattr(viewer, "set_camera"):
