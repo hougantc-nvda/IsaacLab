@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from newton import Model
+from newton.solvers.coupled_experimental import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.physics import PhysicsManager
 
-from .coupled_solvers import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
 from .coupled_manager_cfg import (
     AdmmContactPairCfg,
     AdmmCouplingCfg,

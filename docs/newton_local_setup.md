@@ -21,14 +21,9 @@ e9851d3e11ad35e879e818c789570eb4fa5b0264
 
 ## Runtime Wiring
 
-The coupling manager no longer requires installing Newton PR 2848. Isaac Lab imports coupled solver classes through `isaaclab_newton.physics.coupled_solvers`:
+The coupling manager uses Newton PR 2848 directly. Isaac Lab imports coupled solver classes from `newton.solvers.coupled_experimental`, and `source/isaaclab_newton/setup.py` pins `newton[sim]` to the verified PR commit above.
 
-- If normal Newton provides `newton.solvers.coupled_experimental`, Isaac Lab uses the upstream Newton implementation.
-- Otherwise Isaac Lab falls back to the vendored compatibility copy in `isaaclab_newton.physics._coupled_solvers`.
-
-The fallback currently carries the Newton PR 2848 coupled solver package plus a small implicit-MPM proxy-body hook shim. The package dependency is back on the normal Newton `v1.2.0` pin used by the other Newton extras.
-
-When PR 2848 lands in the Newton release Isaac Lab targets, remove `isaaclab_newton.physics._coupled_solvers` and keep `isaaclab_newton.physics.coupled_solvers` as the single import location, or inline its upstream imports if no fallback is needed.
+There is no vendored coupled solver fallback in this worktree. If PR 2848 changes, update the Newton pin and the local `/home/maximiliank/Work/newton` checkout together.
 
 ## Worktree Rule
 

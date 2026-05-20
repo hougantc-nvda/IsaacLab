@@ -54,7 +54,12 @@ from isaaclab_newton.physics import (
     XPBDSolverCfg,
 )
 from newton.solvers import SolverFeatherstone, SolverImplicitMPM, SolverKamino, SolverMuJoCo, SolverXPBD
-from isaaclab_newton.physics.coupled_solvers import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
+try:
+    from newton.solvers.coupled_experimental import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
+except ImportError:
+    SolverAdmmCoupled = None
+    SolverCoupled = None
+    SolverProxyCoupled = None
 
 from isaaclab.sim import SimulationCfg, build_simulation_context
 
