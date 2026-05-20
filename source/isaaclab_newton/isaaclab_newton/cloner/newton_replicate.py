@@ -26,7 +26,7 @@ def _build_newton_builder_from_mapping(
     quaternions: torch.Tensor | None = None,
     up_axis: str = "Z",
     simplify_meshes: bool = True,
-) -> tuple[ModelBuilder, object, dict]:
+) -> tuple[ModelBuilder, object, dict, dict[str, ModelBuilder]]:
     """Build a Newton model builder from clone mapping inputs.
 
     Args:
@@ -42,7 +42,8 @@ def _build_newton_builder_from_mapping(
     Returns:
         Tuple of the populated Newton model builder, stage metadata returned
         by ``add_usd``, and a site index map for
-        :attr:`NewtonManager._cl_site_index_map`.
+        :attr:`NewtonManager._cl_site_index_map`, plus the prototype builders
+        keyed by clone source path.
     """
     if positions is None:
         positions = torch.zeros((mapping.size(1), 3), device=mapping.device, dtype=torch.float32)
@@ -115,7 +116,7 @@ def _build_newton_builder_from_mapping(
         **{label: (None, per_world) for label, per_world in local_site_map.items()},
     }
 
-    return builder, stage_info, site_index_map
+    return builder, stage_info, site_index_map, protos
 
 
 # Built-in label arrays that ``_rename_builder_labels`` rewrites in Pass 1.
@@ -254,7 +255,7 @@ def newton_physics_replicate(
     Returns:
         Tuple of the populated Newton model builder and stage metadata.
     """
-    builder, stage_info, site_index_map = _build_newton_builder_from_mapping(
+    builder, stage_info, site_index_map, protos = _build_newton_builder_from_mapping(
         stage=stage,
         sources=sources,
         env_ids=env_ids,
@@ -266,6 +267,7 @@ def newton_physics_replicate(
     )
     _rename_builder_labels(builder, sources, destinations, env_ids, mapping)
     NewtonManager._cl_site_index_map = site_index_map
+    NewtonManager.register_prototype_builders(sources, destinations, protos)
     NewtonManager.set_builder(builder)
     NewtonManager._num_envs = mapping.size(1)
     return builder, stage_info
@@ -303,7 +305,7 @@ def newton_visualizer_prebuild(
     Returns:
         Tuple of finalized Newton model and state.
     """
-    builder, _, _site_index_map = _build_newton_builder_from_mapping(
+    builder, _, _site_index_map, _protos = _build_newton_builder_from_mapping(
         stage=stage,
         sources=sources,
         env_ids=env_ids,

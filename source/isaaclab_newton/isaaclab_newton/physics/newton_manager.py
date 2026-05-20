@@ -11,8 +11,10 @@ import contextlib
 import ctypes
 import inspect
 import logging
+import os
 from abc import abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,6 +54,18 @@ if TYPE_CHECKING:
     from .newton_collision_cfg import NewtonCollisionPipelineCfg
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NewtonPrototypeModelInfo:
+    """Cached Newton prototype model built before physics replication."""
+
+    source_path: str
+    destination_path: str
+    builder: ModelBuilder
+    model: Model | None = None
+    model_device: object | None = None
+
 
 # Tagged union for entries in _cl_site_index_map.
 # _GlobalSite: (global_shape_idx, None)           — body_pattern was None
@@ -187,6 +201,7 @@ class NewtonManager(PhysicsManager):
     # Newton model and state
     _builder: ModelBuilder = None
     _model: Model = None
+    _prototype_models: dict[str, NewtonPrototypeModelInfo] = {}
     _solver: SolverBase | None = None
     _use_single_state: bool | None = None
     """Use only one state for both input and output for solver stepping. Requires solver support."""
@@ -251,6 +266,10 @@ class NewtonManager(PhysicsManager):
     # frame in :meth:`update_visualization_state`.
     _visualization_scene_data: SceneDataFormat.Transform | None = None
     _visualization_mapping: wp.array | None = None
+    _visualization_debug_counter: int = 0
+    _visualization_debug_prev_body_q = None
+    _usd_sync_debug_counter: int = 0
+    _usd_sync_debug_prev_body_q = None
 
     # Views list for assets to register their views
     _views: list = []
@@ -294,6 +313,12 @@ class NewtonManager(PhysicsManager):
 
             cameras_enabled = bool(get_settings_manager().get("/isaaclab/cameras_enabled", False))
             cls._clone_physics_only = "kit" not in requested and not cameras_enabled
+            if "newton" in requested and PhysicsManager._cfg is not None and PhysicsManager._cfg.use_cuda_graph:
+                logger.info(
+                    "Disabling Newton CUDA graph capture while the standalone Newton visualizer is active. "
+                    "ViewerGL uses CUDA/OpenGL interop on the same context and must run against eager physics state."
+                )
+                PhysicsManager._cfg.use_cuda_graph = False
 
         cls._scene_data_backend = NewtonSceneDataBackend()
 
@@ -375,6 +400,20 @@ class NewtonManager(PhysicsManager):
         try:
             import usdrt
 
+            # Kit/Fabric rendering consumes body_q. Some Newton solvers advance
+            # joint coordinates without refreshing link transforms, so
+            # materialize FK for generic FK-owned articulations before writing
+            # Fabric matrices. Coupled solver-owned articulations stay excluded
+            # through the optional FK articulation filter.
+            eval_fk(
+                cls._model,
+                cls._state_0.joint_q,
+                cls._state_0.joint_qd,
+                cls._state_0,
+                cls._fk_articulation_filter,
+            )
+            body_delta = cls._debug_usd_sync_body_delta()
+
             body_paths = getattr(cls._model, "body_label", None) or getattr(cls._model, "body_key", None)
             if body_paths is not None:
                 cls._sync_transforms_to_usd_xform_ops(body_paths)
@@ -417,6 +456,7 @@ class NewtonManager(PhysicsManager):
                     device=str(PhysicsManager._device),
                 )
                 if selection.GetCount() == 0:
+                    cls._debug_usd_sync(selection_count=0, body_delta=body_delta)
                     NewtonManager._transforms_dirty = False
                     return
 
@@ -424,6 +464,7 @@ class NewtonManager(PhysicsManager):
                 # to change. Without this, USDRT attributes read back correctly
                 # but Kit can keep rendering stale rigid-body transforms.
                 selection.PrepareForReuse()
+                cls._debug_usd_sync(selection_count=selection.GetCount(), body_delta=body_delta)
 
                 fabric_transforms = wp.fabricarray(selection, "omni:fabric:worldMatrix")
                 newton_indices = wp.fabricarray(selection, cls._newton_index_attr)
@@ -644,6 +685,11 @@ class NewtonManager(PhysicsManager):
         NewtonManager._up_axis = "Z"
         NewtonManager._visualization_scene_data = None
         NewtonManager._visualization_mapping = None
+        NewtonManager._visualization_debug_counter = 0
+        NewtonManager._visualization_debug_prev_body_q = None
+        NewtonManager._usd_sync_debug_counter = 0
+        NewtonManager._usd_sync_debug_prev_body_q = None
+        NewtonManager._prototype_models = {}
         NewtonManager._model_changes = set()
         NewtonManager._scene_data_backend = None
         NewtonManager._cl_pending_sites = {}
@@ -656,6 +702,93 @@ class NewtonManager(PhysicsManager):
     def set_builder(cls, builder: ModelBuilder) -> None:
         """Set the Newton model builder."""
         NewtonManager._builder = builder
+
+    @classmethod
+    def register_prototype_builders(
+        cls,
+        sources: list[str] | tuple[str, ...],
+        destinations: list[str] | tuple[str, ...],
+        proto_builders: dict[str, ModelBuilder],
+    ) -> None:
+        """Register prototype builders created before Newton physics replication.
+
+        Prototype builders preserve the single-source model that is later added
+        into each replicated Newton world. Controllers that need a single-model
+        representation, such as batched Newton IK, should use this registry
+        instead of re-importing USD after the scene has already been built.
+        """
+        NewtonManager._prototype_models = {}
+        for index, source_path in enumerate(sources):
+            builder = proto_builders.get(source_path)
+            if builder is None:
+                continue
+            destination_path = destinations[index] if index < len(destinations) else destinations[-1]
+            NewtonManager._prototype_models[source_path] = NewtonPrototypeModelInfo(
+                source_path=source_path,
+                destination_path=destination_path,
+                builder=builder,
+            )
+
+    @staticmethod
+    def _to_first_env_path(path: str) -> str:
+        """Convert common Isaac Lab env regex/template paths to env_0 paths."""
+        return (
+            path.replace("env_.*", "env_0")
+            .replace("env_\\d+", "env_0")
+            .replace("env_*", "env_0")
+            .replace("env_{}", "env_0")
+        )
+
+    @classmethod
+    def get_prototype_model(cls, prim_path: str) -> NewtonPrototypeModelInfo:
+        """Return the prototype model that owns ``prim_path``.
+
+        Args:
+            prim_path: Live Isaac Lab prim path or env-regex path, such as
+                ``/World/envs/env_.*/Robot``.
+
+        Returns:
+            Prototype model information with ``model`` finalized on the active
+            Newton device.
+
+        Raises:
+            RuntimeError: If no prototype builders have been registered.
+            KeyError: If ``prim_path`` does not resolve to a registered prototype.
+            ValueError: If multiple registered prototypes match equally well.
+        """
+        if not NewtonManager._prototype_models:
+            raise RuntimeError(
+                "No Newton prototype builders are registered. Prototype access is only available after "
+                "Newton physics replication has built the scene."
+            )
+
+        requested_path = cls._to_first_env_path(prim_path)
+        matches: list[NewtonPrototypeModelInfo] = []
+        for info in NewtonManager._prototype_models.values():
+            source_path = cls._to_first_env_path(info.source_path)
+            destination_path = cls._to_first_env_path(info.destination_path)
+            if requested_path in (source_path, destination_path) or requested_path.startswith(
+                (source_path + "/", destination_path + "/")
+            ):
+                matches.append(info)
+
+        if not matches:
+            available = ", ".join(sorted(NewtonManager._prototype_models))
+            raise KeyError(f"No Newton prototype model matches '{prim_path}'. Available prototypes: {available}")
+
+        matches.sort(key=lambda item: len(cls._to_first_env_path(item.source_path)), reverse=True)
+        if len(matches) > 1:
+            best_len = len(cls._to_first_env_path(matches[0].source_path))
+            if len(cls._to_first_env_path(matches[1].source_path)) == best_len:
+                paths = ", ".join(match.source_path for match in matches)
+                raise ValueError(f"Ambiguous Newton prototype model for '{prim_path}'. Matches: {paths}")
+
+        info = matches[0]
+        device = cls._model.device if cls._model is not None else None
+        if info.model is None or info.model_device != device:
+            info.model = info.builder.finalize(device=device)
+            info.model_device = device
+        return info
 
     @classmethod
     def create_builder(cls, up_axis: str | None = None, **kwargs) -> ModelBuilder:
@@ -1152,6 +1285,7 @@ class NewtonManager(PhysicsManager):
                 root_path=proto_path,
                 schema_resolvers=schema_resolvers,
             )
+            cls.register_prototype_builders((proto_path,), (proto_path,), {proto_path: proto})
 
             # Inject registered sites into the proto before replication
             global_sites, proto_sites = cls._cl_inject_sites(builder, {proto_path: proto})
@@ -2200,6 +2334,9 @@ class NewtonManager(PhysicsManager):
         coordinate the sync explicitly.
         """
         if cls._backend_is_newton():
+            if cls._model is not None and cls._state_0 is not None:
+                eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, None)
+                cls._debug_visualization_state("newton")
             return
         cls._ensure_visualization_model()
         if cls._state_0 is None or cls._model is None or cls._state_0.body_q is None:
@@ -2220,6 +2357,88 @@ class NewtonManager(PhysicsManager):
             cls._visualization_scene_data,
             mapping=cls._visualization_mapping,
             allow_passthrough=False,
+        )
+        cls._debug_visualization_state("physx-shadow")
+
+    @classmethod
+    def _debug_visualization_state(cls, source: str) -> None:
+        """Print opt-in visualization state diagnostics."""
+        if not os.getenv("ISAACLAB_NEWTON_VIS_DEBUG"):
+            return
+        if cls._state_0 is None or cls._model is None or cls._state_0.body_q is None:
+            return
+
+        interval_raw = os.getenv("ISAACLAB_NEWTON_VIS_DEBUG_INTERVAL", "30")
+        try:
+            interval = max(1, int(interval_raw))
+        except ValueError:
+            interval = 30
+
+        NewtonManager._visualization_debug_counter += 1
+        if NewtonManager._visualization_debug_counter % interval != 0:
+            return
+
+        body_q = wp.to_torch(cls._state_0.body_q)
+        joint_q = wp.to_torch(cls._state_0.joint_q) if cls._state_0.joint_q is not None else None
+
+        if NewtonManager._visualization_debug_prev_body_q is None:
+            body_delta = float("nan")
+        else:
+            body_delta = float((body_q - NewtonManager._visualization_debug_prev_body_q).abs().max().item())
+        NewtonManager._visualization_debug_prev_body_q = body_q.detach().clone()
+
+        body_labels = list(getattr(cls._model, "body_label", None) or [])
+        body_label = body_labels[0] if body_labels else "<none>"
+        body_sample = body_q[0].detach().cpu().tolist() if body_q.numel() > 0 else []
+        if joint_q is not None and joint_q.numel() > 0:
+            joint_sample = joint_q[: min(8, joint_q.numel())].detach().cpu().tolist()
+        else:
+            joint_sample = []
+
+        print(
+            "[Newton vis debug] "
+            f"source={source} bodies={body_q.shape[0]} joints={0 if joint_q is None else joint_q.numel()} "
+            f"max_body_delta={body_delta:.6g} first_body={body_label} "
+            f"first_body_q={body_sample} joint_q_sample={joint_sample}",
+            flush=True,
+        )
+
+    @classmethod
+    def _debug_usd_sync_body_delta(cls) -> float:
+        """Return body transform delta for opt-in Kit/Fabric sync diagnostics."""
+        if not os.getenv("ISAACLAB_NEWTON_USD_SYNC_DEBUG"):
+            return float("nan")
+        if cls._state_0 is None or cls._state_0.body_q is None:
+            return float("nan")
+        body_q = wp.to_torch(cls._state_0.body_q)
+        if NewtonManager._usd_sync_debug_prev_body_q is None:
+            body_delta = float("nan")
+        else:
+            body_delta = float((body_q - NewtonManager._usd_sync_debug_prev_body_q).abs().max().item())
+        NewtonManager._usd_sync_debug_prev_body_q = body_q.detach().clone()
+        return body_delta
+
+    @classmethod
+    def _debug_usd_sync(cls, *, selection_count: int, body_delta: float) -> None:
+        """Print opt-in Kit/Fabric sync diagnostics."""
+        if not os.getenv("ISAACLAB_NEWTON_USD_SYNC_DEBUG"):
+            return
+
+        interval_raw = os.getenv("ISAACLAB_NEWTON_USD_SYNC_DEBUG_INTERVAL", "30")
+        try:
+            interval = max(1, int(interval_raw))
+        except ValueError:
+            interval = 30
+
+        NewtonManager._usd_sync_debug_counter += 1
+        if NewtonManager._usd_sync_debug_counter % interval != 0:
+            return
+
+        print(
+            "[Newton USD sync debug] "
+            f"selection_count={selection_count} max_body_delta={body_delta:.6g} "
+            f"transforms_dirty={cls._transforms_dirty}",
+            flush=True,
         )
 
     @classmethod
