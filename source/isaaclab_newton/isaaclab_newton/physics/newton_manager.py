@@ -1512,7 +1512,8 @@ class NewtonManager(PhysicsManager):
         state_1_snapshot.assign(state_1_ref)
 
         try:
-            cls._simulate_physics_only()
+            simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
+            simulate()
             wp.synchronize_device()
         finally:
             NewtonManager._state_0 = state_0_ref

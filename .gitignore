@@ -13,6 +13,8 @@
 **/*.usda
 **/*.usdc
 **/*.usdz
+!source/isaaclab_assets/data/Props/Waterhose/cable001.usda
+!source/isaaclab_assets/data/Props/Waterhose/cable002.usda
 
 # Python
 .DS_Store
@@ -82,6 +84,8 @@ _build
 
 # Dev-time files, generated stuff
 **/__*
+!**/__init__.py
+!**/__init__.pyi
 
 # Isaac Lab CI environments in native mode
 **/_isaaclab_install_ci_*
