@@ -54,13 +54,7 @@ from isaaclab_newton.physics import (
     XPBDSolverCfg,
 )
 from newton.solvers import SolverFeatherstone, SolverImplicitMPM, SolverKamino, SolverMuJoCo, SolverXPBD
-
-try:
-    from newton.solvers.coupled_experimental import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
-except ImportError:
-    SolverAdmmCoupled = None
-    SolverCoupled = None
-    SolverProxyCoupled = None
+from isaaclab_newton.physics.coupled_solvers import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
 
 from isaaclab.sim import SimulationCfg, build_simulation_context
 
@@ -144,7 +138,6 @@ SOLVER_MATRIX = [
         SolverCoupled,
         False,
         True,
-        marks=pytest.mark.skipif(SolverCoupled is None, reason="Newton SolverCoupled is unavailable"),
         id="base_coupled_xpbd_body_particle",
     ),
     pytest.param(
@@ -182,7 +175,6 @@ SOLVER_MATRIX = [
         SolverProxyCoupled,
         False,
         True,
-        marks=pytest.mark.skipif(SolverProxyCoupled is None, reason="Newton SolverProxyCoupled is unavailable"),
         id="proxy_coupled_mjwarp_mpm",
     ),
     pytest.param(
@@ -208,7 +200,6 @@ SOLVER_MATRIX = [
         SolverAdmmCoupled,
         False,
         False,
-        marks=pytest.mark.skipif(SolverAdmmCoupled is None, reason="Newton SolverAdmmCoupled is unavailable"),
         id="admm_coupled_xpbd_body_particle",
     ),
 ]

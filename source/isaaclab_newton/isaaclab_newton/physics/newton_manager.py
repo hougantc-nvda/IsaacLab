@@ -696,7 +696,7 @@ class NewtonManager(PhysicsManager):
 
             SolverImplicitMPM.register_custom_attributes(builder)
         if getattr(solver_cfg, "coupling_type", None) == "admm":
-            from newton.solvers.coupled_experimental import SolverAdmmCoupled
+            from .coupled_solvers import SolverAdmmCoupled
 
             SolverAdmmCoupled.register_custom_attributes(builder)
 

@@ -21,21 +21,14 @@ e9851d3e11ad35e879e818c789570eb4fa5b0264
 
 ## Runtime Wiring
 
-Install the local Newton checkout editable into the Isaac Lab Python environment before running coupled solver demos or tasks. This worktree currently does not have its own `_isaac_sim/` or `env_isaaclab/`, so validation used the existing Isaac Lab environment from the sibling `IsaacLab-ik` checkout:
+The coupling manager no longer requires installing Newton PR 2848. Isaac Lab imports coupled solver classes through `isaaclab_newton.physics.coupled_solvers`:
 
-```bash
-/home/maximiliank/Work/IsaacLab-ik/env_isaaclab/bin/python -m pip install -e /home/maximiliank/Work/newton
-```
+- If normal Newton provides `newton.solvers.coupled_experimental`, Isaac Lab uses the upstream Newton implementation.
+- Otherwise Isaac Lab falls back to the vendored compatibility copy in `isaaclab_newton.physics._coupled_solvers`.
 
-The coupling manager expects Newton PR 2848 APIs, especially:
+The fallback currently carries the Newton PR 2848 coupled solver package plus a small implicit-MPM proxy-body hook shim. The package dependency is back on the normal Newton `v1.2.0` pin used by the other Newton extras.
 
-- `newton.solvers.coupled_experimental.SolverCoupled`
-- `newton.solvers.coupled_experimental.SolverProxyCoupled`
-- `newton.solvers.coupled_experimental.SolverAdmmCoupled`
-- `SolverCoupled.Entry(..., configure_view=..., substeps=..., in_place=...)`
-- `SolverProxyCoupled.Proxy(..., bodies=..., particles=..., collision_pipeline=..., collide_interval=...)`
-- `SolverAdmmCoupled.ContactPair(...)`
-- `SolverAdmmCoupled.add_body_particle_attachment(...)`
+When PR 2848 lands in the Newton release Isaac Lab targets, remove `isaaclab_newton.physics._coupled_solvers` and keep `isaaclab_newton.physics.coupled_solvers` as the single import location, or inline its upstream imports if no fallback is needed.
 
 ## Worktree Rule
 
