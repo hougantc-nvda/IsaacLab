@@ -22,6 +22,54 @@ from .newton_manager import NewtonManager
 logger = logging.getLogger(__name__)
 
 
+def resolve_mujoco_solver_kwargs(solver_cfg: MJWarpSolverCfg) -> dict:
+    """Return constructor kwargs for ``SolverMuJoCo`` with Isaac Sim MuJoCo compatibility fixes."""
+    valid = set(inspect.signature(SolverMuJoCo.__init__).parameters) - {"self", "model"}
+    kwargs = {k: v for k, v in solver_cfg.to_dict().items() if k in valid}
+    _apply_multiccd_compat_default(kwargs, valid)
+    return kwargs
+
+
+def apply_mujoco_warp_model_overrides(solver: SolverMuJoCo, solver_cfg: MJWarpSolverCfg) -> None:
+    """Apply MuJoCo Warp model options that are not ``SolverMuJoCo`` constructor arguments."""
+    overrides = {}
+    if solver_cfg.broadphase is not None:
+        overrides["opt.broadphase"] = solver_cfg.broadphase
+    if solver_cfg.graph_conditional is not None:
+        overrides["opt.graph_conditional"] = solver_cfg.graph_conditional
+    if not overrides:
+        return
+
+    from mujoco_warp._src.io import override_model
+
+    override_model(solver.mjw_model, overrides)
+
+
+def _apply_multiccd_compat_default(kwargs: dict, valid: set[str]) -> None:
+    """Avoid missing ``mjDSBL_MULTICCD`` on MuJoCo builds bundled with some Isaac Sim versions."""
+    if "enable_multiccd" not in valid:
+        kwargs.pop("enable_multiccd", None)
+        return
+    if kwargs.get("enable_multiccd") is not None:
+        return
+    try:
+        import mujoco
+    except ImportError:
+        kwargs.pop("enable_multiccd", None)
+        return
+    missing_multiccd = not hasattr(mujoco.mjtDisableBit, "mjDSBL_MULTICCD")
+    if missing_multiccd and hasattr(mujoco.mjtDisableBit, "mjDSBL_NATIVECCD"):
+        # Some Isaac Sim MuJoCo builds omit the newer MULTICCD enum that
+        # mujoco_warp imports unconditionally.  Alias it before SolverMuJoCo
+        # imports mujoco_warp, then keep multi-CCD enabled so the alias is not
+        # used to disable native CCD.
+        setattr(mujoco.mjtDisableBit, "mjDSBL_MULTICCD", mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
+    if not missing_multiccd:
+        kwargs.pop("enable_multiccd", None)
+    else:
+        kwargs["enable_multiccd"] = True
+
+
 class NewtonMJWarpManager(NewtonManager):
     """:class:`NewtonManager` specialization for the MuJoCo Warp solver.
 
@@ -40,9 +88,9 @@ class NewtonMJWarpManager(NewtonManager):
         forwarded.  Sets :attr:`NewtonManager._needs_collision_pipeline` to
         ``True`` only when ``use_mujoco_contacts=False``.
         """
-        valid = set(inspect.signature(SolverMuJoCo.__init__).parameters) - {"self", "model"}
-        kwargs = {k: v for k, v in solver_cfg.to_dict().items() if k in valid}
-        NewtonManager._solver = SolverMuJoCo(model, **kwargs)
+        solver = SolverMuJoCo(model, **resolve_mujoco_solver_kwargs(solver_cfg))
+        apply_mujoco_warp_model_overrides(solver, solver_cfg)
+        NewtonManager._solver = solver
         NewtonManager._use_single_state = True
         NewtonManager._needs_collision_pipeline = not solver_cfg.use_mujoco_contacts
 

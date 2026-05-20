@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import inspect
 import logging
 from abc import abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import numpy as np
 import warp as wp
 
 # Load CUDA runtime for relaxed-mode graph capture (RTX-compatible).
@@ -100,6 +102,17 @@ def _scatter_reset_masks_from_ids(
     world = env_ids[i]
     world_mask[world] = wp.int32(1)
     fk_mask[articulation_ids[world, arti]] = True
+
+
+@wp.kernel(enable_backward=False)
+def _and_fk_mask_with_filter(
+    fk_mask: wp.array(dtype=wp.bool),
+    fk_filter: wp.array(dtype=wp.bool),
+):
+    """Clear FK mask entries that are not owned by generic FK."""
+    i = int(wp.tid())
+    if not fk_filter[i]:
+        fk_mask[i] = False
 
 
 class NewtonSceneDataBackend(SceneDataBackend):
@@ -199,6 +212,8 @@ class NewtonManager(PhysicsManager):
     # Per-world reset masks (allocated in start_simulation, consumed in step)
     _world_reset_mask: wp.array | None = None  # (num_envs,) wp.int32 — for SolverKamino.reset(world_mask=...)
     _fk_reset_mask: wp.array | None = None  # (articulation_count,) wp.bool — for eval_fk(mask=...)
+    _fk_articulation_filter: wp.array | None = None
+    """Optional articulation mask for generic FK. Solver-owned articulations are False."""
 
     # Newton actuator adapter (owns actuators and double-buffered states)
     _adapter: NewtonActuatorAdapter | None = None
@@ -217,6 +232,8 @@ class NewtonManager(PhysicsManager):
     _newton_index_attr = "newton:index"
     _clone_physics_only = False
     _transforms_dirty: bool = False
+    _pre_render_callbacks: dict[str, Callable[[], None]] = {}
+    _usd_xform_ops: dict[str, object] = {}
 
     # cubric GPU transform hierarchy (replaces CPU update_world_xforms)
     _cubric = None
@@ -295,18 +312,38 @@ class NewtonManager(PhysicsManager):
     def forward(cls) -> None:
         """Update articulation kinematics without stepping physics.
 
-        Runs Newton's generic forward kinematics (``eval_fk``) over **all**
-        articulations to compute body poses from joint coordinates. This is
-        the full (unmasked) FK path used during initial setup. For incremental
-        per-environment updates after resets, see :meth:`invalidate_fk` which
-        accumulates masks consumed by :meth:`step`.
+        Runs Newton's generic forward kinematics (``eval_fk``) for
+        articulations that are allowed to be FK-owned. Coupled solver entries
+        such as VBD rods own their body poses directly, so render-time FK must
+        not recompute those bodies from stale joint coordinates.
         """
-        eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, None)
+        if cls._model is None or cls._state_0 is None:
+            return
+        eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, cls._fk_articulation_filter)
+        if cls._usdrt_stage is not None:
+            cls._mark_transforms_dirty()
+            cls.sync_transforms_to_usd()
 
     @classmethod
     def pre_render(cls) -> None:
         """Flush deferred Fabric writes before cameras/visualizers read the scene."""
+        for name, callback in list(cls._pre_render_callbacks.items()):
+            try:
+                callback()
+            except Exception:
+                logger.exception("[NewtonManager] pre-render callback %s failed; deregistering", name)
+                NewtonManager._pre_render_callbacks.pop(name, None)
         cls.sync_transforms_to_usd()
+
+    @classmethod
+    def register_pre_render_callback(cls, name: str, callback: Callable[[], None]) -> None:
+        """Register a callback that runs before Newton writes render transforms to Fabric."""
+        NewtonManager._pre_render_callbacks[name] = callback
+
+    @classmethod
+    def deregister_pre_render_callback(cls, name: str) -> None:
+        """Remove a pre-render callback registered by name."""
+        NewtonManager._pre_render_callbacks.pop(name, None)
 
     @classmethod
     def sync_transforms_to_usd(cls) -> None:
@@ -337,6 +374,10 @@ class NewtonManager(PhysicsManager):
             return
         try:
             import usdrt
+
+            body_paths = getattr(cls._model, "body_label", None) or getattr(cls._model, "body_key", None)
+            if body_paths is not None:
+                cls._sync_transforms_to_usd_xform_ops(body_paths)
 
             # Lazy adapter creation: deferred from initialize_solver() to avoid
             # startup-ordering issues with the cubric plugin.
@@ -378,6 +419,11 @@ class NewtonManager(PhysicsManager):
                 if selection.GetCount() == 0:
                     NewtonManager._transforms_dirty = False
                     return
+
+                # Notify Fabric Scene Delegate that transform buffers are about
+                # to change. Without this, USDRT attributes read back correctly
+                # but Kit can keep rendering stale rigid-body transforms.
+                selection.PrepareForReuse()
 
                 fabric_transforms = wp.fabricarray(selection, "omni:fabric:worldMatrix")
                 newton_indices = wp.fabricarray(selection, cls._newton_index_attr)
@@ -468,7 +514,13 @@ class NewtonManager(PhysicsManager):
         # broadphase/narrowphase) is stale until FK runs.
         # Only runs FK for dirtied articulations via the accumulated mask.
         if cls._needs_collision_pipeline:
-            eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, cls._fk_reset_mask)
+            eval_fk(
+                cls._model,
+                cls._state_0.joint_q,
+                cls._state_0.joint_qd,
+                cls._state_0,
+                cls._filtered_fk_reset_mask(),
+            )
 
         # Zero both masks after consumption
         NewtonManager._world_reset_mask.zero_()
@@ -581,11 +633,14 @@ class NewtonManager(PhysicsManager):
         # Per-world reset masks
         NewtonManager._world_reset_mask = None
         NewtonManager._fk_reset_mask = None
+        NewtonManager._fk_articulation_filter = None
         NewtonManager._graph = None
         NewtonManager._graph_capture_pending = False
         NewtonManager._newton_stage_path = None
         NewtonManager._usdrt_stage = None
         NewtonManager._transforms_dirty = False
+        NewtonManager._pre_render_callbacks = {}
+        NewtonManager._usd_xform_ops = {}
         NewtonManager._up_axis = "Z"
         NewtonManager._visualization_scene_data = None
         NewtonManager._visualization_mapping = None
@@ -635,13 +690,125 @@ class NewtonManager(PhysicsManager):
         cfg = PhysicsManager._cfg
         solver_cfg = getattr(cfg, "solver_cfg", None)
         solver_cfgs = [solver_cfg]
-        solver_cfgs.extend(getattr(entry, "solver_cfg", entry) for entry in getattr(solver_cfg, "entries", ()) or ())
-        from .mpm_manager_cfg import MPMSolverCfg
-
-        if any(isinstance(solver_cfg, MPMSolverCfg) for solver_cfg in solver_cfgs):
+        solver_cfgs.extend(entry.solver_cfg for entry in getattr(solver_cfg, "entries", []) or [])
+        if any(getattr(cfg, "solver_type", None) == "implicit_mpm" for cfg in solver_cfgs):
             from newton.solvers import SolverImplicitMPM
 
             SolverImplicitMPM.register_custom_attributes(builder)
+        if getattr(solver_cfg, "coupling_type", None) == "admm":
+            from newton.solvers.coupled_experimental import SolverAdmmCoupled
+
+            SolverAdmmCoupled.register_custom_attributes(builder)
+
+    @classmethod
+    def _set_fk_articulation_filter(cls, mask: np.ndarray | list[bool] | None) -> None:
+        """Set the articulation allow-mask used by generic FK."""
+        if mask is None:
+            NewtonManager._fk_articulation_filter = None
+            return
+
+        mask_np = np.asarray(mask, dtype=bool)
+        if cls._model is not None and mask_np.shape != (int(cls._model.articulation_count),):
+            raise ValueError(
+                "FK articulation filter shape "
+                f"{mask_np.shape} does not match articulation_count={cls._model.articulation_count}."
+            )
+
+        device = PhysicsManager._device or getattr(cls._model, "device", "cpu") or "cpu"
+        NewtonManager._fk_articulation_filter = wp.array(mask_np, dtype=wp.bool, device=device)
+
+    @classmethod
+    def _filtered_fk_reset_mask(cls) -> wp.array | None:
+        """Return the reset FK mask after applying the optional articulation filter."""
+        if cls._fk_reset_mask is None or cls._fk_articulation_filter is None:
+            return cls._fk_reset_mask
+        if cls._fk_reset_mask.shape[0] != cls._fk_articulation_filter.shape[0]:
+            return cls._fk_reset_mask
+        wp.launch(
+            _and_fk_mask_with_filter,
+            dim=cls._fk_reset_mask.shape[0],
+            inputs=[cls._fk_reset_mask, cls._fk_articulation_filter],
+            device=PhysicsManager._device,
+        )
+        return cls._fk_reset_mask
+
+    @classmethod
+    def _sync_transforms_to_usd_xform_ops(cls, body_paths) -> None:
+        """Author Newton body world poses into USD local xformOps for Kit rendering."""
+        try:
+            from pxr import Gf, Sdf, UsdGeom  # noqa: PLC0415
+        except Exception:
+            return
+
+        stage = get_current_stage()
+        if stage is None:
+            return
+
+        try:
+            body_q = cls._state_0.body_q.numpy()
+        except Exception:
+            return
+
+        world_mats: dict[str, object] = {}
+        for body_id, prim_path in enumerate(body_paths):
+            if not isinstance(prim_path, str) or not prim_path.startswith("/") or body_id >= body_q.shape[0]:
+                continue
+            pose = body_q[body_id]
+            quat = np.asarray(pose[3:7], dtype=np.float64)
+            norm = float(np.linalg.norm(quat))
+            if not np.isfinite(norm) or norm <= 1.0e-12:
+                continue
+            quat /= norm
+
+            mat = Gf.Matrix4d(1.0)
+            mat.SetRotateOnly(Gf.Quatd(float(quat[3]), Gf.Vec3d(float(quat[0]), float(quat[1]), float(quat[2]))))
+            mat.SetTranslateOnly(Gf.Vec3d(float(pose[0]), float(pose[1]), float(pose[2])))
+            world_mats[prim_path] = mat
+
+        if not world_mats:
+            return
+
+        xform_cache = UsdGeom.XformCache()
+        xform_attr_name = "xformOp:transform:newton"
+        for prim_path, world_mat in world_mats.items():
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid() or prim.IsInstanceProxy():
+                continue
+            parent = prim.GetParent()
+            parent_path = str(parent.GetPath()) if parent and parent.IsValid() else ""
+            parent_world = world_mats.get(parent_path)
+            if parent_world is None:
+                parent_world = (
+                    xform_cache.GetLocalToWorldTransform(parent) if parent and parent.IsValid() else Gf.Matrix4d(1.0)
+                )
+            local_mat = world_mat * parent_world.GetInverse()
+
+            transform_attr = NewtonManager._usd_xform_ops.get(prim_path)
+            if transform_attr is not None:
+                try:
+                    if (
+                        not transform_attr.IsValid()
+                        or transform_attr.GetPrim() != prim
+                        or transform_attr.GetName() != xform_attr_name
+                        or transform_attr.GetTypeName() != Sdf.ValueTypeNames.Matrix4d
+                    ):
+                        transform_attr = None
+                except Exception:
+                    transform_attr = None
+            if transform_attr is None:
+                transform_attr = prim.GetAttribute(xform_attr_name)
+                if transform_attr.IsValid() and transform_attr.GetTypeName() != Sdf.ValueTypeNames.Matrix4d:
+                    transform_attr.SetTypeName(Sdf.ValueTypeNames.Matrix4d)
+                if not transform_attr.IsValid() or transform_attr.GetTypeName() != Sdf.ValueTypeNames.Matrix4d:
+                    transform_attr = prim.CreateAttribute(xform_attr_name, Sdf.ValueTypeNames.Matrix4d, False)
+                order_attr = prim.GetAttribute("xformOpOrder")
+                if order_attr.IsValid() and order_attr.GetTypeName() != Sdf.ValueTypeNames.TokenArray:
+                    order_attr.SetTypeName(Sdf.ValueTypeNames.TokenArray)
+                if not order_attr.IsValid():
+                    order_attr = prim.CreateAttribute("xformOpOrder", Sdf.ValueTypeNames.TokenArray, False)
+                order_attr.Set([xform_attr_name])
+                NewtonManager._usd_xform_ops[prim_path] = transform_attr
+            transform_attr.Set(local_mat)
 
     @classmethod
     def cl_register_site(cls, body_pattern: str | None, xform: wp.transform) -> str:
@@ -1152,6 +1319,11 @@ class NewtonManager(PhysicsManager):
         if cls._usdrt_stage is not None:
             cls._setup_cubric_bindings()
 
+        device = PhysicsManager._device
+        use_cuda_graph = device is not None and cfg.use_cuda_graph and "cuda" in device  # type: ignore[union-attr]
+        if use_cuda_graph:
+            cls._prewarm_cuda_graph_allocations()
+
         # Skip the initial graph capture when the Newton actuator fast path is
         # active. Capturing here would use ``cls._decimation`` (still its default
         # of 1, because the env's ``set_decimation`` hasn't run yet); a second
@@ -1164,6 +1336,310 @@ class NewtonManager(PhysicsManager):
         # so we still need the start-time capture below.
         if not cls._use_newton_actuators_active:
             cls._capture_or_defer_graph()
+
+    @classmethod
+    def _prewarm_cuda_graph_allocations(cls) -> None:
+        """Pre-allocate solver scratch buffers that are not graph-capturable."""
+        mujoco_warp_solvers = [
+            solver for solver in cls._iter_nested_solvers(cls._solver) if getattr(solver, "mjw_data", None) is not None
+        ]
+        if not mujoco_warp_solvers:
+            return
+
+        cls._ensure_mujoco_warp_step_scratch_cache()
+        cached_create_collision_context = cls._ensure_mujoco_warp_collision_context_cache()
+        cached_empty_constraint_scratch = cls._ensure_mujoco_warp_constraint_scratch_cache()
+
+        for solver in mujoco_warp_solvers:
+            mjw_data = getattr(solver, "mjw_data", None)
+            naconmax = int(getattr(mjw_data, "naconmax", 0) or 0)
+            nworld = int(getattr(mjw_data, "nworld", 0) or 0)
+            model = getattr(solver, "model", None)
+            device = getattr(model, "device", PhysicsManager._device)
+            with wp.ScopedDevice(device):
+                if cached_create_collision_context is not None and naconmax > 0:
+                    cached_create_collision_context(naconmax)
+                if cached_empty_constraint_scratch is not None and nworld > 0:
+                    cached_empty_constraint_scratch((nworld,), dtype=int)
+
+        cls._simulate_once_for_cuda_graph_warmup()
+
+    @classmethod
+    def _simulate_once_for_cuda_graph_warmup(cls) -> None:
+        """Run one eager step to force lazy solver allocations before capture."""
+        if cls._model is None or cls._state_0 is None or cls._state_1 is None:
+            return
+
+        state_0_ref = cls._state_0
+        state_1_ref = cls._state_1
+        state_0_snapshot = cls._model.state()
+        state_1_snapshot = cls._model.state()
+        state_0_snapshot.assign(state_0_ref)
+        state_1_snapshot.assign(state_1_ref)
+
+        try:
+            cls._simulate_physics_only()
+            wp.synchronize_device()
+        finally:
+            NewtonManager._state_0 = state_0_ref
+            NewtonManager._state_1 = state_1_ref
+            cls._state_0.assign(state_0_snapshot)
+            cls._state_1.assign(state_1_snapshot)
+
+    @classmethod
+    def _iter_nested_solvers(cls, solver):
+        """Yield a solver and any coupled sub-solvers."""
+        if solver is None:
+            return
+        yield solver
+        entries = getattr(solver, "_entries", None)
+        if isinstance(entries, dict):
+            for entry in entries.values():
+                yield from cls._iter_nested_solvers(getattr(entry, "solver", None))
+
+    @staticmethod
+    def _ensure_mujoco_warp_collision_context_cache():
+        """Cache MuJoCo Warp collision scratch arrays for CUDA graph capture."""
+        try:
+            from mujoco_warp._src import collision_core, collision_driver
+        except ImportError:
+            return None
+
+        current_create_collision_context = getattr(collision_driver, "create_collision_context", None)
+        if getattr(current_create_collision_context, "_isaaclab_cached_context", False):
+            return current_create_collision_context
+
+        original_create_collision_context = collision_core.create_collision_context
+        contexts = {}
+
+        def cached_create_collision_context(naconmax: int):
+            key = (str(wp.get_device()), int(naconmax))
+            context = contexts.get(key)
+            if context is None:
+                context = original_create_collision_context(int(naconmax))
+                contexts[key] = context
+            return context
+
+        cached_create_collision_context._isaaclab_cached_context = True
+        cached_create_collision_context._isaaclab_contexts = contexts
+        cached_create_collision_context._isaaclab_original = original_create_collision_context
+        collision_core.create_collision_context = cached_create_collision_context
+        collision_driver.create_collision_context = cached_create_collision_context
+        return cached_create_collision_context
+
+    @staticmethod
+    def _ensure_mujoco_warp_constraint_scratch_cache():
+        """Cache MuJoCo Warp constraint scratch arrays for CUDA graph capture."""
+        try:
+            from mujoco_warp._src import constraint
+        except ImportError:
+            return None
+
+        current_make_constraint = getattr(constraint, "make_constraint", None)
+        if getattr(current_make_constraint, "_isaaclab_cached_scratch", False):
+            return getattr(current_make_constraint, "_isaaclab_get_cached_empty", None)
+        if current_make_constraint is None:
+            return None
+
+        original_make_constraint = current_make_constraint
+        original_empty = constraint.wp.empty
+        arrays = {}
+
+        def normalize_shape(shape):
+            if isinstance(shape, int):
+                return (int(shape),)
+            return tuple(int(dim) for dim in shape)
+
+        def cached_empty(*args, **kwargs):
+            shape = args[0] if args else kwargs.get("shape")
+            dtype = kwargs.get("dtype", args[1] if len(args) > 1 else float)
+            device = kwargs.get("device") or wp.get_device()
+            key = (
+                str(device),
+                normalize_shape(shape),
+                dtype,
+                bool(kwargs.get("pinned", False)),
+                bool(kwargs.get("requires_grad", False)),
+            )
+            array = arrays.get(key)
+            if array is None:
+                array = original_empty(*args, **kwargs)
+                arrays[key] = array
+            return array
+
+        def cached_make_constraint(*args, **kwargs):
+            previous_empty = constraint.wp.empty
+            constraint.wp.empty = cached_empty
+            try:
+                return original_make_constraint(*args, **kwargs)
+            finally:
+                constraint.wp.empty = previous_empty
+
+        cached_make_constraint._isaaclab_cached_scratch = True
+        cached_make_constraint._isaaclab_get_cached_empty = cached_empty
+        cached_make_constraint._isaaclab_arrays = arrays
+        cached_make_constraint._isaaclab_original = original_make_constraint
+        constraint.make_constraint = cached_make_constraint
+        return cached_empty
+
+    @staticmethod
+    def _ensure_mujoco_warp_step_scratch_cache() -> None:
+        """Cache MuJoCo Warp per-step scratch allocations for CUDA graph capture."""
+        try:
+            import mujoco_warp
+            from mujoco_warp._src import forward
+        except ImportError:
+            return
+
+        current_step = getattr(mujoco_warp, "step", None)
+        if getattr(current_step, "_isaaclab_cached_scratch", False):
+            return
+        if current_step is None:
+            return
+
+        original_package_step = current_step
+        original_forward_step = forward.step
+        original_empty = forward.wp.empty
+        original_full = forward.wp.full
+        arrays = {}
+
+        def normalize_shape(shape):
+            if shape is None:
+                return (0,)
+            if isinstance(shape, int):
+                return (int(shape),)
+            return tuple(int(dim) for dim in shape)
+
+        def find_mujoco_warp_callsite():
+            frame = inspect.currentframe()
+            frame = frame.f_back if frame is not None else None
+            while frame is not None:
+                module_name = frame.f_globals.get("__name__", "")
+                if module_name.startswith("mujoco_warp._src."):
+                    return module_name, frame.f_code.co_name, frame.f_lineno
+                frame = frame.f_back
+            return "<unknown>", "<unknown>", 0
+
+        def cached_array(kind: str, *args, **kwargs):
+            shape = args[0] if args else kwargs.get("shape")
+            dtype = kwargs.get("dtype", args[1] if len(args) > 1 else float)
+            device = kwargs.get("device", args[2] if len(args) > 2 else None) or wp.get_device()
+            key = (
+                kind,
+                find_mujoco_warp_callsite(),
+                str(device),
+                normalize_shape(shape),
+                dtype,
+                bool(kwargs.get("pinned", False)),
+                bool(kwargs.get("requires_grad", False)),
+                bool(kwargs.get("retain_grad", False)),
+            )
+            array = arrays.get(key)
+            if array is None:
+                array = original_empty(*args, **kwargs)
+                arrays[key] = array
+            if kind == "zeros":
+                array.zero_()
+            return array
+
+        def cached_filled(
+            kind: str,
+            value,
+            shape,
+            dtype,
+            device=None,
+            requires_grad=False,
+            pinned=False,
+            retain_grad=False,
+        ):
+            if dtype is None:
+                return None
+            device = device or wp.get_device()
+            key = (
+                kind,
+                find_mujoco_warp_callsite(),
+                str(device),
+                normalize_shape(shape),
+                dtype,
+                bool(pinned),
+                bool(requires_grad),
+                bool(retain_grad),
+            )
+            array = arrays.get(key)
+            if array is None:
+                array = original_empty(
+                    shape=shape,
+                    dtype=dtype,
+                    device=device,
+                    requires_grad=requires_grad,
+                    pinned=pinned,
+                    retain_grad=retain_grad,
+                )
+                arrays[key] = array
+            array.fill_(value)
+            return array
+
+        def cached_empty(*args, **kwargs):
+            return cached_array("empty", *args, **kwargs)
+
+        def cached_zeros(*args, **kwargs):
+            return cached_array("zeros", *args, **kwargs)
+
+        def cached_full(*args, **kwargs):
+            shape = args[0] if args else kwargs.get("shape")
+            value = kwargs.get("value", args[1] if len(args) > 1 else 0)
+            dtype = kwargs.get("dtype", args[2] if len(args) > 2 else None)
+            cached = cached_filled(
+                "full",
+                value,
+                shape,
+                dtype,
+                device=kwargs.get("device", args[3] if len(args) > 3 else None),
+                requires_grad=kwargs.get("requires_grad", False),
+                pinned=kwargs.get("pinned", False),
+                retain_grad=kwargs.get("retain_grad", False),
+            )
+            if cached is None:
+                return original_full(*args, **kwargs)
+            return cached
+
+        def cached_ones(*args, **kwargs):
+            shape = args[0] if args else kwargs.get("shape")
+            dtype = kwargs.get("dtype", args[1] if len(args) > 1 else float)
+            return cached_filled(
+                "ones",
+                1,
+                shape,
+                dtype,
+                device=kwargs.get("device", args[2] if len(args) > 2 else None),
+                requires_grad=kwargs.get("requires_grad", False),
+                pinned=kwargs.get("pinned", False),
+                retain_grad=kwargs.get("retain_grad", False),
+            )
+
+        def cached_step(*args, **kwargs):
+            previous_empty = forward.wp.empty
+            previous_zeros = forward.wp.zeros
+            previous_full = forward.wp.full
+            previous_ones = forward.wp.ones
+            forward.wp.empty = cached_empty
+            forward.wp.zeros = cached_zeros
+            forward.wp.full = cached_full
+            forward.wp.ones = cached_ones
+            try:
+                return original_package_step(*args, **kwargs)
+            finally:
+                forward.wp.empty = previous_empty
+                forward.wp.zeros = previous_zeros
+                forward.wp.full = previous_full
+                forward.wp.ones = previous_ones
+
+        cached_step._isaaclab_cached_scratch = True
+        cached_step._isaaclab_arrays = arrays
+        cached_step._isaaclab_original_package_step = original_package_step
+        cached_step._isaaclab_original_forward_step = original_forward_step
+        mujoco_warp.step = cached_step
+        forward.step = cached_step
 
     @classmethod
     def _setup_cubric_bindings(cls) -> None:
@@ -1207,17 +1683,22 @@ class NewtonManager(PhysicsManager):
             with Timer(name="newton_cuda_graph", msg="CUDA graph took:"):
                 if cls._usdrt_stage is None:
                     simulate = cls._simulate_full if cls._is_all_graphable() else cls._simulate_physics_only
-                    with wp.ScopedCapture() as capture:
-                        simulate()
-                    NewtonManager._graph = capture.graph
-                    logger.info("Newton CUDA graph captured (standard Warp mode)")
+                    try:
+                        with wp.ScopedCapture() as capture:
+                            simulate()
+                        NewtonManager._graph = capture.graph
+                        logger.info("Newton CUDA graph captured (standard Warp mode)")
 
-                    # Kamino: StateKamino.from_newton() lazily allocates body_f_total,
-                    # joint_q_prev, and joint_lambdas via wp.clone/wp.zeros during the
-                    # first step() inside graph capture. Replay once to pin those
-                    # memory-pool addresses before any eager solver.reset() call.
-                    if isinstance(cls._solver, SolverKamino):
-                        wp.capture_launch(cls._graph)
+                        # Kamino: StateKamino.from_newton() lazily allocates body_f_total,
+                        # joint_q_prev, and joint_lambdas via wp.clone/wp.zeros during the
+                        # first step() inside graph capture. Replay once to pin those
+                        # memory-pool addresses before any eager solver.reset() call.
+                        if isinstance(cls._solver, SolverKamino):
+                            wp.capture_launch(cls._graph)
+                    except Exception as exc:
+                        NewtonManager._graph = None
+                        logger.warning("Newton CUDA graph capture failed; using eager execution: %s", exc)
+                        logger.debug("Newton CUDA graph capture failure details", exc_info=True)
                 else:
                     # RTX is active during initialization — cudaImportExternalMemory and other
                     # non-capturable RTX ops run on background CUDA streams right now.
@@ -1360,18 +1841,35 @@ class NewtonManager(PhysicsManager):
         """Run ``num_substeps`` solver iterations, handling double-buffered state swap."""
         if cls._use_single_state:
             for _ in range(cls._num_substeps):
-                cls._solver.step(cls._state_0, cls._state_0, cls._control, contacts, cls._solver_dt)
-                cls._state_0.clear_forces()
+                cls._solver.step(
+                    NewtonManager._state_0,
+                    NewtonManager._state_0,
+                    NewtonManager._control,
+                    contacts,
+                    cls._solver_dt,
+                )
+                NewtonManager._state_0.clear_forces()
         else:
             cfg = PhysicsManager._cfg
             need_copy_on_last = (cfg is not None and cfg.use_cuda_graph) and cls._num_substeps % 2 == 1  # type: ignore[union-attr]
             for i in range(cls._num_substeps):
-                cls._solver.step(cls._state_0, cls._state_1, cls._control, contacts, cls._solver_dt)
+                cls._solver.step(
+                    NewtonManager._state_0,
+                    NewtonManager._state_1,
+                    NewtonManager._control,
+                    contacts,
+                    cls._solver_dt,
+                )
                 if need_copy_on_last and i == cls._num_substeps - 1:
-                    cls._state_0.assign(cls._state_1)
+                    NewtonManager._state_0.assign(NewtonManager._state_1)
                 else:
-                    cls._state_0, cls._state_1 = cls._state_1, cls._state_0
-                cls._state_0.clear_forces()
+                    # Keep state buffers canonical on NewtonManager. Assigning
+                    # through ``cls`` would create subclass-shadowed state on
+                    # leaf managers, then later resets would rebuild the base
+                    # state while step() continued to read the stale subclass
+                    # buffers.
+                    NewtonManager._state_0, NewtonManager._state_1 = NewtonManager._state_1, NewtonManager._state_0
+                NewtonManager._state_0.clear_forces()
 
     @classmethod
     def _update_sensors(cls, contacts) -> None:

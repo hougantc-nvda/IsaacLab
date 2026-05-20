@@ -4,11 +4,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 __all__ = [
+    "AdmmContactPairCfg",
+    "AdmmCouplingCfg",
+    "CoupledProxyCfg",
+    "CoupledSolverCfg",
+    "CoupledSolverEntryCfg",
     "NewtonFeatherstoneManager",
     "FeatherstoneSolverCfg",
     "HydroelasticSDFCfg",
     "NewtonKaminoManager",
     "KaminoSolverCfg",
+    "NewtonCoupledManager",
     "NewtonMPMManager",
     "MPMSolverCfg",
     "NewtonMJWarpManager",
@@ -19,9 +25,19 @@ __all__ = [
     "NewtonShapeCfg",
     "NewtonSolverCfg",
     "NewtonXPBDManager",
+    "ProxyCouplingCfg",
     "XPBDSolverCfg",
 ]
 
+from .coupled_manager import NewtonCoupledManager
+from .coupled_manager_cfg import (
+    AdmmContactPairCfg,
+    AdmmCouplingCfg,
+    CoupledProxyCfg,
+    CoupledSolverCfg,
+    CoupledSolverEntryCfg,
+    ProxyCouplingCfg,
+)
 from .featherstone_manager import NewtonFeatherstoneManager
 from .featherstone_manager_cfg import FeatherstoneSolverCfg
 from .kamino_manager import NewtonKaminoManager

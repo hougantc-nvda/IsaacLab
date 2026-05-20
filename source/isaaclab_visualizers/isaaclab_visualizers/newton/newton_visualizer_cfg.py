@@ -46,6 +46,9 @@ class NewtonVisualizerCfg(VisualizerCfg):
     show_com: bool = False
     """Show center of mass visualization."""
 
+    show_particles: bool = False
+    """Show particle visualization."""
+
     enable_shadows: bool = True
     """Enable shadow rendering."""
 

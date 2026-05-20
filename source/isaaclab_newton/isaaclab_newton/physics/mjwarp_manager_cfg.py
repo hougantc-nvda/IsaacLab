@@ -88,8 +88,22 @@ class MJWarpSolverCfg(NewtonSolverCfg):
     which typically occurs with complex collision geometries (e.g. multi-finger hands).
     """
 
+    enable_multiccd: bool | None = None
+    """Whether to enable MuJoCo multi-CCD contact generation.
+
+    ``None`` keeps Newton's default except on Isaac Sim MuJoCo builds that do
+    not expose ``mjDSBL_MULTICCD``; in that case Isaac Lab enables multi-CCD to
+    avoid constructing a disable flag that the bundled MuJoCo enum lacks.
+    """
+
     ls_parallel: bool = False
     """Whether to use parallel line search."""
+
+    broadphase: str | None = None
+    """MuJoCo Warp broadphase mode. Can be ``"NXN"``, ``"SAP_TILE"``, or ``"SAP_SEGMENTED"``."""
+
+    graph_conditional: bool | None = None
+    """Whether MuJoCo Warp uses CUDA graph conditional nodes for solver iteration loops."""
 
     use_mujoco_contacts: bool = True
     """Whether to use MuJoCo's internal contact solver.
