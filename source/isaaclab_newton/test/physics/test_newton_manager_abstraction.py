@@ -25,8 +25,11 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import warp as wp
+from isaaclab.managers import SceneEntityCfg
 from isaaclab_newton.physics import (
     AdmmContactPairCfg,
     AdmmCouplingCfg,
@@ -316,6 +319,75 @@ def test_coupled_proxy_int_mode_is_normalized():
         CoupledProxyCfg(source="src", destination="dst", particles=[0], mode=1)
     )
     assert proxy.mode == "staggered"
+
+
+def test_coupled_selectors_resolve_bodies_shapes_joints_particles():
+    """Front-end selectors resolve to the raw ids Newton coupled solvers expect."""
+    builder = NewtonManager.create_builder()
+    base = builder.add_body(mass=1.0, label="/World/envs/env_0/Robot/base")
+    finger = builder.add_body(mass=1.0, label="/World/envs/env_0/Robot/finger")
+    joint = builder.add_joint_revolute(parent=base, child=finger, axis=(0, 0, 1))
+    base_shape = builder.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05)
+    finger_shape = builder.add_shape_box(finger, hx=0.02, hy=0.02, hz=0.02)
+    ground_shape = builder.add_ground_plane()
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.1), vel=wp.vec3(0.0), mass=0.1, radius=0.02)
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.2), vel=wp.vec3(0.0), mass=0.1, radius=0.02)
+    model = builder.finalize(device="cpu")
+
+    scene_cfg = SimpleNamespace(robot=SimpleNamespace(prim_path="/World/envs/env_.*/Robot"))
+    entry = NewtonCoupledManager._resolve_entry_cfg(
+        model,
+        CoupledSolverEntryCfg(
+            name="rigid",
+            solver_cfg=XPBDSolverCfg(iterations=1),
+            body_entities=[SceneEntityCfg("robot")],
+            particle_range=(0, None),
+            include_static_shapes=True,
+        ),
+        scene_cfg,
+    )
+    assert entry.bodies == [base, finger]
+    assert joint in entry.joints
+    assert entry.shapes == [base_shape, finger_shape, ground_shape]
+    assert entry.particles == [0, 1]
+
+    proxy = NewtonCoupledManager._resolve_proxy_cfg(
+        model,
+        CoupledProxyCfg(
+            source="rigid",
+            destination="soft",
+            body_entities=[SceneEntityCfg("robot", body_names=["finger"])],
+            particle_range=(1, None),
+        ),
+        scene_cfg,
+    )
+    assert proxy.bodies == [finger]
+    assert proxy.particles == [1]
+
+    local_id_entry = NewtonCoupledManager._resolve_entry_cfg(
+        model,
+        CoupledSolverEntryCfg(
+            name="finger",
+            solver_cfg=XPBDSolverCfg(iterations=1),
+            body_entities=[SceneEntityCfg("robot", body_ids=[1])],
+        ),
+        scene_cfg,
+    )
+    assert local_id_entry.bodies == [finger]
+
+
+def test_coupled_scene_entity_selectors_require_scene_cfg():
+    """SceneEntityCfg selectors fail early when the solver cfg has no scene cfg."""
+    builder = NewtonManager.create_builder()
+    builder.add_body(mass=1.0, label="/World/envs/env_0/Robot/base")
+    model = builder.finalize(device="cpu")
+
+    with pytest.raises(ValueError, match="scene_cfg"):
+        NewtonCoupledManager._resolve_entry_cfg(
+            model,
+            CoupledSolverEntryCfg(name="rigid", solver_cfg=XPBDSolverCfg(), body_entities=[SceneEntityCfg("robot")]),
+            None,
+        )
 
 
 @pytest.mark.parametrize(

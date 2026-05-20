@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import field
 from typing import TYPE_CHECKING, Any, Literal
 
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 
 from .newton_manager_cfg import NewtonSolverCfg
@@ -18,6 +19,7 @@ from .newton_manager_cfg import NewtonSolverCfg
 if TYPE_CHECKING:
     from newton.solvers import SolverBase
 
+    from isaaclab.scene import InteractiveSceneCfg
     from isaaclab_newton.physics import NewtonManager
 
 
@@ -45,10 +47,38 @@ class CoupledSolverEntryCfg:
     """
 
     bodies: list[int] = field(default_factory=list)
-    """Parent-model body indices owned by this entry."""
+    """Parent-model body indices owned by this entry.
+
+    Prefer the selector fields below in task configs and demos where labels or
+    scene entities are available. Raw ids remain useful for generated models
+    and low-level tests.
+    """
+
+    body_entities: list[SceneEntityCfg] = field(default_factory=list)
+    """Scene entities whose bodies are owned by this entry.
+
+    Each entity resolves against :attr:`CoupledSolverCfg.scene_cfg`. If
+    ``SceneEntityCfg.body_names`` is set, the regexes match body short names
+    under that asset; otherwise all bodies under the asset prim path are used.
+    """
+
+    body_label_patterns: list[str] = field(default_factory=list)
+    """Regexes matched against full Newton body labels."""
+
+    body_name_patterns: list[str] = field(default_factory=list)
+    """Regexes matched against the short body name, i.e. the label segment after the final ``/``."""
 
     particles: list[int] = field(default_factory=list)
     """Parent-model particle indices owned by this entry."""
+
+    particle_range: tuple[int | None, int | None] | None = None
+    """Contiguous parent-model particle range ``[start, end)`` owned by this entry.
+
+    ``None`` bounds are replaced by ``0`` or ``model.particle_count``.
+    """
+
+    all_particles: bool = False
+    """Whether this entry owns every particle in the parent model."""
 
     joints: list[int] = field(default_factory=list)
     """Parent-model joint indices owned by this entry."""
@@ -70,6 +100,15 @@ class CoupledSolverEntryCfg:
     configure_view: Callable | str | None = None
     """Optional callable or ``"module:attr"`` path applied to the entry's ``ModelView`` before solver construction."""
 
+    include_child_joints: bool = True
+    """When body selectors are used, include joints whose child body is selected."""
+
+    include_body_shapes: bool = True
+    """When body selectors are used, include shapes attached to selected bodies."""
+
+    include_static_shapes: bool = False
+    """When body selectors are used, also include static shapes whose body id is ``-1``."""
+
     substeps: int = 1
     """Number of equal substeps this entry runs inside one coupled step."""
 
@@ -90,11 +129,26 @@ class CoupledProxyCfg:
     bodies: list[int] = field(default_factory=list)
     """Source body ids mapped into the destination as proxy bodies."""
 
+    body_entities: list[SceneEntityCfg] = field(default_factory=list)
+    """Scene entities whose bodies are mapped as source proxy bodies."""
+
+    body_label_patterns: list[str] = field(default_factory=list)
+    """Regexes matched against full Newton body labels for source proxy bodies."""
+
+    body_name_patterns: list[str] = field(default_factory=list)
+    """Regexes matched against short Newton body names for source proxy bodies."""
+
     proxy_bodies: list[int] | None = None
     """Destination proxy body ids. ``None`` mirrors :attr:`bodies`."""
 
     particles: list[int] = field(default_factory=list)
     """Source particle ids mapped into the destination as proxy particles."""
+
+    particle_range: tuple[int | None, int | None] | None = None
+    """Contiguous parent-model particle range ``[start, end)`` mapped as source proxy particles."""
+
+    all_particles: bool = False
+    """Whether every parent-model particle is mapped as a source proxy particle."""
 
     proxy_particles: list[int] | None = None
     """Destination proxy particle ids. ``None`` mirrors :attr:`particles`."""
@@ -210,6 +264,13 @@ class CoupledSolverCfg(NewtonSolverCfg):
 
     entries: list[CoupledSolverEntryCfg] = field(default_factory=list)
     """Ordered sub-solver entries."""
+
+    scene_cfg: InteractiveSceneCfg | None = None
+    """Optional scene cfg used to resolve :class:`SceneEntityCfg` selectors.
+
+    Set this to ``self.scene`` in manager-based env configs when entry or proxy
+    ownership should be expressed in scene terms instead of raw Newton indices.
+    """
 
     proxy_coupling: ProxyCouplingCfg = field(default_factory=ProxyCouplingCfg)
     """Configuration for ``coupling_type="proxy"``."""

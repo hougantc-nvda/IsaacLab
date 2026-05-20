@@ -185,7 +185,7 @@ def build_box_sand_model() -> tuple[newton.ModelBuilder, CoupledSolverCfg, int]:
         label=BOX_BODY_PATH,
     )
     box_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.5, margin=collider_margin)
-    box_shape = builder.add_shape_box(
+    builder.add_shape_box(
         box_body,
         hx=half_extent,
         hy=half_extent,
@@ -193,13 +193,12 @@ def build_box_sand_model() -> tuple[newton.ModelBuilder, CoupledSolverCfg, int]:
         cfg=box_cfg,
         color=(0.12, 0.34, 0.85),
     )
-    ground_shape = builder.add_ground_plane(
+    builder.add_ground_plane(
         cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, margin=collider_margin),
         color=(0.46, 0.38, 0.24),
     )
 
     particle_start, particle_end = spawn_sand(builder)
-    particle_indices = list(range(particle_start, particle_end))
 
     solver_cfg = CoupledSolverCfg(
         entries=[
@@ -210,9 +209,8 @@ def build_box_sand_model() -> tuple[newton.ModelBuilder, CoupledSolverCfg, int]:
                     use_mujoco_contacts=False,
                     njmax=100,
                 ),
-                bodies=[box_body],
-                joints=list(range(builder.joint_count)),
-                shapes=[box_shape, ground_shape],
+                body_label_patterns=[BOX_BODY_PATH],
+                include_static_shapes=True,
                 substeps=args_cli.rigid_substeps,
             ),
             CoupledSolverEntryCfg(
@@ -228,7 +226,7 @@ def build_box_sand_model() -> tuple[newton.ModelBuilder, CoupledSolverCfg, int]:
                     critical_fraction=0.0,
                     collider_velocity_mode="forward",
                 ),
-                particles=particle_indices,
+                particle_range=(particle_start, particle_end),
                 in_place=True,
             ),
         ],
@@ -239,7 +237,7 @@ def build_box_sand_model() -> tuple[newton.ModelBuilder, CoupledSolverCfg, int]:
                 CoupledProxyCfg(
                     source=RIGID_ENTRY,
                     destination=SAND_ENTRY,
-                    bodies=[box_body],
+                    body_label_patterns=[BOX_BODY_PATH],
                     mass_scale=args_cli.proxy_mass_relaxation,
                     mode="lagged",
                 )

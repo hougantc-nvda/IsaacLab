@@ -7,11 +7,17 @@
 
 from __future__ import annotations
 
+import copy
+import re
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 from newton import Model
 from newton.solvers.coupled_experimental import SolverAdmmCoupled, SolverCoupled, SolverProxyCoupled
+
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.physics import PhysicsManager
 
 from .coupled_manager_cfg import (
     AdmmContactPairCfg,
@@ -27,6 +33,9 @@ from .solver_factory import (
     resolve_newton_solver_class_and_kwargs,
     solver_cfg_needs_external_contacts,
 )
+
+if TYPE_CHECKING:
+    from isaaclab.scene import InteractiveSceneCfg
 
 
 class NewtonCoupledManager(NewtonManager):
@@ -68,6 +77,7 @@ class NewtonCoupledManager(NewtonManager):
     @classmethod
     def _build_solver(cls, model: Model, solver_cfg: CoupledSolverCfg) -> None:
         """Construct a Newton coupled solver and populate the base-class slots."""
+        solver_cfg = cls._resolve_solver_cfg(model, solver_cfg)
         cls._validate_solver_cfg(solver_cfg)
 
         entries = [cls._build_entry(entry_cfg) for entry_cfg in solver_cfg.entries]
@@ -97,6 +107,311 @@ class NewtonCoupledManager(NewtonManager):
             NewtonManager._solver.prepare_graph_capture()
         NewtonManager._use_single_state = False
         NewtonManager._needs_collision_pipeline = cls._needs_external_collision_pipeline(solver_cfg)
+
+    @classmethod
+    def _resolve_solver_cfg(cls, model: Model, solver_cfg: CoupledSolverCfg) -> CoupledSolverCfg:
+        """Return a shallow copy of ``solver_cfg`` with selector fields resolved to ids."""
+        scene_cfg = cls._resolve_scene_cfg(solver_cfg)
+        resolved_cfg = copy.copy(solver_cfg)
+        resolved_cfg.entries = [
+            cls._resolve_entry_cfg(model, entry_cfg, scene_cfg) for entry_cfg in solver_cfg.entries
+        ]
+        resolved_proxy_coupling = copy.copy(solver_cfg.proxy_coupling)
+        resolved_proxy_coupling.proxies = [
+            cls._resolve_proxy_cfg(model, proxy_cfg, scene_cfg) for proxy_cfg in solver_cfg.proxy_coupling.proxies
+        ]
+        resolved_cfg.proxy_coupling = resolved_proxy_coupling
+        return resolved_cfg
+
+    @staticmethod
+    def _resolve_scene_cfg(solver_cfg: CoupledSolverCfg):
+        """Resolve the scene cfg used by ``SceneEntityCfg`` selectors."""
+        if solver_cfg.scene_cfg is not None:
+            return solver_cfg.scene_cfg
+        return getattr(PhysicsManager._cfg, "scene_cfg", None)
+
+    @classmethod
+    def _resolve_entry_cfg(
+        cls, model: Model, entry_cfg: CoupledSolverEntryCfg, scene_cfg: InteractiveSceneCfg | None
+    ) -> CoupledSolverEntryCfg:
+        """Resolve one entry's front-end selectors into raw Newton index lists."""
+        resolved = copy.copy(entry_cfg)
+        body_selector_used = cls._uses_body_selectors(entry_cfg)
+        selected_bodies = cls._resolve_body_selectors(model, entry_cfg, scene_cfg, f"entry {entry_cfg.name!r}")
+        bodies = cls._unique_ints([*entry_cfg.bodies, *selected_bodies])
+        joints = list(entry_cfg.joints)
+        shapes = list(entry_cfg.shapes)
+        if body_selector_used:
+            if entry_cfg.include_child_joints:
+                joints.extend(cls._child_joints_for_bodies(model, bodies))
+            if entry_cfg.include_body_shapes or entry_cfg.include_static_shapes:
+                shapes.extend(
+                    cls._shapes_for_bodies(
+                        model,
+                        bodies,
+                        include_body_shapes=entry_cfg.include_body_shapes,
+                        include_static_shapes=entry_cfg.include_static_shapes,
+                    )
+                )
+
+        resolved.bodies = bodies
+        resolved.joints = cls._unique_ints(joints)
+        resolved.shapes = cls._unique_ints(shapes)
+        resolved.particles = cls._resolve_particles(
+            model,
+            explicit=entry_cfg.particles,
+            particle_range=entry_cfg.particle_range,
+            all_particles=entry_cfg.all_particles,
+            field=f"CoupledSolverEntryCfg {entry_cfg.name!r}",
+        )
+        return resolved
+
+    @classmethod
+    def _resolve_proxy_cfg(
+        cls, model: Model, proxy_cfg: CoupledProxyCfg, scene_cfg: InteractiveSceneCfg | None
+    ) -> CoupledProxyCfg:
+        """Resolve one proxy cfg's selectors into raw Newton index lists."""
+        resolved = copy.copy(proxy_cfg)
+        selected_bodies = cls._resolve_body_selectors(
+            model,
+            proxy_cfg,
+            scene_cfg,
+            f"proxy {proxy_cfg.source!r}->{proxy_cfg.destination!r}",
+        )
+        resolved.bodies = cls._unique_ints([*proxy_cfg.bodies, *selected_bodies])
+        resolved.particles = cls._resolve_particles(
+            model,
+            explicit=proxy_cfg.particles,
+            particle_range=proxy_cfg.particle_range,
+            all_particles=proxy_cfg.all_particles,
+            field=f"CoupledProxyCfg {proxy_cfg.source!r}->{proxy_cfg.destination!r}",
+        )
+        return resolved
+
+    @staticmethod
+    def _uses_body_selectors(cfg: CoupledSolverEntryCfg | CoupledProxyCfg) -> bool:
+        return bool(cfg.body_entities or cfg.body_label_patterns or cfg.body_name_patterns)
+
+    @classmethod
+    def _resolve_body_selectors(
+        cls,
+        model: Model,
+        cfg: CoupledSolverEntryCfg | CoupledProxyCfg,
+        scene_cfg: InteractiveSceneCfg | None,
+        field: str,
+    ) -> list[int]:
+        body_ids: list[int] = []
+        if cfg.body_entities:
+            if scene_cfg is None:
+                raise ValueError(
+                    f"{type(cfg).__name__} {field} uses body_entities, but CoupledSolverCfg.scene_cfg is not set. "
+                    "Set scene_cfg=self.scene in the coupled solver cfg or use body_label_patterns/body_name_patterns."
+                )
+            for entity_cfg in cfg.body_entities:
+                body_ids.extend(cls._resolve_entity_to_body_ids(model, entity_cfg, scene_cfg, field))
+        body_ids.extend(cls._resolve_body_label_patterns(model, cfg.body_label_patterns, field))
+        body_ids.extend(cls._resolve_body_name_patterns(model, cfg.body_name_patterns, field))
+        return cls._unique_ints(body_ids)
+
+    @classmethod
+    def _resolve_entity_to_body_ids(
+        cls,
+        model: Model,
+        entity_cfg: SceneEntityCfg,
+        scene_cfg: InteractiveSceneCfg,
+        field: str,
+    ) -> list[int]:
+        """Resolve one ``SceneEntityCfg`` to Newton body ids."""
+        asset_cfg = getattr(scene_cfg, entity_cfg.name, None)
+        if asset_cfg is None or not hasattr(asset_cfg, "prim_path"):
+            raise ValueError(
+                f"CoupledSolverCfg {field} references scene entity {entity_cfg.name!r}, "
+                "which is not present on scene_cfg or lacks prim_path."
+            )
+
+        asset_pattern = str(asset_cfg.prim_path).replace("{ENV_REGEX_NS}", r"/World/envs/env_.*")
+        asset_regex = re.compile(rf"^{asset_pattern}(/|$)")
+        labels = cls._body_labels(model)
+        candidate_ids = [body_id for body_id, label in enumerate(labels) if asset_regex.match(label)]
+        patterns = entity_cfg.body_names
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if patterns is None:
+            body_ids = cls._select_entity_body_ids(candidate_ids, entity_cfg.body_ids, field, entity_cfg.name)
+            if not candidate_ids:
+                raise ValueError(
+                    f"CoupledSolverCfg {field}: scene entity {entity_cfg.name!r} matched no Newton bodies "
+                    f"under prim_path regex {asset_pattern!r}."
+                )
+            if not body_ids:
+                raise ValueError(
+                    f"CoupledSolverCfg {field}: scene entity {entity_cfg.name!r} body_ids selected no bodies "
+                    f"from {len(candidate_ids)} candidate Newton bodies."
+                )
+            return body_ids
+        if not cls._is_all_slice(entity_cfg.body_ids):
+            raise ValueError(
+                f"CoupledSolverCfg {field}: scene entity {entity_cfg.name!r} sets both body_names and body_ids. "
+                "Use only one selector to avoid ambiguous Newton body ownership."
+            )
+
+        compiled = [re.compile(pattern) for pattern in patterns]
+        matched = [False] * len(compiled)
+        body_ids: list[int] = []
+        if entity_cfg.preserve_order:
+            for index, pattern in enumerate(compiled):
+                matches = [
+                    body_id for body_id in candidate_ids if pattern.fullmatch(labels[body_id].rsplit("/", 1)[-1])
+                ]
+                if matches:
+                    matched[index] = True
+                    body_ids.extend(matches)
+        else:
+            for body_id in candidate_ids:
+                short_name = labels[body_id].rsplit("/", 1)[-1]
+                hit = next((index for index, pattern in enumerate(compiled) if pattern.fullmatch(short_name)), None)
+                if hit is None:
+                    continue
+                matched[hit] = True
+                body_ids.append(body_id)
+
+        unmatched = [pattern for pattern, ok in zip(patterns, matched) if not ok]
+        if unmatched:
+            raise ValueError(
+                f"CoupledSolverCfg {field}: scene entity {entity_cfg.name!r} has no Newton bodies matching "
+                f"{unmatched}. Check the regexes against body short names."
+            )
+        return cls._unique_ints(body_ids)
+
+    @staticmethod
+    def _is_all_slice(value) -> bool:
+        return isinstance(value, slice) and value.start is None and value.stop is None and value.step is None
+
+    @classmethod
+    def _select_entity_body_ids(cls, candidate_ids: list[int], selector, field: str, entity_name: str) -> list[int]:
+        """Apply an entity-local ``body_ids`` selector to candidate Newton body ids."""
+        if cls._is_all_slice(selector):
+            return candidate_ids
+        if isinstance(selector, int):
+            selector = [selector]
+        if isinstance(selector, slice):
+            return candidate_ids[selector]
+
+        body_ids: list[int] = []
+        for raw_index in selector:
+            local_index = int(raw_index)
+            if local_index < 0:
+                raise ValueError(
+                    f"CoupledSolverCfg {field}: scene entity {entity_name!r} body_ids index {local_index} is "
+                    "negative. Use non-negative entity-local body ids."
+                )
+            try:
+                body_ids.append(candidate_ids[local_index])
+            except IndexError as exc:
+                raise ValueError(
+                    f"CoupledSolverCfg {field}: scene entity {entity_name!r} body_ids index {local_index} is "
+                    f"outside the matched Newton body range [0, {len(candidate_ids)})."
+                ) from exc
+        return body_ids
+
+    @classmethod
+    def _resolve_body_label_patterns(cls, model: Model, patterns: list[str], field: str) -> list[int]:
+        """Resolve full-body-label regexes to body ids."""
+        labels = cls._body_labels(model)
+        return cls._resolve_body_patterns(labels, patterns, field, "body_label_patterns")
+
+    @classmethod
+    def _resolve_body_name_patterns(cls, model: Model, patterns: list[str], field: str) -> list[int]:
+        """Resolve short-body-name regexes to body ids."""
+        labels = cls._body_labels(model)
+        short_names = [label.rsplit("/", 1)[-1] for label in labels]
+        return cls._resolve_body_patterns(short_names, patterns, field, "body_name_patterns")
+
+    @staticmethod
+    def _resolve_body_patterns(
+        match_values: list[str], patterns: list[str], field: str, selector_name: str
+    ) -> list[int]:
+        body_ids: list[int] = []
+        for pattern in patterns:
+            regex = re.compile(pattern)
+            matches = [body_id for body_id, value in enumerate(match_values) if regex.fullmatch(value)]
+            if not matches:
+                raise ValueError(f"CoupledSolverCfg {field}: {selector_name} pattern {pattern!r} matched no bodies.")
+            body_ids.extend(matches)
+        return body_ids
+
+    @staticmethod
+    def _body_labels(model: Model) -> list[str]:
+        labels = getattr(model, "body_label", None) or getattr(model, "body_key", None)
+        if labels is None:
+            raise ValueError("Newton model does not expose body_label/body_key; body selectors cannot be resolved.")
+        return [str(label) for label in labels]
+
+    @classmethod
+    def _child_joints_for_bodies(cls, model: Model, body_ids: list[int]) -> list[int]:
+        """Return joints whose child body is in ``body_ids``."""
+        if int(getattr(model, "joint_count", 0)) <= 0 or getattr(model, "joint_child", None) is None:
+            return []
+        owned = set(body_ids)
+        return [joint_id for joint_id, child in enumerate(model.joint_child.numpy()) if int(child) in owned]
+
+    @classmethod
+    def _shapes_for_bodies(
+        cls,
+        model: Model,
+        body_ids: list[int],
+        *,
+        include_body_shapes: bool,
+        include_static_shapes: bool,
+    ) -> list[int]:
+        """Return shapes attached to selected bodies and optionally static shapes."""
+        if int(getattr(model, "shape_count", 0)) <= 0 or getattr(model, "shape_body", None) is None:
+            return []
+        owned = set(body_ids)
+        shape_ids: list[int] = []
+        for shape_id, body_id_raw in enumerate(model.shape_body.numpy()):
+            body_id = int(body_id_raw)
+            if (include_body_shapes and body_id in owned) or (include_static_shapes and body_id < 0):
+                shape_ids.append(shape_id)
+        return shape_ids
+
+    @classmethod
+    def _resolve_particles(
+        cls,
+        model: Model,
+        *,
+        explicit: list[int],
+        particle_range: tuple[int | None, int | None] | None,
+        all_particles: bool,
+        field: str,
+    ) -> list[int]:
+        particle_count = int(getattr(model, "particle_count", 0))
+        particles = list(explicit)
+        if all_particles:
+            particles.extend(range(particle_count))
+        if particle_range is not None:
+            start_raw, end_raw = particle_range
+            start = 0 if start_raw is None else int(start_raw)
+            end = particle_count if end_raw is None else int(end_raw)
+            if start < 0 or end < start or end > particle_count:
+                raise ValueError(
+                    f"{field}.particle_range must satisfy 0 <= start <= end <= particle_count "
+                    f"({particle_count}), got ({start}, {end})."
+                )
+            particles.extend(range(start, end))
+        return cls._unique_ints(particles)
+
+    @staticmethod
+    def _unique_ints(values) -> list[int]:
+        seen: set[int] = set()
+        result: list[int] = []
+        for value in values:
+            index = int(value)
+            if index in seen:
+                continue
+            seen.add(index)
+            result.append(index)
+        return result
 
     @classmethod
     def _apply_entry_solver_overrides(cls, entries: list[CoupledSolverEntryCfg]) -> None:
