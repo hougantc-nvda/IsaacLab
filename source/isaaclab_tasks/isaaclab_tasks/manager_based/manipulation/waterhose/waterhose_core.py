@@ -496,7 +496,7 @@ class WaterhoseSceneBuilder:
         self.env_origins = [self._env_origin(env_id) for env_id in range(self.num_envs)]
         self.asset_root = self.cfg.asset_root.expanduser().resolve()
         self.robot_urdf = self._resolve_robot_urdf()
-        self.scene_usd = self._resolve_optional_asset(self.cfg.scene_usd)
+        self.scene_usd = self._resolve_scene_usd()
         self.cable_assets = self._resolve_cable_assets()
         self.cable_usd = self.cable_assets[0].usd_path
 
@@ -593,6 +593,18 @@ class WaterhoseSceneBuilder:
         if not path.is_file():
             raise FileNotFoundError(f"Required cable robot asset not found: {path}")
         return path
+
+    def _resolve_scene_usd(self) -> Path | None:
+        """Resolve the authored static scene USD, or opt into procedural proxies."""
+        scene_usd = self.cfg.scene_usd
+        if scene_usd is not None and str(scene_usd).strip().lower() in {"", "none", "procedural"}:
+            return None
+        if scene_usd is not None:
+            return self._resolve_optional_asset(scene_usd)
+        default_scene = self.asset_root / "Cable008/Cable008_Body.usda"
+        if default_scene.is_file():
+            return default_scene.resolve()
+        return None
 
     def _resolve_asset_path(self, path_token: str | Path) -> Path:
         path = Path(path_token).expanduser()
@@ -2056,30 +2068,31 @@ class WaterhoseIKController:
 
 
 def setup_kit_scene(sim, scene_builder: WaterhoseSceneBuilder) -> None:
-    """Create simple Kit-side reference geometry when Kit visualization is active."""
+    """Create Kit-side authored scene geometry when Kit visualization is active."""
     if "kit" not in sim.resolve_visualizer_types():
         return
     _spawn_kit_robot_visuals(scene_builder)
-    for env_id, origin in enumerate(scene_builder.env_origins):
-        if scene_builder.num_envs == 1:
-            scene_prim_path = "/World/Cable008Scene"
-        else:
-            scene_prim_path = f"/World/Env_{env_id}/Cable008Scene"
-        if sim_utils.get_current_stage().GetPrimAtPath(scene_prim_path).IsValid():
-            continue
-        scene_cfg = sim_utils.UsdFileCfg(usd_path=str(scene_builder.scene_usd))
-        scene_pos = wp.transform_get_translation(scene_builder.asset_xform)
-        scene_rot = wp.transform_get_rotation(scene_builder.asset_xform)
-        scene_cfg.func(
-            scene_prim_path,
-            scene_cfg,
-            translation=(
-                float(scene_pos[0] + origin[0]),
-                float(scene_pos[1] + origin[1]),
-                float(scene_pos[2] + origin[2]),
-            ),
-            orientation=(float(scene_rot[0]), float(scene_rot[1]), float(scene_rot[2]), float(scene_rot[3])),
-        )
+    if scene_builder.scene_usd is not None:
+        for env_id, origin in enumerate(scene_builder.env_origins):
+            if scene_builder.num_envs == 1:
+                scene_prim_path = "/World/Cable008Scene"
+            else:
+                scene_prim_path = f"/World/Env_{env_id}/Cable008Scene"
+            if sim_utils.get_current_stage().GetPrimAtPath(scene_prim_path).IsValid():
+                continue
+            scene_cfg = sim_utils.UsdFileCfg(usd_path=str(scene_builder.scene_usd))
+            scene_pos = wp.transform_get_translation(scene_builder.asset_xform)
+            scene_rot = wp.transform_get_rotation(scene_builder.asset_xform)
+            scene_cfg.func(
+                scene_prim_path,
+                scene_cfg,
+                translation=(
+                    float(scene_pos[0] + origin[0]),
+                    float(scene_pos[1] + origin[1]),
+                    float(scene_pos[2] + origin[2]),
+                ),
+                orientation=(float(scene_rot[0]), float(scene_rot[1]), float(scene_rot[2]), float(scene_rot[3])),
+            )
     _spawn_kit_cable_curve_visuals(scene_builder)
     install_kit_cable_curve_pre_render_sync(scene_builder)
     if not sim_utils.get_current_stage().GetPrimAtPath("/World/DomeLight").IsValid():

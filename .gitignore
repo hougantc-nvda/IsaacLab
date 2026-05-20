@@ -15,6 +15,7 @@
 **/*.usdz
 !source/isaaclab_assets/data/Props/Waterhose/cable001.usda
 !source/isaaclab_assets/data/Props/Waterhose/cable002.usda
+!source/isaaclab_assets/data/Props/Waterhose/Cable008/Cable008_Body.usda
 
 # Python
 .DS_Store

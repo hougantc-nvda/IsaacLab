@@ -127,6 +127,7 @@ class RBY1DFWaterhoseEnvCfg(ManagerBasedRLEnvCfg):
 
     asset_root: str = f"{ISAACLAB_ASSETS_DATA_DIR}/Props/Waterhose"
     robot_urdf: str | None = None
+    # None uses the authored Cable008 scene. Set to "procedural" for lightweight proxy geometry only.
     scene_usd: str | None = None
     cable_usds: str | None = None
     cable_usd: str | None = None
