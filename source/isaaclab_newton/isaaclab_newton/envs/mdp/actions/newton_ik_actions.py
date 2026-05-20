@@ -52,6 +52,7 @@ class NewtonInverseKinematicsAction(ActionTerm):
         self._joint_ids, self._joint_names = self._asset.find_joints(self.cfg.joint_names)
         if len(self._joint_ids) == 0:
             raise ValueError(f"No joints matched Newton IK action joint_names={self.cfg.joint_names}.")
+        self._joint_ids_warp = wp.array(self._joint_ids, dtype=wp.int32, device=self.device)
 
         body_ids, body_names = self._asset.find_bodies(self.cfg.body_name)
         if len(body_ids) != 1:
@@ -191,7 +192,7 @@ class NewtonInverseKinematicsAction(ActionTerm):
         joint_seed[:, self._prototype_joint_coord_ids] = self._asset.data.joint_pos.torch
         joint_pos_des_all = self._ik_manager.solve(joint_seed)
         joint_pos_des = joint_pos_des_all[:, self._prototype_controlled_coord_ids].contiguous()
-        self._asset.set_joint_position_target_index(target=joint_pos_des, joint_ids=self._joint_ids)
+        self._asset.set_joint_position_target_index(target=joint_pos_des, joint_ids=self._joint_ids_warp)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         self._raw_actions[env_ids] = 0.0
