@@ -25,6 +25,12 @@ class NewtonVisualizerCfg(VisualizerCfg):
     headless: bool = False
     """Run the Newton viewer without requiring a display server."""
 
+    vsync: bool = False
+    """Enable vertical sync in the Newton OpenGL viewer."""
+
+    plot_history_size: int = 250
+    """Number of samples kept in Newton viewer plot history buffers."""
+
     update_frequency: int = 1
     """Visualizer update frequency (updates every N frames)."""
 
@@ -34,17 +40,32 @@ class NewtonVisualizerCfg(VisualizerCfg):
     show_contacts: bool = False
     """Show contact visualization."""
 
+    show_particles: bool = False
+    """Show particle visualization."""
+
     show_collision: bool = False
     """Show collision visualization."""
 
+    show_visual: bool = True
+    """Show visual geometry."""
+
+    show_static: bool = False
+    """Show static geometry."""
+
     show_springs: bool = False
     """Show spring visualization."""
+
+    show_triangles: bool = True
+    """Show triangle mesh visualization."""
 
     show_inertia_boxes: bool = False
     """Show inertia box visualization."""
 
     show_com: bool = False
     """Show center of mass visualization."""
+
+    show_hydro_contact_surface: bool = False
+    """Show hydroelastic contact surface visualization."""
 
     enable_shadows: bool = True
     """Enable shadow rendering."""

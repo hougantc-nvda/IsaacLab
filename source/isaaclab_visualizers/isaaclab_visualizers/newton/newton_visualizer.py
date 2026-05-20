@@ -302,7 +302,9 @@ class NewtonVisualizer(BaseVisualizer):
         self._viewer = NewtonViewerGL(
             width=self.cfg.window_width,
             height=self.cfg.window_height,
+            vsync=self.cfg.vsync,
             headless=self.cfg.headless,
+            plot_history_size=self.cfg.plot_history_size,
             metadata=metadata,
             update_frequency=self.cfg.update_frequency,
         )
@@ -325,10 +327,15 @@ class NewtonVisualizer(BaseVisualizer):
 
             self._viewer.show_joints = self.cfg.show_joints
             self._viewer.show_contacts = self.cfg.show_contacts
+            self._viewer.show_particles = self.cfg.show_particles
             self._viewer.show_collision = self.cfg.show_collision
+            self._viewer.show_visual = self.cfg.show_visual
+            self._viewer.show_static = self.cfg.show_static
             self._viewer.show_springs = self.cfg.show_springs
+            self._viewer.show_triangles = self.cfg.show_triangles
             self._viewer.show_inertia_boxes = self.cfg.show_inertia_boxes
             self._viewer.show_com = self.cfg.show_com
+            self._viewer.show_hydro_contact_surface = self.cfg.show_hydro_contact_surface
 
             self._viewer.renderer.draw_shadows = self.cfg.enable_shadows
             self._viewer.renderer.draw_sky = self.cfg.enable_sky
