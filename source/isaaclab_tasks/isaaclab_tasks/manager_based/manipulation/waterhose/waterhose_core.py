@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import site
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,8 @@ _ISAACLAB_ROOT = Path(__file__).resolve().parents[6]
 _DEFAULT_WATERHOSE_ASSET_ROOT = "source/isaaclab_assets/data/WaterhoseDemo"
 _DEFAULT_CABLE_USD_RELATIVE_PATH = "Waterhose/Cable008/curve/cable_SRA_curve03.usda"
 _DEFAULT_CABLE_PRIMS = ("/World/cable001/curve_0", "/World/cable002/curve_0")
+DEFER_NEWTON_IMPORT_ENV = "ISAACLAB_WATERHOSE_DEFER_NEWTON_IMPORT"
+KIT_STATIC_CONTACT_PROXY_ENV = "ISAACLAB_WATERHOSE_KIT_STATIC_CONTACT_PROXY"
 
 
 def default_waterhose_asset_root() -> Path:
@@ -183,6 +187,31 @@ PROXY_BODY_NAMES = {
 _ACTIVE_SCENE_BUILDER = None
 
 
+def _requested_kit_visualizer() -> bool:
+    if os.environ.get(DEFER_NEWTON_IMPORT_ENV) == "1" or os.environ.get(KIT_STATIC_CONTACT_PROXY_ENV) == "1":
+        return True
+
+    visualizer_flags = {"--visualizer", "--viz", "--vis"}
+    argv = sys.argv[1:]
+    for index, token in enumerate(argv):
+        value = None
+        if token in visualizer_flags and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif any(token.startswith(f"{flag}=") for flag in visualizer_flags):
+            value = token.split("=", 1)[1]
+        if value is not None and "kit" in {part.strip().lower() for part in value.replace(",", " ").split()}:
+            return True
+
+    try:
+        import carb  # noqa: PLC0415
+
+        settings = carb.settings.get_settings()
+        visualizer_types = settings.get_as_string("/isaaclab/visualizer/types") or ""
+    except Exception:
+        return False
+    return "kit" in {part.strip().lower() for part in visualizer_types.replace(",", " ").split()}
+
+
 def _active_scene_builder() -> WaterhoseSceneBuilder:
     if _ACTIVE_SCENE_BUILDER is None:
         raise RuntimeError("Waterhose Newton view was configured before the scene builder was initialized.")
@@ -265,6 +294,24 @@ def import_newton_dependencies() -> None:
     newton = newton_module
     SolverVBD = SolverVBDClass
     JointTargetMode = JointTargetModeClass
+
+
+def prefer_active_python_site_packages() -> None:
+    """Keep the active venv ahead of Kit extension prebundles for Newton deps."""
+    candidate_paths: list[str] = []
+    try:
+        candidate_paths.extend(site.getsitepackages())
+    except AttributeError:
+        pass
+    user_site = site.getusersitepackages()
+    if user_site:
+        candidate_paths.append(user_site)
+
+    for path in reversed(candidate_paths):
+        if not path or not Path(path).is_dir() or path not in sys.path:
+            continue
+        sys.path.remove(path)
+        sys.path.insert(0, path)
 
 
 def _load_cable_curve_importer():
@@ -888,11 +935,11 @@ class WaterhoseSceneBuilder:
         self.grasp_body_id = body_offset + int(proto_meta["grasp_body_id"])
 
     def _build_static_scene_template(self):
-        """Import the authored static scene collision/visual meshes before robot setup."""
+        """Build the static contact scene before robot setup."""
         builder = newton.ModelBuilder()
         SolverVBD.register_custom_attributes(builder)
         builder.default_shape_cfg = self.static_shape_cfg
-        self._add_static_scene_from_usd(builder)
+        self._add_static_scene_contacts(builder)
         return builder
 
     def _build_robot(self):
@@ -1260,6 +1307,12 @@ class WaterhoseSceneBuilder:
                 float(new_rot[3]),
             )
 
+    def _add_static_scene_contacts(self, builder) -> None:
+        if _requested_kit_visualizer():
+            self._add_kit_static_contact_proxy(builder)
+            return
+        self._add_static_scene_from_usd(builder)
+
     def _add_static_scene_from_usd(self, builder) -> None:
         scene_result = builder.add_usd(
             str(self.scene_usd),
@@ -1279,6 +1332,38 @@ class WaterhoseSceneBuilder:
             builder.body_inertia[body_id] = wp.mat33()
             builder.body_inv_inertia[body_id] = wp.mat33()
         self.scene_shape_ids = sorted(int(v) for v in scene_result["path_shape_map"].values())
+
+    def _add_kit_static_contact_proxy(self, builder) -> None:
+        """Use simple Newton contact shapes while Kit owns the visual USD scene."""
+        shape_start = builder.shape_count
+        table_cfg = self.static_shape_cfg.copy()
+        socket_cfg = self.static_shape_cfg.copy()
+        socket_cfg.mu = float(self.cfg.vbd_near_tip_mu)
+
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(self.table_pos, wp.quat_identity()),
+            hx=float(self.table_half_size[0]),
+            hy=float(self.table_half_size[1]),
+            hz=float(self.table_half_size[2]),
+            cfg=table_cfg,
+            label="waterhose_static_table_contact",
+        )
+
+        insertion_dir = wp.quat_rotate(self.socket_rot, wp.vec3(0.0, 0.0, 1.0))
+        socket_center = self.socket_pos - insertion_dir * 0.025
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(socket_center, self.socket_rot),
+            hx=0.045,
+            hy=0.045,
+            hz=0.025,
+            cfg=socket_cfg,
+            label="waterhose_static_socket_contact",
+        )
+
+        self.scene_body_ids = []
+        self.scene_shape_ids = list(range(shape_start, builder.shape_count))
 
     def _select_proxy_bodies(self, builder) -> None:
         self.proxy_body_ids = []
@@ -1331,7 +1416,9 @@ class WaterhoseSceneBuilder:
                         impratio=float(self.cfg.mujoco_impratio),
                         use_mujoco_contacts=bool(self.cfg.mujoco_use_mujoco_contacts),
                     ),
-                    body_label_patterns=[r"^(/World/RBY1DF|/World/Env_[0-9]+/RBY1DF)(/|$).*"],
+                    bodies=self._mujoco_body_ids,
+                    joints=self._mujoco_joint_ids,
+                    shapes=self._mujoco_shape_ids,
                     configure_view=configure_mujoco_view,
                     substeps=self.cfg.rigid_substeps,
                 ),
@@ -1349,13 +1436,9 @@ class WaterhoseSceneBuilder:
                         "rigid_joint_linear_k_start": float(self.cfg.vbd_rigid_joint_linear_k_start),
                         "rigid_joint_angular_k_start": float(self.cfg.vbd_rigid_joint_angular_k_start),
                     },
-                    body_label_patterns=[
-                        (
-                            r"^(/World/Waterhose|/root|/World/Cable008Scene|"
-                            r"/World/Env_[0-9]+/Cable008Scene|/World/WaterhoseCableCurves|"
-                            r"/World/Env_[0-9]+/WaterhoseCableCurves)(/|$).*"
-                        )
-                    ],
+                    bodies=self._vbd_body_ids,
+                    joints=self._vbd_joint_ids,
+                    shapes=self._vbd_shape_ids,
                     configure_view=configure_vbd_view,
                 ),
             ],
@@ -1365,7 +1448,7 @@ class WaterhoseSceneBuilder:
                     CoupledProxyCfg(
                         source=ROBOT_ENTRY,
                         destination=HOSE_ENTRY,
-                        body_name_patterns=[r"^(left|right)_gripper_(base|camera_bracket|leftfinger|rightfinger)$"],
+                        bodies=self.proxy_body_ids,
                         mass_scale=float(self.cfg.proxy_mass_scale),
                         mode="lagged",
                         collision_pipeline_factory=create_proxy_collision_pipeline,
@@ -2502,6 +2585,7 @@ def run_simulator(sim, controller: WaterhoseIKController, scene_builder: Waterho
 def initialize_waterhose_runtime(sim, scene_builder: WaterhoseSceneBuilder, builder) -> None:
     """Install the Newton builder and run waterhose-specific post-reset hooks."""
     NewtonManager.set_builder(builder)
+    prefer_active_python_site_packages()
     sim.reset()
     scene_builder.configure_runtime_vbd_solver()
     scene_builder.apply_runtime_cable_asset_xform()

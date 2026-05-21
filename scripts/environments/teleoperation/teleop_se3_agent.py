@@ -24,6 +24,8 @@ from collections.abc import Callable
 from isaaclab.app import AppLauncher
 
 from isaaclab_tasks.manager_based.manipulation.waterhose.launch import (
+    add_waterhose_teleop_args,
+    create_waterhose_spacemouse_device,
     get_visualizer_types,
     prepare_waterhose_launch,
 )
@@ -43,73 +45,7 @@ parser.add_argument(
 )
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--sensitivity", type=float, default=1.0, help="Sensitivity factor.")
-parser.add_argument(
-    "--spacemouse_mode",
-    choices=("auto", "simple", "full"),
-    default="auto",
-    help=(
-        "SpaceMouse control mode. 'simple' maps cap translation to gripper XYZ and cap twist to yaw only; "
-        "'full' keeps all 6-DoF axes. 'auto' uses simple mode for standalone Newton waterhose teleop."
-    ),
-)
-parser.add_argument(
-    "--spacemouse_pos_sensitivity",
-    type=float,
-    default=None,
-    help="Override SpaceMouse translation sensitivity. Defaults to 0.05 * --sensitivity.",
-)
-parser.add_argument(
-    "--spacemouse_rot_sensitivity",
-    type=float,
-    default=None,
-    help=(
-        "Override SpaceMouse rotation sensitivity. Defaults to 0.15 * --sensitivity in simple mode and "
-        "0.05 * --sensitivity in full mode."
-    ),
-)
-parser.add_argument(
-    "--spacemouse_simple_x_sign",
-    type=float,
-    choices=(-1.0, 1.0),
-    default=-1.0,
-    help="Simple SpaceMouse sign for right EEF x translation.",
-)
-parser.add_argument(
-    "--spacemouse_simple_y_sign",
-    type=float,
-    choices=(-1.0, 1.0),
-    default=-1.0,
-    help="Simple SpaceMouse sign for right EEF y translation.",
-)
-parser.add_argument(
-    "--spacemouse_simple_z_sign",
-    type=float,
-    choices=(-1.0, 1.0),
-    default=1.0,
-    help="Simple SpaceMouse sign for right EEF z translation.",
-)
-parser.add_argument(
-    "--spacemouse_simple_yaw_sign",
-    type=float,
-    choices=(-1.0, 1.0),
-    default=-1.0,
-    help="Simple SpaceMouse sign for right EEF yaw rotation.",
-)
-parser.add_argument(
-    "--spacemouse_simple_deadzone",
-    type=float,
-    default=1.0e-3,
-    help="Simple SpaceMouse deadzone applied to each command axis after scaling.",
-)
-parser.add_argument(
-    "--spacemouse_simple_yaw_translation_lock",
-    action=argparse.BooleanOptionalAction,
-    default=False,
-    help=(
-        "Zero translation while simple SpaceMouse yaw is active. Disabled by default because the SpaceMouse driver "
-        "stores the last rotation sample separately from translation samples."
-    ),
-)
+add_waterhose_teleop_args(parser)
 parser.add_argument(
     "--debug_teleop",
     action="store_true",
@@ -225,51 +161,6 @@ def _resolve_cloudxr_env(value: str | None) -> str | None:
     return _CLOUDXR_ENV_SHORTHANDS.get(value.lower(), value)
 
 
-class _SimpleSpaceMouse:
-    """Restrict SpaceMouse commands to translation and yaw for easier teleoperation."""
-
-    def __init__(
-        self,
-        device,
-        translation_signs: tuple[float, float, float],
-        yaw_sign: float,
-        deadzone: float,
-        yaw_translation_lock: bool,
-    ):
-        self._device = device
-        self._translation_signs = translation_signs
-        self._yaw_sign = yaw_sign
-        self._deadzone = max(0.0, float(deadzone))
-        self._yaw_translation_lock = yaw_translation_lock
-
-    def __str__(self) -> str:
-        return f"{self._device} (simple XYZ+gripper-spin mode)"
-
-    def reset(self) -> None:
-        self._device.reset()
-
-    def add_callback(self, key: str, func: Callable[[], None]) -> None:
-        self._device.add_callback(key, func)
-
-    def advance(self):
-        command = self._device.advance().clone()
-        if self._deadzone > 0.0:
-            command[torch.abs(command) < self._deadzone] = 0.0
-        for axis, sign in enumerate(self._translation_signs):
-            command[axis] *= sign
-        command[3:5] = 0.0
-        command[5] *= self._yaw_sign
-        translation_norm = torch.linalg.vector_norm(command[:3])
-        yaw_abs = torch.abs(command[5])
-        if translation_norm > self._deadzone:
-            command[5] = 0.0
-        elif yaw_abs > self._deadzone:
-            command[:3] = 0.0
-        if self._yaw_translation_lock and abs(float(command[5].detach().cpu())) > self._deadzone:
-            command[:3] = 0.0
-        return command
-
-
 def _create_builtin_device(device_name: str, sensitivity: float) -> object | None:
     """Create a built-in teleop device by name, or return None if unrecognized."""
     name = device_name.lower()
@@ -279,36 +170,11 @@ def _create_builtin_device(device_name: str, sensitivity: float) -> object | Non
 
         return Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.05 * sensitivity))
     elif name == "spacemouse":
-        from isaaclab.devices.spacemouse.se3_spacemouse import Se3SpaceMouse
-        from isaaclab.devices.spacemouse.se3_spacemouse_cfg import Se3SpaceMouseCfg
-
-        mode = args_cli.spacemouse_mode
-        if mode == "auto":
-            mode = "simple" if uses_standalone_waterhose_spacemouse else "full"
-        pos_sensitivity = (
-            float(args_cli.spacemouse_pos_sensitivity)
-            if args_cli.spacemouse_pos_sensitivity is not None
-            else 0.05 * sensitivity
+        return create_waterhose_spacemouse_device(
+            args_cli,
+            sensitivity,
+            simple_by_default=uses_standalone_waterhose_spacemouse,
         )
-        rot_sensitivity = (
-            float(args_cli.spacemouse_rot_sensitivity)
-            if args_cli.spacemouse_rot_sensitivity is not None
-            else (0.15 if mode == "simple" else 0.05) * sensitivity
-        )
-        device = Se3SpaceMouse(Se3SpaceMouseCfg(pos_sensitivity=pos_sensitivity, rot_sensitivity=rot_sensitivity))
-        if mode == "simple":
-            return _SimpleSpaceMouse(
-                device,
-                (
-                    float(args_cli.spacemouse_simple_x_sign),
-                    float(args_cli.spacemouse_simple_y_sign),
-                    float(args_cli.spacemouse_simple_z_sign),
-                ),
-                float(args_cli.spacemouse_simple_yaw_sign),
-                float(args_cli.spacemouse_simple_deadzone),
-                bool(args_cli.spacemouse_simple_yaw_translation_lock),
-            )
-        return device
     elif name == "gamepad":
         from isaaclab.devices.gamepad.se3_gamepad import Se3Gamepad
         from isaaclab.devices.gamepad.se3_gamepad_cfg import Se3GamepadCfg

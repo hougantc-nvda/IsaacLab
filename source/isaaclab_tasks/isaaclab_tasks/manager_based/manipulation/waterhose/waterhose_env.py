@@ -37,6 +37,7 @@ class RBY1DFWaterhoseEnv(ManagerBasedRLEnv):
         self.waterhose_scene_builder, self.waterhose_builder, solver_cfg = core.build_waterhose_scene(
             **cfg.waterhose_scene_kwargs()
         )
+        core.prefer_active_python_site_packages()
         cfg.sim.physics.solver_cfg = solver_cfg
         # NewtonCfg derives its manager class in __post_init__; keep it aligned
         # with the runtime-built coupled solver cfg.

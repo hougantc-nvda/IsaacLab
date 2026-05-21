@@ -233,9 +233,6 @@ class KitVisualizer(BaseVisualizer):
 
     def _setup_viewport(self) -> None:
         """Create/resolve viewport and configure initial camera."""
-        import omni.kit.viewport.utility as vp_utils
-        from omni.ui import DockPosition
-
         if self._runtime_headless:
             # Headless: no viewport window; apply cfg pose to the default perspective camera path.
             self._viewport_window = None
@@ -246,6 +243,16 @@ class KitVisualizer(BaseVisualizer):
                     "using eye/lookat from cfg instead."
                 )
             self._apply_cfg_camera_pose_if_configured()
+            self._refresh_controlled_camera_path()
+            return
+
+        try:
+            import omni.kit.viewport.utility as vp_utils
+            from omni.ui import DockPosition
+        except ImportError as exc:
+            logger.warning("[KitVisualizer] Viewport utility unavailable; using the default Kit viewport: %s", exc)
+            self._viewport_window = None
+            self._viewport_api = None
             self._refresh_controlled_camera_path()
             return
 
