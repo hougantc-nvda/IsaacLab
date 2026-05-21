@@ -83,6 +83,8 @@ class NewtonTaskSpaceIKAction(ActionTerm):
             self._model, self._scene_builder.right_gripper_driver_dofs
         )
         self._left_open_driver, _ = _gripper_driver_targets(self._model, self._scene_builder.left_gripper_driver_dofs)
+        self._init_tensor_views()
+        self._init_static_tensors()
         self._setup_ik()
         self._seed_task_targets()
         self._seed_control_targets()
@@ -106,34 +108,33 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._processed_actions[:, 6:] = self._raw_actions[:, 6:]
 
     def apply_actions(self) -> None:
-        core.apply_viewer_forces(self._env.sim)
-        state = core.NewtonManager.get_state_0()
-        body_q = state.body_q.numpy()
-        joint_q = state.joint_q.numpy()
-        action_np = self._processed_actions.detach().cpu().numpy()
-        target_np = self._control.joint_target_pos.numpy().astype(np.float32, copy=True)
-        for env_id, joint_coord_ids in enumerate(self._scene_builder.robot_joint_coord_ids_by_env):
-            ee_q = body_q[self._body_ids[env_id]]
-            if self.cfg.accumulate_targets:
-                target_pos, target_quat = self._accumulate_target_delta(
-                    env_id, action_np[env_id, :6].astype(np.float64)
-                )
-            else:
-                ee_quat = ee_q[3:].astype(np.float64)
-                delta_pos, target_quat = self._target_delta(ee_quat, action_np[env_id, :6].astype(np.float64))
-                target_pos = ee_q[:3].astype(np.float64) + delta_pos
-            q = self._solve_env(env_id, joint_q[joint_coord_ids].astype(np.float32), target_pos, target_quat)
-            self._set_gripper_targets(q, float(action_np[env_id, 6]))
-            max_step = np.full_like(q, float(self.cfg.max_joint_step))
-            if self._scene_builder.gripper_dofs:
-                max_step[self._scene_builder.gripper_dofs] = self._gripper_joint_step_limit()
-            q = self._last_control_q[env_id] + np.clip(q - self._last_control_q[env_id], -max_step, max_step)
-            self._last_control_q[env_id] = q.astype(np.float32, copy=True)
-            target_np[joint_coord_ids] = q
-        core.wp.copy(
-            self._control.joint_target_pos,
-            core.wp.array(target_np, dtype=core.wp.float32, device=self._model.device),
-        )
+        if self._env.sim.visualizers:
+            core.apply_viewer_forces(self._env.sim)
+
+        torch.index_select(self._body_q_t, 0, self._body_ids_t, out=self._ee_body_q)
+        torch.take(self._joint_q_t, self._joint_coord_ids_t, out=self._current_q)
+
+        action_pose = self._processed_actions[:, :6]
+        if self.cfg.accumulate_targets:
+            delta_pos, target_quat = self._target_delta_t(self._target_quat, action_pose)
+            self._target_pos.add_(delta_pos)
+            self._target_quat.copy_(target_quat)
+            target_pos = self._target_pos
+        else:
+            delta_pos, target_quat = self._target_delta_t(self._ee_body_q[:, 3:7], action_pose)
+            target_pos = self._ee_body_q[:, :3] + delta_pos
+
+        self._ik_manager.set_target_pose(target_pos - self._env_origins_t, target_quat)
+        solved_q = self._ik_manager.solve(self._current_q)
+
+        self._next_control_q.copy_(self._current_q)
+        self._next_control_q[:, self._ik_control_coord_ids_t] = solved_q[:, self._ik_control_coord_ids_t]
+        self._set_gripper_targets_t(self._next_control_q, self._processed_actions[:, 6])
+        self._joint_delta.copy_(self._next_control_q)
+        self._joint_delta.sub_(self._last_control_q)
+        self._joint_delta.clamp_(min=-self._max_step_t, max=self._max_step_t)
+        self._last_control_q.add_(self._joint_delta)
+        self._control_joint_target_pos_t.scatter_(0, self._joint_coord_ids_flat_t, self._last_control_q.reshape(-1))
 
     def reset(self, env_ids=None) -> None:
         if env_ids is None:
@@ -143,92 +144,117 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._reset_task_targets(env_ids)
         self._reset_control_targets(env_ids)
 
+    def _init_tensor_views(self) -> None:
+        state = core.NewtonManager.get_state_0()
+        self._body_q_t = core.wp.to_torch(state.body_q)
+        self._joint_q_t = core.wp.to_torch(state.joint_q)
+        self._control_joint_target_pos_t = core.wp.to_torch(self._control.joint_target_pos)
+
+    def _init_static_tensors(self) -> None:
+        self._num_robot_coords = int(self._single_robot_model.joint_coord_count)
+        self._body_ids_t = torch.as_tensor(self._body_ids, device=self.device, dtype=torch.long)
+        self._all_env_ids_t = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        self._joint_coord_ids_t = torch.as_tensor(
+            self._scene_builder.robot_joint_coord_ids_by_env,
+            device=self.device,
+            dtype=torch.long,
+        )
+        self._joint_coord_ids_flat_t = self._joint_coord_ids_t.reshape(-1)
+        self._env_origins_t = torch.as_tensor(
+            [[float(origin[i]) for i in range(3)] for origin in self._scene_builder.env_origins],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._ee_body_q = torch.empty((self.num_envs, 7), device=self.device, dtype=torch.float32)
+        self._current_q = torch.empty((self.num_envs, self._num_robot_coords), device=self.device, dtype=torch.float32)
+        self._next_control_q = torch.empty_like(self._current_q)
+        self._joint_delta = torch.empty_like(self._current_q)
+        self._max_step_t = torch.full_like(self._current_q, float(self.cfg.max_joint_step))
+        if self._scene_builder.gripper_dofs:
+            self._max_step_t[:, self._scene_builder.gripper_dofs] = self._gripper_joint_step_limit()
+
+        self._right_gripper_driver_dof = _first_index(self._scene_builder.right_gripper_driver_dofs)
+        self._right_gripper_dofs = tuple(self._scene_builder.right_gripper_dofs[:2])
+        self._left_gripper_driver_dof = _first_index(self._scene_builder.left_gripper_driver_dofs)
+        self._left_gripper_dofs = tuple(self._scene_builder.left_gripper_dofs[:2])
+
     def target_pose_to_action(
         self, target_pos: torch.Tensor, target_quat_xyzw: torch.Tensor, env_id: int = 0
     ) -> torch.Tensor:
-        curr = core.NewtonManager.get_state_0().body_q.numpy()[self._body_ids[env_id]]
-        curr_pos = torch.as_tensor(curr[:3], device=self.device, dtype=torch.float32)
-        delta_pos = (target_pos.to(self.device) - curr_pos).detach().cpu().numpy().astype(np.float64)
-        curr_quat = torch.as_tensor(curr[3:], device=self.device, dtype=torch.float32)
-        curr_quat_np = curr_quat.detach().cpu().numpy().astype(np.float64)
-        target_quat_np = target_quat_xyzw.detach().cpu().numpy().astype(np.float64)
+        curr = self._body_q_t[self._body_ids_t[env_id]]
+        curr_pos = curr[:3]
+        delta_pos = target_pos.to(device=self.device, dtype=torch.float32) - curr_pos
+        curr_quat = curr[3:7]
+        target_quat = target_quat_xyzw.to(device=self.device, dtype=torch.float32)
         if self.cfg.command_frame == "eef":
-            delta_pos = core._np_quat_rotate(core._np_quat_inverse(curr_quat_np), delta_pos)
+            delta_pos = _torch_quat_rotate(_torch_quat_inverse(curr_quat), delta_pos)
         if self._rotation_frame == "eef":
-            delta_axis_np = _axis_angle_between_eef(curr_quat_np, target_quat_np)
+            delta_axis = _torch_axis_angle_between_eef(curr_quat, target_quat)
         else:
-            delta_axis_np = _axis_angle_between_world(curr_quat_np, target_quat_np)
+            delta_axis = _torch_axis_angle_between_world(curr_quat, target_quat)
         action = torch.zeros(7, device=self.device)
-        action[:3] = torch.as_tensor(delta_pos, device=self.device, dtype=torch.float32) / float(
-            self.cfg.position_scale
-        )
-        action[3:6] = torch.as_tensor(delta_axis_np, device=self.device, dtype=torch.float32) / float(
-            self.cfg.rotation_scale
-        )
+        action[:3] = delta_pos / float(self.cfg.position_scale)
+        action[3:6] = delta_axis / float(self.cfg.rotation_scale)
         return action.clamp(-1.0, 1.0)
 
     def action_to_target_pose(self, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        state_np = core.NewtonManager.get_state_0().body_q.numpy()
-        processed_position = actions[:, :3] * float(self.cfg.position_scale)
-        processed_rotation = actions[:, 3:6] * float(self.cfg.rotation_scale)
-        pos = []
-        quat = []
-        for env_id in range(actions.shape[0]):
-            ee_q = state_np[self._body_ids[env_id]]
-            ee_quat = ee_q[3:].astype(np.float64)
-            delta_pos, quat_np = self._target_delta(
-                ee_quat,
-                torch.cat((processed_position[env_id], processed_rotation[env_id])).detach().cpu().numpy(),
-            )
-            pos.append(torch.as_tensor(ee_q[:3] + delta_pos, device=self.device, dtype=torch.float32))
-            quat.append(torch.as_tensor(quat_np, device=self.device, dtype=torch.float32))
-        return torch.stack(pos, dim=0), torch.stack(quat, dim=0)
+        actions = actions.to(device=self.device, dtype=torch.float32)
+        torch.index_select(
+            self._body_q_t,
+            0,
+            self._body_ids_t[: actions.shape[0]],
+            out=self._ee_body_q[: actions.shape[0]],
+        )
+        processed = torch.cat(
+            (
+                actions[:, :3] * float(self.cfg.position_scale),
+                actions[:, 3:6] * float(self.cfg.rotation_scale),
+            ),
+            dim=-1,
+        )
+        delta_pos, quat = self._target_delta_t(self._ee_body_q[: actions.shape[0], 3:7], processed)
+        return self._ee_body_q[: actions.shape[0], :3] + delta_pos, quat
 
-    def _target_delta(self, ee_quat: np.ndarray, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        delta_pos = action[:3]
-        axis_angle = action[3:6]
+    def _target_delta_t(self, ee_quat: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        delta_pos = action[:, :3] if action.ndim == 2 else action[:3]
+        axis_angle = action[:, 3:6] if action.ndim == 2 else action[3:6]
         if self.cfg.command_frame == "eef":
-            delta_pos = core._np_quat_rotate(ee_quat, delta_pos)
+            delta_pos = _torch_quat_rotate(ee_quat, delta_pos)
         if self._rotation_frame == "eef":
-            target_quat = _integrate_axis_angle_eef(ee_quat, axis_angle)
+            target_quat = _torch_integrate_axis_angle_eef(ee_quat, axis_angle)
         else:
-            target_quat = _integrate_axis_angle_world(ee_quat, axis_angle)
+            target_quat = _torch_integrate_axis_angle_world(ee_quat, axis_angle)
         return delta_pos, target_quat
 
     def _seed_task_targets(self) -> None:
-        body_q = core.NewtonManager.get_state_0().body_q.numpy()
-        self._target_pos = np.zeros((self.num_envs, 3), dtype=np.float64)
-        self._target_quat = np.zeros((self.num_envs, 4), dtype=np.float64)
-        for env_id, body_id in enumerate(self._body_ids):
-            q = body_q[body_id]
-            self._target_pos[env_id] = q[:3].astype(np.float64)
-            self._target_quat[env_id] = q[3:].astype(np.float64)
+        torch.index_select(self._body_q_t, 0, self._body_ids_t, out=self._ee_body_q)
+        self._target_pos = self._ee_body_q[:, :3].clone()
+        self._target_quat = self._ee_body_q[:, 3:7].clone()
 
     def _reset_task_targets(self, env_ids) -> None:
-        body_q = core.NewtonManager.get_state_0().body_q.numpy()
-        for env_id in self._env_indices(env_ids):
-            q = body_q[self._body_ids[env_id]]
-            self._target_pos[env_id] = q[:3].astype(np.float64)
-            self._target_quat[env_id] = q[3:].astype(np.float64)
-
-    def _accumulate_target_delta(self, env_id: int, action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        delta_pos, target_quat = self._target_delta(self._target_quat[env_id], action)
-        self._target_pos[env_id] = self._target_pos[env_id] + delta_pos
-        self._target_quat[env_id] = target_quat
-        return self._target_pos[env_id], self._target_quat[env_id]
+        ids = self._env_indices_t(env_ids)
+        if ids.numel() == self.num_envs:
+            torch.index_select(self._body_q_t, 0, self._body_ids_t, out=self._ee_body_q)
+            self._target_pos.copy_(self._ee_body_q[:, :3])
+            self._target_quat.copy_(self._ee_body_q[:, 3:7])
+            return
+        body_ids = self._body_ids_t.index_select(0, ids)
+        body_q = self._body_q_t.index_select(0, body_ids)
+        self._target_pos[ids] = body_q[:, :3]
+        self._target_quat[ids] = body_q[:, 3:7]
 
     def _setup_ik(self) -> None:
-        body_q_np = core.NewtonManager.get_state_0().body_q.numpy()
-        self._cache_nominal_hold_targets(body_q_np)
+        self._cache_nominal_hold_targets()
         link_index = _resolve_body_ids(self._single_robot_model.body_label, core.RIGHT_EE, 1)[0]
         left_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.LEFT_EE, 1)[0]
         torso_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.TORSO, 1)[0]
         self.cfg.controller.iterations = int(self.cfg.ik_iterations)
         self._ik_control_coord_ids = _controlled_ik_coord_ids(self._single_robot_model)
+        self._ik_control_coord_ids_t = torch.as_tensor(self._ik_control_coord_ids, device=self.device, dtype=torch.long)
         self._ik_manager = NewtonIKManager(
             self.cfg.controller,
             model=self._single_robot_model,
-            num_envs=1,
+            num_envs=self.num_envs,
             device=self.device,
             link_index=link_index,
             link_offset_pos=(0.0, 0.0, 0.0),
@@ -246,77 +272,45 @@ class NewtonTaskSpaceIKAction(ActionTerm):
                 ),
             ],
         )
+        self._ik_manager.set_extra_target_pose(0, self._hold_nominal_pos[:, 0], self._hold_nominal_quat[:, 0])
+        self._ik_manager.set_extra_target_pose(1, self._hold_nominal_pos[:, 1], self._hold_nominal_quat[:, 1])
 
-    def _cache_nominal_hold_targets(self, body_q_np: np.ndarray) -> None:
-        self._hold_nominal_pos = np.zeros((self.num_envs, 2, 3), dtype=np.float64)
-        self._hold_nominal_quat = np.zeros((self.num_envs, 2, 4), dtype=np.float64)
-        for env_id in range(self.num_envs):
-            origin = self._env_origin(env_id)
-            for hold_index, body_id in enumerate((self._left_body_ids[env_id], self._torso_body_ids[env_id])):
-                q = body_q_np[body_id]
-                self._hold_nominal_pos[env_id, hold_index] = q[:3].astype(np.float64) - origin
-                self._hold_nominal_quat[env_id, hold_index] = q[3:].astype(np.float64)
+    def _cache_nominal_hold_targets(self) -> None:
+        left_ids = torch.as_tensor(self._left_body_ids, device=self.device, dtype=torch.long)
+        torso_ids = torch.as_tensor(self._torso_body_ids, device=self.device, dtype=torch.long)
+        left_q = self._body_q_t.index_select(0, left_ids)
+        torso_q = self._body_q_t.index_select(0, torso_ids)
+        self._hold_nominal_pos = torch.stack(
+            (left_q[:, :3] - self._env_origins_t, torso_q[:, :3] - self._env_origins_t),
+            dim=1,
+        ).contiguous()
+        self._hold_nominal_quat = torch.stack((left_q[:, 3:7], torso_q[:, 3:7]), dim=1).contiguous()
 
     def _seed_control_targets(self) -> None:
-        initial = self._single_robot_model.joint_q.numpy().astype(np.float32, copy=False)
-        target_np = self._control.joint_target_pos.numpy().astype(np.float32, copy=True)
-        self._last_control_q = np.tile(initial, (self.num_envs, 1)).astype(np.float32)
-        for joint_coord_ids in self._scene_builder.robot_joint_coord_ids_by_env:
-            target_np[joint_coord_ids] = initial
-        core.wp.copy(
-            self._control.joint_target_pos,
-            core.wp.array(target_np, dtype=core.wp.float32, device=self._model.device),
-        )
+        initial = core.wp.to_torch(self._single_robot_model.joint_q).to(device=self.device, dtype=torch.float32)
+        self._last_control_q = initial.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
+        self._control_joint_target_pos_t.scatter_(0, self._joint_coord_ids_flat_t, self._last_control_q.reshape(-1))
 
-    def _solve_env(
-        self, env_id: int, current_q: np.ndarray, target_pos: np.ndarray, target_quat: np.ndarray
-    ) -> np.ndarray:
-        origin = self._env_origin(env_id)
-        local_target_pos = target_pos - origin
-        target_pos_t = torch.as_tensor(local_target_pos, device=self.device, dtype=torch.float32).reshape(1, 3)
-        target_quat_t = torch.as_tensor(target_quat, device=self.device, dtype=torch.float32).reshape(1, 4)
-        seed_t = torch.as_tensor(current_q, device=self.device, dtype=torch.float32).reshape(
-            1, self._single_robot_model.joint_coord_count
-        )
-        self._ik_manager.set_target_pose(target_pos_t, target_quat_t)
-        for objective_index, hold_index in enumerate(range(2)):
-            hold_pos_t = torch.as_tensor(
-                self._hold_nominal_pos[env_id, hold_index], device=self.device, dtype=torch.float32
-            ).reshape(1, 3)
-            hold_quat_t = torch.as_tensor(
-                self._hold_nominal_quat[env_id, hold_index], device=self.device, dtype=torch.float32
-            ).reshape(1, 4)
-            self._ik_manager.set_extra_target_pose(objective_index, hold_pos_t, hold_quat_t)
-        solved_q = self._ik_manager.solve(seed_t)[0].detach().cpu().numpy().astype(np.float32, copy=True)
-        q = current_q.astype(np.float32, copy=True)
-        q[self._ik_control_coord_ids] = solved_q[self._ik_control_coord_ids]
-        return q
-
-    def _set_gripper_targets(self, q: np.ndarray, gripper_action: float) -> None:
-        right_alpha = 1.0 if gripper_action > 0.0 else 0.0
+    def _set_gripper_targets_t(self, q: torch.Tensor, gripper_action: torch.Tensor) -> None:
+        right_alpha = (gripper_action > 0.0).to(dtype=torch.float32)
         right_driver = (1.0 - right_alpha) * self._right_open_driver + right_alpha * self._right_closed_driver
-        _set_gripper_side(
-            q, self._scene_builder.right_gripper_driver_dofs, self._scene_builder.right_gripper_dofs, right_driver
-        )
-        _set_gripper_side(
-            q,
-            self._scene_builder.left_gripper_driver_dofs,
-            self._scene_builder.left_gripper_dofs,
-            self._left_open_driver,
-        )
+        if self._right_gripper_driver_dof is not None:
+            q[:, self._right_gripper_driver_dof] = right_driver
+        if len(self._right_gripper_dofs) >= 2:
+            q[:, self._right_gripper_dofs[0]] = -0.5 * right_driver
+            q[:, self._right_gripper_dofs[1]] = 0.5 * right_driver
+        if self._left_gripper_driver_dof is not None:
+            q[:, self._left_gripper_driver_dof] = self._left_open_driver
+        if len(self._left_gripper_dofs) >= 2:
+            q[:, self._left_gripper_dofs[0]] = -0.5 * self._left_open_driver
+            q[:, self._left_gripper_dofs[1]] = 0.5 * self._left_open_driver
 
     def _reset_control_targets(self, env_ids) -> None:
-        joint_q = core.NewtonManager.get_state_0().joint_q.numpy()
-        target_np = self._control.joint_target_pos.numpy().astype(np.float32, copy=True)
-        for env_id in self._env_indices(env_ids):
-            joint_coord_ids = self._scene_builder.robot_joint_coord_ids_by_env[env_id]
-            q = joint_q[joint_coord_ids].astype(np.float32, copy=True)
-            self._last_control_q[env_id] = q
-            target_np[joint_coord_ids] = q
-        core.wp.copy(
-            self._control.joint_target_pos,
-            core.wp.array(target_np, dtype=core.wp.float32, device=self._model.device),
-        )
+        ids = self._env_indices_t(env_ids)
+        joint_coord_ids = self._joint_coord_ids_t.index_select(0, ids)
+        current_q = torch.take(self._joint_q_t, joint_coord_ids)
+        self._last_control_q[ids] = current_q
+        self._control_joint_target_pos_t.scatter_(0, joint_coord_ids.reshape(-1), current_q.reshape(-1))
 
     def _gripper_joint_step_limit(self) -> float:
         max_step = float(self.cfg.max_gripper_joint_step)
@@ -329,19 +323,21 @@ class NewtonTaskSpaceIKAction(ActionTerm):
             step_dt = float(self._env.cfg.sim.dt) * int(self._env.cfg.decimation)
         return min(max_step, max_velocity * float(step_dt))
 
-    def _env_indices(self, env_ids) -> list[int]:
+    def _env_indices_t(self, env_ids) -> torch.Tensor:
+        if env_ids is None:
+            return self._all_env_ids_t
         if isinstance(env_ids, slice):
-            return list(range(*env_ids.indices(self.num_envs)))
+            start, stop, step = env_ids.indices(self.num_envs)
+            if start == 0 and stop == self.num_envs and step == 1:
+                return self._all_env_ids_t
+            return torch.arange(start, stop, step, device=self.device, dtype=torch.long)
         if isinstance(env_ids, torch.Tensor):
-            return [int(env_id) for env_id in env_ids.detach().cpu().flatten().tolist()]
+            return env_ids.to(device=self.device, dtype=torch.long).flatten()
         if isinstance(env_ids, np.ndarray):
-            return [int(env_id) for env_id in env_ids.reshape(-1).tolist()]
+            return torch.as_tensor(env_ids.reshape(-1), device=self.device, dtype=torch.long)
         if isinstance(env_ids, int):
-            return [env_ids]
-        return [int(env_id) for env_id in env_ids]
-
-    def _env_origin(self, env_id: int) -> np.ndarray:
-        return np.array([float(self._scene_builder.env_origins[env_id][i]) for i in range(3)], dtype=np.float64)
+            return torch.as_tensor([env_ids], device=self.device, dtype=torch.long)
+        return torch.as_tensor(list(env_ids), device=self.device, dtype=torch.long)
 
 
 def _resolve_body_ids(labels: list[str], short_name: str, num_envs: int) -> list[int]:
@@ -363,12 +359,8 @@ def _gripper_driver_targets(model, driver_dofs: list[int]) -> tuple[float, float
     return max(lower, min(upper, open_target)), max(lower, min(upper, closed_target))
 
 
-def _set_gripper_side(q: np.ndarray, driver_dofs: list[int], finger_dofs: list[int], driver_target: float) -> None:
-    if driver_dofs:
-        q[driver_dofs[0]] = driver_target
-    if len(finger_dofs) >= 2:
-        q[finger_dofs[0]] = -0.5 * driver_target
-        q[finger_dofs[1]] = 0.5 * driver_target
+def _first_index(indices: list[int]) -> int | None:
+    return int(indices[0]) if indices else None
 
 
 def _controlled_ik_coord_ids(model) -> list[int]:
@@ -387,38 +379,67 @@ def _controlled_ik_coord_ids(model) -> list[int]:
     return sorted(set(coord_ids))
 
 
-def _integrate_axis_angle_world(quat_xyzw: np.ndarray, axis_angle: np.ndarray) -> np.ndarray:
-    angle = float(np.linalg.norm(axis_angle))
-    if angle <= 1.0e-8:
-        return quat_xyzw / max(np.linalg.norm(quat_xyzw), 1.0e-12)
-    delta = core._np_quat_from_axis_angle(axis_angle / angle, angle)
-    quat = core._np_quat_multiply(delta, quat_xyzw)
-    return quat / max(np.linalg.norm(quat), 1.0e-12)
+def _torch_quat_inverse(quat_xyzw: torch.Tensor) -> torch.Tensor:
+    result = quat_xyzw.clone()
+    result[..., :3] = -result[..., :3]
+    return result
 
 
-def _integrate_axis_angle_eef(quat_xyzw: np.ndarray, axis_angle: np.ndarray) -> np.ndarray:
-    angle = float(np.linalg.norm(axis_angle))
-    if angle <= 1.0e-8:
-        return quat_xyzw / max(np.linalg.norm(quat_xyzw), 1.0e-12)
-    delta = core._np_quat_from_axis_angle(axis_angle / angle, angle)
-    quat = core._np_quat_multiply(quat_xyzw, delta)
-    return quat / max(np.linalg.norm(quat), 1.0e-12)
+def _torch_quat_multiply(left_xyzw: torch.Tensor, right_xyzw: torch.Tensor) -> torch.Tensor:
+    left_xyz = left_xyzw[..., :3]
+    right_xyz = right_xyzw[..., :3]
+    left_w = left_xyzw[..., 3:4]
+    right_w = right_xyzw[..., 3:4]
+    xyz = left_w * right_xyz + right_w * left_xyz + torch.linalg.cross(left_xyz, right_xyz, dim=-1)
+    w = left_w * right_w - torch.sum(left_xyz * right_xyz, dim=-1, keepdim=True)
+    return torch.cat((xyz, w), dim=-1)
 
 
-def _axis_angle_between_world(curr_xyzw: np.ndarray, target_xyzw: np.ndarray) -> np.ndarray:
-    delta = core._np_quat_multiply(target_xyzw, core._np_quat_inverse(curr_xyzw))
-    return _axis_angle_from_quat(delta)
+def _torch_quat_normalize(quat_xyzw: torch.Tensor) -> torch.Tensor:
+    return quat_xyzw / torch.linalg.vector_norm(quat_xyzw, dim=-1, keepdim=True).clamp_min(1.0e-12)
 
 
-def _axis_angle_between_eef(curr_xyzw: np.ndarray, target_xyzw: np.ndarray) -> np.ndarray:
-    delta = core._np_quat_multiply(core._np_quat_inverse(curr_xyzw), target_xyzw)
-    return _axis_angle_from_quat(delta)
+def _torch_quat_rotate(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat_xyz = quat_xyzw[..., :3]
+    quat_w = quat_xyzw[..., 3:4]
+    t = 2.0 * torch.linalg.cross(quat_xyz, vec, dim=-1)
+    return vec + quat_w * t + torch.linalg.cross(quat_xyz, t, dim=-1)
 
 
-def _axis_angle_from_quat(delta: np.ndarray) -> np.ndarray:
-    delta = delta / max(np.linalg.norm(delta), 1.0e-12)
-    angle = 2.0 * np.arctan2(np.linalg.norm(delta[:3]), delta[3])
-    if angle <= 1.0e-8:
-        return np.zeros(3, dtype=np.float64)
-    axis = delta[:3] / max(np.linalg.norm(delta[:3]), 1.0e-12)
-    return axis * angle
+def _torch_quat_from_axis_angle(axis_angle: torch.Tensor) -> torch.Tensor:
+    angle = torch.linalg.vector_norm(axis_angle, dim=-1, keepdim=True)
+    axis = axis_angle / angle.clamp_min(1.0e-12)
+    half_angle = 0.5 * angle
+    quat = torch.cat((axis * torch.sin(half_angle), torch.cos(half_angle)), dim=-1)
+    identity = torch.zeros_like(quat)
+    identity[..., 3] = 1.0
+    return torch.where(angle > 1.0e-8, quat, identity)
+
+
+def _torch_integrate_axis_angle_world(quat_xyzw: torch.Tensor, axis_angle: torch.Tensor) -> torch.Tensor:
+    delta = _torch_quat_from_axis_angle(axis_angle)
+    return _torch_quat_normalize(_torch_quat_multiply(delta, quat_xyzw))
+
+
+def _torch_integrate_axis_angle_eef(quat_xyzw: torch.Tensor, axis_angle: torch.Tensor) -> torch.Tensor:
+    delta = _torch_quat_from_axis_angle(axis_angle)
+    return _torch_quat_normalize(_torch_quat_multiply(quat_xyzw, delta))
+
+
+def _torch_axis_angle_between_world(curr_xyzw: torch.Tensor, target_xyzw: torch.Tensor) -> torch.Tensor:
+    delta = _torch_quat_multiply(target_xyzw, _torch_quat_inverse(curr_xyzw))
+    return _torch_axis_angle_from_quat(delta)
+
+
+def _torch_axis_angle_between_eef(curr_xyzw: torch.Tensor, target_xyzw: torch.Tensor) -> torch.Tensor:
+    delta = _torch_quat_multiply(_torch_quat_inverse(curr_xyzw), target_xyzw)
+    return _torch_axis_angle_from_quat(delta)
+
+
+def _torch_axis_angle_from_quat(delta_xyzw: torch.Tensor) -> torch.Tensor:
+    delta = _torch_quat_normalize(delta_xyzw)
+    xyz = delta[..., :3]
+    xyz_norm = torch.linalg.vector_norm(xyz, dim=-1, keepdim=True)
+    angle = 2.0 * torch.atan2(xyz_norm, delta[..., 3:4])
+    axis = xyz / xyz_norm.clamp_min(1.0e-12)
+    return torch.where(angle > 1.0e-8, axis * angle, torch.zeros_like(xyz))
