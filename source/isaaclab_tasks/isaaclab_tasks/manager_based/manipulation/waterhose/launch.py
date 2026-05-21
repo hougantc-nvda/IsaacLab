@@ -168,9 +168,6 @@ def prepare_waterhose_launch(
         Resolved launch mode.
     """
     visualizer_types = get_visualizer_types(launcher_args)
-    if visualizer_types & {"kit", "newton"}:
-        os.environ.setdefault("DISPLAY", ":1")
-
     if task_name is None:
         task_name = _get_arg(launcher_args, "task")
     resolved_task_name = resolve_waterhose_task_name(task_name, input_file)

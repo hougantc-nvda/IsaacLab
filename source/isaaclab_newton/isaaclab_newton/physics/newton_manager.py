@@ -313,7 +313,18 @@ class NewtonManager(PhysicsManager):
 
             cameras_enabled = bool(get_settings_manager().get("/isaaclab/cameras_enabled", False))
             cls._clone_physics_only = "kit" not in requested and not cameras_enabled
-            if "newton" in requested and PhysicsManager._cfg is not None and PhysicsManager._cfg.use_cuda_graph:
+            disable_graph_for_viewer = os.getenv("ISAACLAB_NEWTON_DISABLE_CUDA_GRAPH_WITH_VIEWER", "").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if (
+                disable_graph_for_viewer
+                and "newton" in requested
+                and PhysicsManager._cfg is not None
+                and PhysicsManager._cfg.use_cuda_graph
+            ):
                 logger.info(
                     "Disabling Newton CUDA graph capture while the standalone Newton visualizer is active. "
                     "ViewerGL uses CUDA/OpenGL interop on the same context and must run against eager physics state."
@@ -400,18 +411,6 @@ class NewtonManager(PhysicsManager):
         try:
             import usdrt
 
-            # Kit/Fabric rendering consumes body_q. Some Newton solvers advance
-            # joint coordinates without refreshing link transforms, so
-            # materialize FK for generic FK-owned articulations before writing
-            # Fabric matrices. Coupled solver-owned articulations stay excluded
-            # through the optional FK articulation filter.
-            eval_fk(
-                cls._model,
-                cls._state_0.joint_q,
-                cls._state_0.joint_qd,
-                cls._state_0,
-                cls._fk_articulation_filter,
-            )
             body_delta = cls._debug_usd_sync_body_delta()
 
             body_paths = getattr(cls._model, "body_label", None) or getattr(cls._model, "body_key", None)
@@ -1974,37 +1973,24 @@ class NewtonManager(PhysicsManager):
     @classmethod
     def _run_solver_substeps(cls, contacts) -> None:
         """Run ``num_substeps`` solver iterations, handling double-buffered state swap."""
+        # Keep solver stepping on the same class-owned buffers used by collision,
+        # actuators, sensors, and visualization in the surrounding simulate path.
+        # Mixing explicit NewtonManager buffers here with cls._state_* elsewhere
+        # splits coupled-manager state ownership and can drive stale contacts.
         if cls._use_single_state:
             for _ in range(cls._num_substeps):
-                cls._solver.step(
-                    NewtonManager._state_0,
-                    NewtonManager._state_0,
-                    NewtonManager._control,
-                    contacts,
-                    cls._solver_dt,
-                )
-                NewtonManager._state_0.clear_forces()
+                cls._solver.step(cls._state_0, cls._state_0, cls._control, contacts, cls._solver_dt)
+                cls._state_0.clear_forces()
         else:
             cfg = PhysicsManager._cfg
             need_copy_on_last = (cfg is not None and cfg.use_cuda_graph) and cls._num_substeps % 2 == 1  # type: ignore[union-attr]
             for i in range(cls._num_substeps):
-                cls._solver.step(
-                    NewtonManager._state_0,
-                    NewtonManager._state_1,
-                    NewtonManager._control,
-                    contacts,
-                    cls._solver_dt,
-                )
+                cls._solver.step(cls._state_0, cls._state_1, cls._control, contacts, cls._solver_dt)
                 if need_copy_on_last and i == cls._num_substeps - 1:
-                    NewtonManager._state_0.assign(NewtonManager._state_1)
+                    cls._state_0.assign(cls._state_1)
                 else:
-                    # Keep state buffers canonical on NewtonManager. Assigning
-                    # through ``cls`` would create subclass-shadowed state on
-                    # leaf managers, then later resets would rebuild the base
-                    # state while step() continued to read the stale subclass
-                    # buffers.
-                    NewtonManager._state_0, NewtonManager._state_1 = NewtonManager._state_1, NewtonManager._state_0
-                NewtonManager._state_0.clear_forces()
+                    cls._state_0, cls._state_1 = cls._state_1, cls._state_0
+                cls._state_0.clear_forces()
 
     @classmethod
     def _update_sensors(cls, contacts) -> None:
@@ -2336,7 +2322,6 @@ class NewtonManager(PhysicsManager):
         """
         if cls._backend_is_newton():
             if cls._model is not None and cls._state_0 is not None:
-                eval_fk(cls._model, cls._state_0.joint_q, cls._state_0.joint_qd, cls._state_0, None)
                 cls._debug_visualization_state("newton")
             return
         cls._ensure_visualization_model()

@@ -25,8 +25,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils.configclass import configclass
 
-from isaaclab_assets import ISAACLAB_ASSETS_DATA_DIR
-
 from . import mdp
 from .actions import NewtonTaskSpaceIKAction, NewtonTaskSpaceIKActionCfg
 
@@ -125,10 +123,11 @@ class RBY1DFWaterhoseEnvCfg(ManagerBasedRLEnvCfg):
     episode_length_s = 30.0
     decimation = 1
 
-    asset_root: str = f"{ISAACLAB_ASSETS_DATA_DIR}/Props/Waterhose"
+    asset_root: str = str(core.default_waterhose_asset_root())
     robot_urdf: str | None = None
-    # None uses the authored Cable008 scene. Set to "procedural" for lightweight proxy geometry only.
+    # None uses the authored Cable008 scene.
     scene_usd: str | None = None
+    # None uses Cable008/curve/cable_SRA_curve03.usda for both authored cable curves.
     cable_usds: str | None = None
     cable_usd: str | None = None
     cable_prims: str | None = None

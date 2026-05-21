@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,14 +14,19 @@ from typing import Any
 os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
 _ISAACLAB_ROOT = Path(__file__).resolve().parents[6]
-_DEFAULT_RBY1_URDF = _ISAACLAB_ROOT / "source/isaaclab_assets/data/Robots/RBY1DF/urdf/robot_edited.urdf"
-_DEFAULT_CABLE_ROBOT_ASSETS = _ISAACLAB_ROOT / "source/isaaclab_assets/data/Props/Waterhose"
-_DEFAULT_CABLE_USD_ASSETS = (
-    ("cable001.usda", "/cable001/curve_0"),
-    ("cable002.usda", "/cable002/curve_0"),
-)
-_LEGACY_CABLE_USD_RELATIVE_PATH = "Cable008/curve/cable_SRA_curve03.usda"
-_LEGACY_CABLE_PRIMS = "/World/cable001/curve_0,/World/cable002/curve_0"
+_DEFAULT_WATERHOSE_ASSET_ROOT = "source/isaaclab_assets/data/WaterhoseDemo"
+_DEFAULT_CABLE_USD_RELATIVE_PATH = "Waterhose/Cable008/curve/cable_SRA_curve03.usda"
+_DEFAULT_CABLE_PRIMS = ("/World/cable001/curve_0", "/World/cable002/curve_0")
+
+
+def default_waterhose_asset_root() -> Path:
+    """Return the root folder for the unpacked waterhose demo asset bundle."""
+    return Path(
+        os.environ.get(
+            "ISAACLAB_WATERHOSE_ASSET_ROOT",
+            str(_ISAACLAB_ROOT / _DEFAULT_WATERHOSE_ASSET_ROOT),
+        )
+    ).expanduser()
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ def make_waterhose_args(**overrides: Any) -> SimpleNamespace:
         max_steps=1400,
         num_envs=1,
         env_spacing=2.5,
-        asset_root=_DEFAULT_CABLE_ROBOT_ASSETS,
+        asset_root=default_waterhose_asset_root(),
         robot_urdf=None,
         scene_usd=None,
         cable_usds=None,
@@ -104,9 +107,6 @@ def make_waterhose_args(**overrides: Any) -> SimpleNamespace:
         cable_bend_damping=1.0e0,
         disable_cuda_graph=False,
         log_interval=0,
-        print_cable_poses=False,
-        cable_pose_settle_seconds=None,
-        print_robot_poses=False,
         headless=False,
         livestream=-1,
         enable_cameras=False,
@@ -181,23 +181,6 @@ PROXY_BODY_NAMES = {
     "left_gripper_rightfinger",
 }
 _ACTIVE_SCENE_BUILDER = None
-
-
-def _requested_kit_visualizer() -> bool:
-    if os.environ.get("ISAACLAB_WATERHOSE_DEFER_NEWTON_IMPORT") == "1":
-        return True
-
-    visualizer_flags = {"--visualizer", "--viz", "--vis"}
-    argv = sys.argv[1:]
-    for index, token in enumerate(argv):
-        value = None
-        if token in visualizer_flags and index + 1 < len(argv):
-            value = argv[index + 1]
-        elif any(token.startswith(f"{flag}=") for flag in visualizer_flags):
-            value = token.split("=", 1)[1]
-        if value is not None and "kit" in {part.strip().lower() for part in value.split(",")}:
-            return True
-    return False
 
 
 def _active_scene_builder() -> WaterhoseSceneBuilder:
@@ -284,30 +267,11 @@ def import_newton_dependencies() -> None:
     JointTargetMode = JointTargetModeClass
 
 
-def _load_cable_curve_importer(asset_root: Path | None = None):
-    """Load the USD BasisCurves cable importer."""
-    try:
-        from newton.examples.cable_robot.usd_cable_curve_import import add_cable_from_usd_curve as importer
+def _load_cable_curve_importer():
+    """Load the task-local USD BasisCurves cable importer."""
+    from .usd_cable_curve_import import add_cable_from_usd_curve as importer
 
-        return importer
-    except ImportError:
-        pass
-
-    # Fallback for local asset bundles that carry a copy next to ``assets/``.
-    root = asset_root if asset_root is not None else args_cli.asset_root.expanduser().resolve()
-    helper_path = root.parent / "usd_cable_curve_import.py"
-    if not helper_path.is_file():
-        raise FileNotFoundError(
-            "Cable USD importer not found in newton.examples.cable_robot or next to the configured asset root: "
-            f"{helper_path}"
-        )
-    spec = importlib.util.spec_from_file_location("cable_robot_usd_cable_curve_import", helper_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load cable USD importer from {helper_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module.add_cable_from_usd_curve
+    return importer
 
 
 def import_isaaclab_runtime_dependencies() -> None:
@@ -586,25 +550,9 @@ class WaterhoseSceneBuilder:
             raise FileNotFoundError(f"Required cable robot asset not found: {path}")
         return path
 
-    def _resolve_optional_asset(self, explicit_path: Path | None) -> Path | None:
-        if explicit_path is None:
-            return None
-        path = explicit_path.expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"Required cable robot asset not found: {path}")
-        return path
-
-    def _resolve_scene_usd(self) -> Path | None:
-        """Resolve the authored static scene USD, or opt into procedural proxies."""
-        scene_usd = self.cfg.scene_usd
-        if scene_usd is not None and str(scene_usd).strip().lower() in {"", "none", "procedural"}:
-            return None
-        if scene_usd is not None:
-            return self._resolve_optional_asset(scene_usd)
-        default_scene = self.asset_root / "Cable008/Cable008_Body.usda"
-        if default_scene.is_file():
-            return default_scene.resolve()
-        return None
+    def _resolve_scene_usd(self) -> Path:
+        """Resolve the authored static scene USD required by the waterhose task."""
+        return self._resolve_asset(self.cfg.scene_usd, "Waterhose/Cable008/Cable008_Body.usda")
 
     def _resolve_asset_path(self, path_token: str | Path) -> Path:
         path = Path(path_token).expanduser()
@@ -617,21 +565,28 @@ class WaterhoseSceneBuilder:
 
     def _resolve_cable_assets(self) -> list[CableUsdAsset]:
         if self.cfg.cable_usd is not None:
-            cable_usd = self._resolve_asset(self.cfg.cable_usd, _LEGACY_CABLE_USD_RELATIVE_PATH)
-            return [
-                CableUsdAsset(cable_usd, curve_prim_path)
-                for curve_prim_path in self._configured_cable_prim_paths(_LEGACY_CABLE_PRIMS)
-            ]
+            cable_usd = self._resolve_asset_path(self.cfg.cable_usd)
+            prim_paths = (
+                [str(self.cfg.cable_prim)]
+                if self.cfg.cable_prim
+                else self._configured_cable_prim_paths(_DEFAULT_CABLE_PRIMS)
+            )
+            return [CableUsdAsset(cable_usd, curve_prim_path) for curve_prim_path in prim_paths]
 
         configured_usds = self._split_config_list(getattr(self.cfg, "cable_usds", None))
         if configured_usds:
             usd_paths = [self._resolve_asset_path(path_token) for path_token in configured_usds]
             default_prim_paths = [self._infer_first_basis_curve_prim_path(path) for path in usd_paths]
         else:
-            usd_paths = [
-                self._resolve_asset(None, relative_path) for relative_path, _curve_path in _DEFAULT_CABLE_USD_ASSETS
-            ]
-            default_prim_paths = [curve_path for _relative_path, curve_path in _DEFAULT_CABLE_USD_ASSETS]
+            cable_usd = self._resolve_asset(None, _DEFAULT_CABLE_USD_RELATIVE_PATH)
+            prim_paths = (
+                [str(self.cfg.cable_prim)]
+                if self.cfg.cable_prim
+                else self._configured_cable_prim_paths(_DEFAULT_CABLE_PRIMS)
+            )
+            if not prim_paths:
+                raise RuntimeError("At least one cable prim must be configured.")
+            return [CableUsdAsset(cable_usd, curve_prim_path) for curve_prim_path in prim_paths]
 
         if self.cfg.cable_prim:
             if len(usd_paths) != 1:
@@ -686,8 +641,7 @@ class WaterhoseSceneBuilder:
         if self.cfg.robot_urdf is not None:
             path = self.cfg.robot_urdf.expanduser().resolve()
         else:
-            bundled = self.asset_root / "rby1df/urdf/robot_edited.urdf"
-            path = bundled if bundled.is_file() else _DEFAULT_RBY1_URDF
+            path = self.asset_root / "RBY1DF/urdf/robot_edited.urdf"
         if not path.is_file():
             raise FileNotFoundError(f"RBY1DF URDF not found: {path}")
         return path
@@ -934,11 +888,11 @@ class WaterhoseSceneBuilder:
         self.grasp_body_id = body_offset + int(proto_meta["grasp_body_id"])
 
     def _build_static_scene_template(self):
-        """Import the authored static scene through Newton's USD importer before robot setup."""
+        """Import the authored static scene collision/visual meshes before robot setup."""
         builder = newton.ModelBuilder()
         SolverVBD.register_custom_attributes(builder)
         builder.default_shape_cfg = self.static_shape_cfg
-        self._add_static_table_and_socket(builder)
+        self._add_static_scene_from_usd(builder)
         return builder
 
     def _build_robot(self):
@@ -951,7 +905,6 @@ class WaterhoseSceneBuilder:
             str(self.robot_urdf),
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             floating=False,
-            hide_visuals=True,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             ignore_inertial_definitions=True,
@@ -1091,7 +1044,7 @@ class WaterhoseSceneBuilder:
         global add_cable_from_usd_curve
 
         if add_cable_from_usd_curve is None:
-            add_cable_from_usd_curve = _load_cable_curve_importer(self.asset_root)
+            add_cable_from_usd_curve = _load_cable_curve_importer()
 
         cfg = self.hose_shape_cfg.copy()
         head_cfg = newton.ModelBuilder.ShapeConfig(
@@ -1277,9 +1230,6 @@ class WaterhoseSceneBuilder:
             if body_q_prev is not None:
                 apply_to_array(body_q_prev)
 
-        if self.cfg.print_cable_poses:
-            self._print_runtime_cable_pose_summary("manager_runtime_after_asset_xform")
-
     def configure_runtime_vbd_solver(self) -> None:
         """Match the waterhose reference: VBD joints run in soft penalty mode."""
         vbd_solver = NewtonCoupledManager.get_entry_solver(HOSE_ENTRY)
@@ -1310,47 +1260,7 @@ class WaterhoseSceneBuilder:
                 float(new_rot[3]),
             )
 
-    def _print_runtime_cable_pose_summary(self, tag: str) -> None:
-        body_q = NewtonManager.get_state_0().body_q.numpy()
-
-        def fmt_transform(body_id: int) -> str:
-            q = body_q[body_id]
-            return (
-                f"id={body_id} pos=({float(q[0]): .6f}, {float(q[1]): .6f}, {float(q[2]): .6f}) "
-                f"quat_xyzw=({float(q[3]): .6f}, {float(q[4]): .6f}, {float(q[5]): .6f}, {float(q[6]): .6f})"
-            )
-
-        cable_heads = set(self.cable_head_body_ids)
-        cable_groups: list[list[int]] = []
-        current_group: list[int] = []
-        for body_id in self.cable_body_ids:
-            if body_id in cable_heads:
-                continue
-            if current_group and body_id != current_group[-1] + 1:
-                cable_groups.append(current_group)
-                current_group = []
-            current_group.append(body_id)
-        if current_group:
-            cable_groups.append(current_group)
-
-        print(f"[CABLE_POSE:{tag}] cable_count={len(cable_groups)}", flush=True)
-        for cable_index, body_ids in enumerate(cable_groups):
-            print(f"[CABLE_POSE:{tag}] cable={cable_index} first {fmt_transform(body_ids[0])}", flush=True)
-            print(f"[CABLE_POSE:{tag}] cable={cable_index} last  {fmt_transform(body_ids[-1])}", flush=True)
-            head_index = 0
-            for head_body in self.cable_head_body_ids:
-                if body_ids[0] <= head_body <= body_ids[-1] + 1:
-                    print(
-                        f"[CABLE_POSE:{tag}] cable={cable_index} head{head_index} {fmt_transform(head_body)}",
-                        flush=True,
-                    )
-                    head_index += 1
-
-    def _add_static_table_and_socket(self, builder) -> None:
-        if self.scene_usd is None or _requested_kit_visualizer():
-            self._add_procedural_static_table_and_socket(builder)
-            return
-
+    def _add_static_scene_from_usd(self, builder) -> None:
         scene_result = builder.add_usd(
             str(self.scene_usd),
             xform=self.asset_xform,
@@ -1369,38 +1279,6 @@ class WaterhoseSceneBuilder:
             builder.body_inertia[body_id] = wp.mat33()
             builder.body_inv_inertia[body_id] = wp.mat33()
         self.scene_shape_ids = sorted(int(v) for v in scene_result["path_shape_map"].values())
-
-    def _add_procedural_static_table_and_socket(self, builder) -> None:
-        """Use simple static collision proxies when Kit owns the visual USD scene."""
-        shape_start = builder.shape_count
-        table_cfg = self.static_shape_cfg.copy()
-        socket_cfg = self.static_shape_cfg.copy()
-        socket_cfg.mu = float(self.cfg.vbd_near_tip_mu)
-
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(self.table_pos, wp.quat_identity()),
-            hx=float(self.table_half_size[0]),
-            hy=float(self.table_half_size[1]),
-            hz=float(self.table_half_size[2]),
-            cfg=table_cfg,
-            label="waterhose_static_table_proxy",
-        )
-
-        insertion_dir = wp.quat_rotate(self.socket_rot, wp.vec3(0.0, 0.0, 1.0))
-        socket_center = self.socket_pos - insertion_dir * 0.025
-        builder.add_shape_box(
-            body=-1,
-            xform=wp.transform(socket_center, self.socket_rot),
-            hx=0.045,
-            hy=0.045,
-            hz=0.025,
-            cfg=socket_cfg,
-            label="waterhose_static_socket_proxy",
-        )
-
-        self.scene_body_ids = []
-        self.scene_shape_ids = list(range(shape_start, builder.shape_count))
 
     def _select_proxy_bodies(self, builder) -> None:
         self.proxy_body_ids = []
@@ -1471,8 +1349,13 @@ class WaterhoseSceneBuilder:
                         "rigid_joint_linear_k_start": float(self.cfg.vbd_rigid_joint_linear_k_start),
                         "rigid_joint_angular_k_start": float(self.cfg.vbd_rigid_joint_angular_k_start),
                     },
-                    body_label_patterns=[r"^(/World/Waterhose|/root)(/|$).*"],
-                    shapes=self.scene_shape_ids,
+                    body_label_patterns=[
+                        (
+                            r"^(/World/Waterhose|/root|/World/Cable008Scene|"
+                            r"/World/Env_[0-9]+/Cable008Scene|/World/WaterhoseCableCurves|"
+                            r"/World/Env_[0-9]+/WaterhoseCableCurves)(/|$).*"
+                        )
+                    ],
                     configure_view=configure_vbd_view,
                 ),
             ],
@@ -2072,27 +1955,26 @@ def setup_kit_scene(sim, scene_builder: WaterhoseSceneBuilder) -> None:
     if "kit" not in sim.resolve_visualizer_types():
         return
     _spawn_kit_robot_visuals(scene_builder)
-    if scene_builder.scene_usd is not None:
-        for env_id, origin in enumerate(scene_builder.env_origins):
-            if scene_builder.num_envs == 1:
-                scene_prim_path = "/World/Cable008Scene"
-            else:
-                scene_prim_path = f"/World/Env_{env_id}/Cable008Scene"
-            if sim_utils.get_current_stage().GetPrimAtPath(scene_prim_path).IsValid():
-                continue
-            scene_cfg = sim_utils.UsdFileCfg(usd_path=str(scene_builder.scene_usd))
-            scene_pos = wp.transform_get_translation(scene_builder.asset_xform)
-            scene_rot = wp.transform_get_rotation(scene_builder.asset_xform)
-            scene_cfg.func(
-                scene_prim_path,
-                scene_cfg,
-                translation=(
-                    float(scene_pos[0] + origin[0]),
-                    float(scene_pos[1] + origin[1]),
-                    float(scene_pos[2] + origin[2]),
-                ),
-                orientation=(float(scene_rot[0]), float(scene_rot[1]), float(scene_rot[2]), float(scene_rot[3])),
-            )
+    for env_id, origin in enumerate(scene_builder.env_origins):
+        if scene_builder.num_envs == 1:
+            scene_prim_path = "/World/Cable008Scene"
+        else:
+            scene_prim_path = f"/World/Env_{env_id}/Cable008Scene"
+        if sim_utils.get_current_stage().GetPrimAtPath(scene_prim_path).IsValid():
+            continue
+        scene_cfg = sim_utils.UsdFileCfg(usd_path=str(scene_builder.scene_usd))
+        scene_pos = wp.transform_get_translation(scene_builder.asset_xform)
+        scene_rot = wp.transform_get_rotation(scene_builder.asset_xform)
+        scene_cfg.func(
+            scene_prim_path,
+            scene_cfg,
+            translation=(
+                float(scene_pos[0] + origin[0]),
+                float(scene_pos[1] + origin[1]),
+                float(scene_pos[2] + origin[2]),
+            ),
+            orientation=(float(scene_rot[0]), float(scene_rot[1]), float(scene_rot[2]), float(scene_rot[3])),
+        )
     _spawn_kit_cable_curve_visuals(scene_builder)
     install_kit_cable_curve_pre_render_sync(scene_builder)
     if not sim_utils.get_current_stage().GetPrimAtPath("/World/DomeLight").IsValid():
@@ -2316,9 +2198,6 @@ def _cable_curve_points_from_newton_body_q(
         or bool(adjacent_steps.size and float(np.max(adjacent_steps)) > max_reasonable_step)
     )
     if invalid_points:
-        if not getattr(_cable_curve_points_from_newton_body_q, "_warned_invalid", False):
-            print("[KIT_CABLE_SYNC] Skipping invalid cable points from Newton body state.", flush=True)
-            setattr(_cable_curve_points_from_newton_body_q, "_warned_invalid", True)
         return None
     return points
 
@@ -2368,92 +2247,19 @@ def _set_kit_basis_curve_points(stage, prim, points: object, radius: float) -> N
     if gprim and not gprim.GetDisplayColorAttr().HasAuthoredValue():
         gprim.CreateDisplayColorAttr().Set([Gf.Vec3f(0.02, 0.16, 0.28)])
 
-    # USD authoring is enough for Kit to pick up dynamic BasisCurves during
-    # app.update(). Mirroring curve topology into USDRT every frame produces
-    # Fabric Scene Delegate warnings for optional curve primvars.
-
-
-def _mirror_basis_curve_points_to_fabric(curve_path: str, points: object, widths: list[float], extent: object) -> None:
-    """Best-effort mirror of the dynamic BasisCurves attrs into USDRT/Fabric."""
-    if getattr(_mirror_basis_curve_points_to_fabric, "_disabled", False):
-        return
-    rt_stage = getattr(NewtonManager, "_usdrt_stage", None)
-    if rt_stage is None:
-        return
-    try:
-        import usdrt  # noqa: PLC0415
-
-        rt_prim = rt_stage.GetPrimAtPath(curve_path)
-        if not rt_prim.IsValid():
-            return
-
-        _set_usdrt_attr(
-            rt_prim,
-            "points",
-            usdrt.Sdf.ValueTypeNames.Point3fArray,
-            usdrt.Vt.Vec3fArray(np.ascontiguousarray(points, dtype=np.float32)),
-        )
-        _set_usdrt_attr(
-            rt_prim,
-            "curveVertexCounts",
-            usdrt.Sdf.ValueTypeNames.IntArray,
-            usdrt.Vt.IntArray([int(points.shape[0])]),
-        )
-        connections = np.column_stack(
-            (
-                np.arange(max(int(points.shape[0]) - 1, 0), dtype=np.int32),
-                np.arange(1, int(points.shape[0]), dtype=np.int32),
-            )
-        )
-        _set_usdrt_attr(
-            rt_prim,
-            "connections",
-            usdrt.Sdf.ValueTypeNames.Int2Array,
-            usdrt.Vt.Vec2iArray(np.ascontiguousarray(connections, dtype=np.int32)),
-        )
-        _set_usdrt_attr(
-            rt_prim,
-            "widths",
-            usdrt.Sdf.ValueTypeNames.FloatArray,
-            usdrt.Vt.FloatArray([float(width) for width in widths]),
-        )
-        _set_usdrt_attr(
-            rt_prim,
-            "extent",
-            usdrt.Sdf.ValueTypeNames.Point3fArray,
-            usdrt.Vt.Vec3fArray(np.ascontiguousarray(extent, dtype=np.float32)),
-        )
-        usdrt.Rt.Boundable(rt_prim).CreateWorldExtentAttr().Set(
-            usdrt.Gf.Range3d(
-                usdrt.Gf.Vec3d(float(extent[0, 0]), float(extent[0, 1]), float(extent[0, 2])),
-                usdrt.Gf.Vec3d(float(extent[1, 0]), float(extent[1, 1]), float(extent[1, 2])),
-            )
-        )
-    except Exception as exc:
-        setattr(_mirror_basis_curve_points_to_fabric, "_disabled", True)
-        if not getattr(_mirror_basis_curve_points_to_fabric, "_warned", False):
-            print(f"[KIT_CABLE_SYNC] USDRT curve mirror disabled after failure: {exc}", flush=True)
-            setattr(_mirror_basis_curve_points_to_fabric, "_warned", True)
-
-
-def _set_usdrt_attr(rt_prim, name: str, value_type, value) -> None:
-    attr = rt_prim.GetAttribute(name)
-    if not attr.IsValid():
-        attr = rt_prim.CreateAttribute(name, value_type, True)
-    attr.Set(value)
-
 
 def _spawn_kit_robot_visuals(scene_builder: WaterhoseSceneBuilder) -> None:
     """Spawn the RBY1DF visual USD so Newton body transforms have visible Kit geometry."""
     stage = sim_utils.get_current_stage()
-    robot_usd_path = Path("/tmp/IsaacLab/RBY1DF/robot_edited/robot_edited.usda")
+    robot_usd_dir = scene_builder.asset_root / "_generated" / "RBY1DF"
+    robot_usd_path = robot_usd_dir / "robot_edited" / "robot_edited.usda"
     robot_cfg = None
     if robot_usd_path.is_file():
         robot_cfg = sim_utils.UsdFileCfg(usd_path=str(robot_usd_path), variants={"Physics": "none"})
     else:
         robot_cfg = sim_utils.UrdfFileCfg(
             asset_path=str(scene_builder.robot_urdf),
-            usd_dir="/tmp/IsaacLab/RBY1DF",
+            usd_dir=str(robot_usd_dir),
             fix_base=False,
             merge_fixed_joints=True,
             make_instanceable=True,
@@ -2610,7 +2416,7 @@ def _define_missing_kit_body_prims(stage, builder) -> None:
 
 
 def configure_newton_viewer(sim) -> None:
-    """Enable useful interaction and debug geometry in the Newton viewer."""
+    """Enable useful interaction and contact display in the Newton viewer."""
     visualizer_types = set(sim.resolve_visualizer_types()) if hasattr(sim, "resolve_visualizer_types") else set()
     if "newton" in visualizer_types and not sim.visualizers and hasattr(sim, "initialize_visualizers"):
         sim.initialize_visualizers()
@@ -2621,17 +2427,6 @@ def configure_newton_viewer(sim) -> None:
             continue
         if hasattr(viewer, "show_contacts"):
             viewer.show_contacts = True
-        # The RBY1DF is imported into Newton with URDF visuals hidden because
-        # Kit owns the pretty robot USD. In the native Newton viewer, collision
-        # geometry is therefore the only way to see the robot and static scene.
-        if hasattr(viewer, "show_collision"):
-            viewer.show_collision = True
-        if hasattr(viewer, "show_static"):
-            viewer.show_static = True
-        if hasattr(viewer, "show_visual"):
-            viewer.show_visual = True
-        if hasattr(viewer, "show_triangles"):
-            viewer.show_triangles = True
         if hasattr(viewer, "picking_enabled"):
             viewer.picking_enabled = True
         if hasattr(viewer, "set_camera"):
@@ -2691,45 +2486,12 @@ def log_progress(step_count: int, task: str, scene_builder: WaterhoseSceneBuilde
     )
 
 
-def print_robot_pose_summary(tag: str) -> None:
-    model = NewtonManager.get_model()
-    body_q = NewtonManager.get_state_0().body_q.numpy()
-    body_names = [
-        "torso_hip_yaw",
-        "right_gripper_base",
-        "right_gripper_leftfinger",
-        "right_gripper_rightfinger",
-        RIGHT_EE,
-        "left_gripper_base",
-        "left_gripper_leftfinger",
-        "left_gripper_rightfinger",
-        LEFT_EE,
-    ]
-    print(f"[ROBOT_POSE:{tag}] body_count={model.body_count}", flush=True)
-    for body_name in body_names:
-        body_id = _find_label_index(model.body_label, body_name)
-        q = body_q[body_id]
-        print(
-            f"[ROBOT_POSE:{tag}] {body_name} id={body_id} "
-            f"pos=({float(q[0]): .6f}, {float(q[1]): .6f}, {float(q[2]): .6f}) "
-            f"quat_xyzw=({float(q[3]): .6f}, {float(q[4]): .6f}, {float(q[5]): .6f}, {float(q[6]): .6f})",
-            flush=True,
-        )
-
-
 def run_simulator(sim, controller: WaterhoseIKController, scene_builder: WaterhoseSceneBuilder) -> None:
     step_count = 0
-    settle_printed = False
-    settle_steps = None
-    if args_cli.print_cable_poses and args_cli.cable_pose_settle_seconds is not None:
-        settle_steps = max(0, int(round(args_cli.cable_pose_settle_seconds * args_cli.fps)))
     while keep_running(sim, step_count):
         apply_viewer_forces(sim)
         task = controller.update(step_count / args_cli.fps)
         sim.step(render=False)
-        if settle_steps is not None and not settle_printed and step_count + 1 >= settle_steps:
-            scene_builder._print_runtime_cable_pose_summary(f"manager_after_{args_cli.cable_pose_settle_seconds:g}s")
-            settle_printed = True
         log_progress(step_count, task, scene_builder)
         if sim.is_rendering:
             sync_kit_cable_curves_from_newton(scene_builder)
@@ -2743,8 +2505,6 @@ def initialize_waterhose_runtime(sim, scene_builder: WaterhoseSceneBuilder, buil
     sim.reset()
     scene_builder.configure_runtime_vbd_solver()
     scene_builder.apply_runtime_cable_asset_xform()
-    if getattr(args_cli, "print_robot_poses", False):
-        print_robot_pose_summary("manager_after_reset")
     if sim.is_rendering:
         sync_kit_cable_curves_from_newton(scene_builder)
         NewtonManager.sync_transforms_to_usd()

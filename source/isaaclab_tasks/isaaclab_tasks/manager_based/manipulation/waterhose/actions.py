@@ -16,7 +16,7 @@ from isaaclab.managers.action_manager import ActionTerm
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.utils.configclass import configclass
 
-from isaaclab_newton.ik.newton_ik_manager import NewtonIKManager
+from isaaclab_newton.ik.newton_ik_manager import NewtonIKManager, NewtonIKPoseObjective
 from isaaclab_newton.ik.newton_ik_manager_cfg import NewtonIKManagerCfg
 
 from . import waterhose_core as core
@@ -38,6 +38,8 @@ class NewtonTaskSpaceIKActionCfg(ActionTermCfg):
     max_gripper_joint_step: float = 0.20
     max_gripper_joint_velocity: float = 0.03
     ik_iterations: int = 12
+    left_hold_weight: float = 1.0
+    torso_hold_weight: float = 50.0
     controller: NewtonIKManagerCfg = NewtonIKManagerCfg(
         command_type="pose",
         use_relative_mode=True,
@@ -75,6 +77,8 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         if self._rotation_frame not in ("eef", "world"):
             raise ValueError("NewtonTaskSpaceIKActionCfg.rotation_frame must be 'eef', 'world', or None.")
         self._body_ids = _resolve_body_ids(self._model.body_label, core.RIGHT_EE, self.num_envs)
+        self._left_body_ids = _resolve_body_ids(self._model.body_label, core.LEFT_EE, self.num_envs)
+        self._torso_body_ids = _resolve_body_ids(self._model.body_label, core.TORSO, self.num_envs)
         self._right_open_driver, self._right_closed_driver = _gripper_driver_targets(
             self._model, self._scene_builder.right_gripper_driver_dofs
         )
@@ -214,7 +218,11 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         return self._target_pos[env_id], self._target_quat[env_id]
 
     def _setup_ik(self) -> None:
+        body_q_np = core.NewtonManager.get_state_0().body_q.numpy()
+        self._cache_nominal_hold_targets(body_q_np)
         link_index = _resolve_body_ids(self._single_robot_model.body_label, core.RIGHT_EE, 1)[0]
+        left_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.LEFT_EE, 1)[0]
+        torso_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.TORSO, 1)[0]
         self.cfg.controller.iterations = int(self.cfg.ik_iterations)
         self._ik_control_coord_ids = _controlled_ik_coord_ids(self._single_robot_model)
         self._ik_manager = NewtonIKManager(
@@ -225,7 +233,29 @@ class NewtonTaskSpaceIKAction(ActionTerm):
             link_index=link_index,
             link_offset_pos=(0.0, 0.0, 0.0),
             link_offset_rot=(0.0, 0.0, 0.0, 1.0),
+            extra_pose_objectives=[
+                NewtonIKPoseObjective(
+                    link_index=left_link_index,
+                    position_weight=float(self.cfg.left_hold_weight),
+                    rotation_weight=float(self.cfg.left_hold_weight),
+                ),
+                NewtonIKPoseObjective(
+                    link_index=torso_link_index,
+                    position_weight=float(self.cfg.torso_hold_weight),
+                    rotation_weight=float(self.cfg.torso_hold_weight),
+                ),
+            ],
         )
+
+    def _cache_nominal_hold_targets(self, body_q_np: np.ndarray) -> None:
+        self._hold_nominal_pos = np.zeros((self.num_envs, 2, 3), dtype=np.float64)
+        self._hold_nominal_quat = np.zeros((self.num_envs, 2, 4), dtype=np.float64)
+        for env_id in range(self.num_envs):
+            origin = self._env_origin(env_id)
+            for hold_index, body_id in enumerate((self._left_body_ids[env_id], self._torso_body_ids[env_id])):
+                q = body_q_np[body_id]
+                self._hold_nominal_pos[env_id, hold_index] = q[:3].astype(np.float64) - origin
+                self._hold_nominal_quat[env_id, hold_index] = q[3:].astype(np.float64)
 
     def _seed_control_targets(self) -> None:
         initial = self._single_robot_model.joint_q.numpy().astype(np.float32, copy=False)
@@ -249,6 +279,14 @@ class NewtonTaskSpaceIKAction(ActionTerm):
             1, self._single_robot_model.joint_coord_count
         )
         self._ik_manager.set_target_pose(target_pos_t, target_quat_t)
+        for objective_index, hold_index in enumerate(range(2)):
+            hold_pos_t = torch.as_tensor(
+                self._hold_nominal_pos[env_id, hold_index], device=self.device, dtype=torch.float32
+            ).reshape(1, 3)
+            hold_quat_t = torch.as_tensor(
+                self._hold_nominal_quat[env_id, hold_index], device=self.device, dtype=torch.float32
+            ).reshape(1, 4)
+            self._ik_manager.set_extra_target_pose(objective_index, hold_pos_t, hold_quat_t)
         solved_q = self._ik_manager.solve(seed_t)[0].detach().cpu().numpy().astype(np.float32, copy=True)
         q = current_q.astype(np.float32, copy=True)
         q[self._ik_control_coord_ids] = solved_q[self._ik_control_coord_ids]

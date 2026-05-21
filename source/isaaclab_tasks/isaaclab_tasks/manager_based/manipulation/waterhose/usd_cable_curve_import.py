@@ -13,8 +13,6 @@ with optional mesh heads connected by fixed joints (scheme 2):
 
 from __future__ import annotations
 
-import argparse
-import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -597,39 +595,4 @@ def add_cable_from_usd_curve(
         head_body_ids=head_body_ids,
         head_fixed_joint_ids=head_fixed_joint_ids,
         fixed_body_ids=fixed_body_ids,
-    )
-
-
-def _default_curve_usd_path() -> str:
-    return os.path.realpath(
-        os.path.join(os.path.dirname(__file__), "assets", "version3", "SRA_curve", "cable_SRA_curve02.usda")
-    )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parse BasisCurves cable USD and build Newton cable + rigid heads.")
-    parser.add_argument("--usd-path", type=str, default=_default_curve_usd_path())
-    parser.add_argument("--curve-prim-path", type=str, default="/World/cable/curve_0")
-    parser.add_argument("--head-shape-mode", choices=["mesh", "convex_hull"], default="mesh")
-    parser.add_argument("--wrap-in-articulation", action=argparse.BooleanOptionalAction, default=True)
-    args = parser.parse_args()
-
-    builder = newton.ModelBuilder()
-    result = add_cable_from_usd_curve(
-        builder,
-        source_usd_path=args.usd_path,
-        curve_prim_path=args.curve_prim_path,
-        cable_label="curve_cable",
-        wrap_in_articulation=bool(args.wrap_in_articulation),
-        head_shape_mode=args.head_shape_mode,
-    )
-
-    print(
-        "[usd_curve_import] summary: "
-        f"usd={args.usd_path} curve={args.curve_prim_path} "
-        f"cable_bodies={len(result.cable_body_ids)} "
-        f"cable_joints={len(result.cable_joint_ids)} "
-        f"head_bodies={len(result.head_body_ids)} "
-        f"head_fixed_joints={len(result.head_fixed_joint_ids)} "
-        f"fixed_bodies={len(result.fixed_body_ids)}"
     )
