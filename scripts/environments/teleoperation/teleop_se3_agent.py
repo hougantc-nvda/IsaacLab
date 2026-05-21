@@ -173,7 +173,7 @@ def _create_builtin_device(device_name: str, sensitivity: float) -> object | Non
         return create_waterhose_spacemouse_device(
             args_cli,
             sensitivity,
-            simple_by_default=uses_standalone_waterhose_spacemouse,
+            simple_by_default=waterhose_launch.uses_waterhose_task,
         )
     elif name == "gamepad":
         from isaaclab.devices.gamepad.se3_gamepad import Se3Gamepad

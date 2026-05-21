@@ -90,7 +90,7 @@ def add_waterhose_teleop_args(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help=(
             "SpaceMouse control mode. 'simple' maps cap translation to gripper XYZ and cap twist to yaw only; "
-            "'full' keeps all 6-DoF axes. 'auto' uses simple mode for standalone Newton waterhose teleop."
+            "'full' keeps all 6-DoF axes. 'auto' uses simple mode for waterhose teleop."
         ),
     )
     parser.add_argument(
