@@ -29,17 +29,9 @@ def _ensure_metadata(env: ManagerBasedRLEnv) -> None:
             raise RuntimeError(f"Expected at least {env.num_envs} bodies named {short_name!r}, found {matches}.")
         return matches[: env.num_envs]
 
-    def resolve_label(label: str) -> list[int]:
-        matches = [idx for idx, candidate in enumerate(labels) if candidate == label]
-        if len(matches) < env.num_envs:
-            if env.num_envs == 1 and label in labels:
-                return [labels.index(label)]
-            raise RuntimeError(f"Expected {env.num_envs} bodies matching {label!r}, found {matches}.")
-        return matches[: env.num_envs]
-
     env.waterhose_right_ee_body_ids = resolve_short(core.RIGHT_EE)
-    env.waterhose_tip_body_ids = resolve_label(labels[scene_builder.tip_body_id])
-    env.waterhose_plug_body_ids = resolve_label(labels[scene_builder.plug_body_id])
+    env.waterhose_tip_body_ids = scene_builder.tip_body_ids_by_env()
+    env.waterhose_plug_body_ids = scene_builder.plug_body_ids_by_env()
     socket_pos = np.array([float(scene_builder.socket_pos[i]) for i in range(3)], dtype=np.float64)
     socket_rot = np.array([float(scene_builder.socket_rot[i]) for i in range(4)], dtype=np.float64)
     env.waterhose_socket_pose = np.concatenate((socket_pos, socket_rot), axis=0)

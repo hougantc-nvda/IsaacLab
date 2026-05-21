@@ -129,12 +129,8 @@ class RBY1DFWaterhoseEnv(ManagerBasedRLEnv):
         core.configure_newton_viewer(self.sim)
         core.configure_kit_camera_view(self.sim)
         self.waterhose_right_ee_body_ids = self._resolve_body_ids(core.RIGHT_EE)
-        self.waterhose_tip_body_ids = self._resolve_matching_ids(
-            core.NewtonManager.get_model().body_label[scene_builder.tip_body_id]
-        )
-        self.waterhose_plug_body_ids = self._resolve_matching_ids(
-            core.NewtonManager.get_model().body_label[scene_builder.plug_body_id]
-        )
+        self.waterhose_tip_body_ids = scene_builder.tip_body_ids_by_env()
+        self.waterhose_plug_body_ids = scene_builder.plug_body_ids_by_env()
         socket_pos = np.array([float(scene_builder.socket_pos[i]) for i in range(3)], dtype=np.float64)
         socket_rot = np.array([float(scene_builder.socket_rot[i]) for i in range(4)], dtype=np.float64)
         self.waterhose_socket_pose = np.concatenate((socket_pos, socket_rot), axis=0)
@@ -145,16 +141,6 @@ class RBY1DFWaterhoseEnv(ManagerBasedRLEnv):
         matches = [idx for idx, label in enumerate(labels) if label == short_name or label.endswith(suffix)]
         if len(matches) < self.num_envs:
             raise RuntimeError(f"Expected at least {self.num_envs} bodies named {short_name!r}, found {matches}.")
-        return matches[: self.num_envs]
-
-    def _resolve_matching_ids(self, label: str) -> list[int]:
-        labels = core.NewtonManager.get_model().body_label
-        matches = [idx for idx, candidate in enumerate(labels) if candidate == label]
-        if len(matches) < self.num_envs:
-            # Some replicated builders uniquify labels; fall back to the primary id for single-env use.
-            if self.num_envs == 1:
-                return [labels.index(label)]
-            raise RuntimeError(f"Expected {self.num_envs} bodies matching {label!r}, found {matches}.")
         return matches[: self.num_envs]
 
     def _reset_idx(self, env_ids: Sequence[int]):

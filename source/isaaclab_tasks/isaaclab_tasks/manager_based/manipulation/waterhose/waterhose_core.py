@@ -583,6 +583,9 @@ class WaterhoseSceneBuilder:
         self.cable_body_ids_by_curve: list[list[int]] = []
         self.cable_segment_lengths_by_curve: list[list[float]] = []
         self.cable_curve_prim_paths: list[str] = []
+        self.cable_head_body_ids_by_env: list[list[int]] = []
+        self.cable_body_ids_by_env_by_curve: list[list[list[int]]] = []
+        self.cable_segment_lengths_by_env_by_curve: list[list[list[float]]] = []
         self.robot_joint_coord_ids_by_env: list[list[int]] = []
 
     def _env_origin(self, env_id: int):
@@ -821,6 +824,7 @@ class WaterhoseSceneBuilder:
             vbd_body_ids.extend(self._vbd_body_ids)
             vbd_shape_ids.extend(self._vbd_shape_ids)
             vbd_joint_ids.extend(self._vbd_joint_ids)
+            self._append_current_cable_env_metadata()
             if env_id == 0:
                 primary_env_metadata = {
                     "scene_body_ids": list(self.scene_body_ids),
@@ -874,7 +878,49 @@ class WaterhoseSceneBuilder:
         self.cable_body_ids_by_curve = []
         self.cable_segment_lengths_by_curve = []
         self.cable_curve_prim_paths = []
+        self.cable_head_body_ids_by_env = []
+        self.cable_body_ids_by_env_by_curve = []
+        self.cable_segment_lengths_by_env_by_curve = []
         self.robot_joint_coord_ids_by_env = []
+
+    def _append_current_cable_env_metadata(self) -> None:
+        self.cable_head_body_ids_by_env.append(list(self.cable_head_body_ids))
+        self.cable_body_ids_by_env_by_curve.append([list(body_ids) for body_ids in self.cable_body_ids_by_curve])
+        self.cable_segment_lengths_by_env_by_curve.append(
+            [list(segment_lengths) for segment_lengths in self.cable_segment_lengths_by_curve]
+        )
+
+    def tip_body_ids_by_env(self) -> list[int]:
+        """Return the simulated cable tip body id for each environment."""
+        if not self.cable_body_ids_by_env_by_curve:
+            return [self.tip_body_id]
+
+        body_ids: list[int] = []
+        for env_curves in self.cable_body_ids_by_env_by_curve:
+            if not env_curves or not env_curves[0]:
+                raise RuntimeError("Cable tip body metadata is incomplete.")
+            body_ids.append(int(env_curves[0][0]))
+        if len(body_ids) != self.num_envs:
+            raise RuntimeError(f"Expected {self.num_envs} cable tip bodies, found {body_ids}.")
+        return body_ids
+
+    def plug_body_ids_by_env(self) -> list[int]:
+        """Return the simulated cable plug/head body id for each environment."""
+        if not self.cable_head_body_ids_by_env:
+            return [self.plug_body_id]
+
+        body_ids: list[int] = []
+        for env_id, head_body_ids in enumerate(self.cable_head_body_ids_by_env):
+            if head_body_ids:
+                body_ids.append(int(head_body_ids[0]))
+                continue
+            env_curves = self.cable_body_ids_by_env_by_curve[env_id]
+            if not env_curves or not env_curves[0]:
+                raise RuntimeError("Cable plug body metadata is incomplete.")
+            body_ids.append(int(env_curves[0][0]))
+        if len(body_ids) != self.num_envs:
+            raise RuntimeError(f"Expected {self.num_envs} cable plug bodies, found {body_ids}.")
+        return body_ids
 
     def _append_env_metadata(
         self,
@@ -921,13 +967,21 @@ class WaterhoseSceneBuilder:
         self.scene_shape_ids = offset_ids(proto_meta["scene_shape_ids"], shape_offset)
         self.cable_body_ids = offset_ids(proto_meta["cable_body_ids"], body_offset)
         self.cable_head_body_ids = offset_ids(proto_meta["cable_head_body_ids"], body_offset)
-        self.cable_body_ids_by_curve = [
+        cable_body_ids_by_curve = [
             offset_ids(list(body_ids), body_offset) for body_ids in proto_meta["cable_body_ids_by_curve"]
         ]
-        self.cable_segment_lengths_by_curve = [
+        cable_segment_lengths_by_curve = [
             [float(length) for length in segment_lengths]
             for segment_lengths in proto_meta["cable_segment_lengths_by_curve"]
         ]
+        self.cable_head_body_ids_by_env.append(list(self.cable_head_body_ids))
+        self.cable_body_ids_by_env_by_curve.append([list(body_ids) for body_ids in cable_body_ids_by_curve])
+        self.cable_segment_lengths_by_env_by_curve.append(
+            [list(segment_lengths) for segment_lengths in cable_segment_lengths_by_curve]
+        )
+
+        self.cable_body_ids_by_curve = cable_body_ids_by_curve
+        self.cable_segment_lengths_by_curve = cable_segment_lengths_by_curve
         self.cable_curve_prim_paths = list(proto_meta["cable_curve_prim_paths"])
         self.primary_cable_body_ids = offset_ids(proto_meta["primary_cable_body_ids"], body_offset)
         self.tip_body_id = body_offset + int(proto_meta["tip_body_id"])
@@ -2152,7 +2206,8 @@ def sync_kit_cable_curves_from_newton(scene_builder: WaterhoseSceneBuilder) -> N
     """Mirror the simulated Newton hose centerlines into the Kit BasisCurves."""
     if sim_utils is None or NewtonManager is None:
         return
-    if not getattr(scene_builder, "cable_body_ids_by_curve", None):
+    cable_body_ids_by_env_by_curve = _cable_body_ids_by_env_by_curve(scene_builder)
+    if not cable_body_ids_by_env_by_curve:
         return
 
     stage = sim_utils.get_current_stage()
@@ -2163,48 +2218,56 @@ def sync_kit_cable_curves_from_newton(scene_builder: WaterhoseSceneBuilder) -> N
     except Exception:
         return
 
-    for curve_index, body_ids in enumerate(scene_builder.cable_body_ids_by_curve):
-        if not body_ids:
+    segment_lengths_by_env_by_curve = _cable_segment_lengths_by_env_by_curve(scene_builder)
+    for env_id, cable_body_ids_by_curve in enumerate(cable_body_ids_by_env_by_curve):
+        if env_id >= len(segment_lengths_by_env_by_curve):
             continue
-        curve_prim_path = scene_builder.cable_curve_prim_paths[curve_index]
-        segment_lengths = scene_builder.cable_segment_lengths_by_curve[curve_index]
-        kit_curve_path = _kit_cable_curve_path(scene_builder, curve_prim_path)
-        prim = stage.GetPrimAtPath(kit_curve_path)
-        if not prim.IsValid():
-            continue
-        points = _cable_curve_points_from_newton_body_q(body_q, body_ids, segment_lengths)
-        if points is None:
-            continue
-        _set_kit_basis_curve_points(stage, prim, points, radius=float(scene_builder.cfg.hose_radius))
+        for curve_index, body_ids in enumerate(cable_body_ids_by_curve):
+            if (
+                not body_ids
+                or curve_index >= len(scene_builder.cable_curve_prim_paths)
+                or curve_index >= len(segment_lengths_by_env_by_curve[env_id])
+            ):
+                continue
+            curve_prim_path = scene_builder.cable_curve_prim_paths[curve_index]
+            segment_lengths = segment_lengths_by_env_by_curve[env_id][curve_index]
+            kit_curve_path = _kit_cable_curve_path(scene_builder, curve_prim_path, env_id)
+            prim = stage.GetPrimAtPath(kit_curve_path)
+            if not prim.IsValid():
+                continue
+            points = _cable_curve_points_from_newton_body_q(body_q, body_ids, segment_lengths)
+            if points is None:
+                continue
+            _set_kit_basis_curve_points(stage, prim, points, radius=float(scene_builder.cfg.hose_radius))
 
 
 def _spawn_kit_cable_curve_visuals(scene_builder: WaterhoseSceneBuilder) -> None:
     """Spawn the authored cable BasisCurves as Kit-only deformable visuals."""
     stage = sim_utils.get_current_stage()
-    root_path = _kit_cable_curve_root_path(scene_builder)
-    if scene_builder.num_envs > 1:
-        _define_xform_path(stage, "/World/Env_0")
-
     spawned_assets: set[tuple[str, str]] = set()
-    for cable_asset in scene_builder.cable_assets:
-        spawn_path = _kit_cable_asset_spawn_path(scene_builder, cable_asset)
-        asset_key = (str(cable_asset.usd_path), spawn_path)
-        if asset_key in spawned_assets or stage.GetPrimAtPath(spawn_path).IsValid():
-            continue
-        spawned_assets.add(asset_key)
-        parent_path = spawn_path.rsplit("/", 1)[0]
-        if parent_path:
-            _define_xform_path(stage, parent_path)
-        cable_cfg = sim_utils.UsdFileCfg(usd_path=str(cable_asset.usd_path))
-        cable_cfg.func(
-            spawn_path,
-            cable_cfg,
-            translation=(0.0, 0.0, 0.0),
-            orientation=(0.0, 0.0, 0.0, 1.0),
-        )
-        _disable_kit_robot_physics(stage, spawn_path)
-    _prepare_kit_cable_curve_payload(stage, root_path)
-    _disable_kit_robot_physics(stage, root_path)
+    for env_id in range(scene_builder.num_envs):
+        root_path = _kit_cable_curve_root_path(scene_builder, env_id)
+        if scene_builder.num_envs > 1:
+            _define_xform_path(stage, f"/World/Env_{env_id}")
+        for cable_asset in scene_builder.cable_assets:
+            spawn_path = _kit_cable_asset_spawn_path(scene_builder, cable_asset, env_id)
+            asset_key = (str(cable_asset.usd_path), spawn_path)
+            if asset_key in spawned_assets or stage.GetPrimAtPath(spawn_path).IsValid():
+                continue
+            spawned_assets.add(asset_key)
+            parent_path = spawn_path.rsplit("/", 1)[0]
+            if parent_path:
+                _define_xform_path(stage, parent_path)
+            cable_cfg = sim_utils.UsdFileCfg(usd_path=str(cable_asset.usd_path))
+            cable_cfg.func(
+                spawn_path,
+                cable_cfg,
+                translation=(0.0, 0.0, 0.0),
+                orientation=(0.0, 0.0, 0.0, 1.0),
+            )
+            _disable_kit_robot_physics(stage, spawn_path)
+        _prepare_kit_cable_curve_payload(stage, root_path)
+        _disable_kit_robot_physics(stage, root_path)
 
 
 def _prepare_kit_cable_curve_payload(stage, root_path: str) -> None:
@@ -2221,22 +2284,38 @@ def _kit_cable_curve_sync_callback_name(scene_builder: WaterhoseSceneBuilder) ->
     return f"waterhose_kit_cable_curves_{id(scene_builder)}"
 
 
-def _kit_cable_curve_root_path(scene_builder: WaterhoseSceneBuilder) -> str:
+def _cable_body_ids_by_env_by_curve(scene_builder: WaterhoseSceneBuilder) -> list[list[list[int]]]:
+    by_env = getattr(scene_builder, "cable_body_ids_by_env_by_curve", [])
+    if by_env:
+        return by_env
+    return [[list(body_ids) for body_ids in scene_builder.cable_body_ids_by_curve]]
+
+
+def _cable_segment_lengths_by_env_by_curve(scene_builder: WaterhoseSceneBuilder) -> list[list[list[float]]]:
+    by_env = getattr(scene_builder, "cable_segment_lengths_by_env_by_curve", [])
+    if by_env:
+        return by_env
+    return [[list(lengths) for lengths in scene_builder.cable_segment_lengths_by_curve]]
+
+
+def _kit_cable_curve_root_path(scene_builder: WaterhoseSceneBuilder, env_id: int = 0) -> str:
     if scene_builder.num_envs == 1:
         return KIT_CABLE_CURVE_ROOT
-    return "/World/Env_0/WaterhoseCableCurves"
+    return f"/World/Env_{env_id}/WaterhoseCableCurves"
 
 
-def _kit_cable_asset_spawn_path(scene_builder: WaterhoseSceneBuilder, cable_asset: CableUsdAsset) -> str:
-    root_path = _kit_cable_curve_root_path(scene_builder)
+def _kit_cable_asset_spawn_path(
+    scene_builder: WaterhoseSceneBuilder, cable_asset: CableUsdAsset, env_id: int = 0
+) -> str:
+    root_path = _kit_cable_curve_root_path(scene_builder, env_id)
     first_component = cable_asset.curve_prim_path.strip("/").split("/", 1)[0]
     if not first_component or first_component == "World":
         return root_path
     return f"{root_path}/{first_component}"
 
 
-def _kit_cable_curve_path(scene_builder: WaterhoseSceneBuilder, source_curve_prim_path: str) -> str:
-    root_path = _kit_cable_curve_root_path(scene_builder)
+def _kit_cable_curve_path(scene_builder: WaterhoseSceneBuilder, source_curve_prim_path: str, env_id: int = 0) -> str:
+    root_path = _kit_cable_curve_root_path(scene_builder, env_id)
     suffix = source_curve_prim_path.strip("/")
     if suffix == "World":
         suffix = ""
@@ -2472,16 +2551,21 @@ def _relabel_kit_scene_bodies(stage, scene_builder: WaterhoseSceneBuilder, build
 
 def _relabel_kit_cable_head_bodies(stage, scene_builder: WaterhoseSceneBuilder, builder) -> None:
     """Relabel Newton cable head bodies to the authored Kit plug mesh Xforms."""
-    root_path = _kit_cable_curve_root_path(scene_builder)
-    head_visual_paths = [
-        f"{root_path}/plug_mesh/plug_mesh",
-        f"{root_path}/plug_mesh02/plug_mesh",
-    ]
-    for body_id, visual_path in zip(scene_builder.cable_head_body_ids, head_visual_paths):
-        if body_id >= len(builder.body_label):
-            continue
-        if stage.GetPrimAtPath(visual_path).IsValid():
-            builder.body_label[body_id] = visual_path
+    head_body_ids_by_env = getattr(scene_builder, "cable_head_body_ids_by_env", [])
+    if not head_body_ids_by_env:
+        head_body_ids_by_env = [scene_builder.cable_head_body_ids]
+
+    for env_id, head_body_ids in enumerate(head_body_ids_by_env):
+        root_path = _kit_cable_curve_root_path(scene_builder, env_id)
+        head_visual_paths = [
+            f"{root_path}/plug_mesh/plug_mesh",
+            f"{root_path}/plug_mesh02/plug_mesh",
+        ]
+        for body_id, visual_path in zip(head_body_ids, head_visual_paths):
+            if body_id >= len(builder.body_label):
+                continue
+            if stage.GetPrimAtPath(visual_path).IsValid():
+                builder.body_label[body_id] = visual_path
 
 
 def _define_missing_kit_body_prims(stage, builder) -> None:
