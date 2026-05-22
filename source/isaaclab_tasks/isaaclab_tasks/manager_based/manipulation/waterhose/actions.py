@@ -16,7 +16,7 @@ from isaaclab.managers.action_manager import ActionTerm
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.utils.configclass import configclass
 
-from isaaclab_newton.ik.newton_ik_manager import NewtonIKManager, NewtonIKPoseObjective
+from isaaclab_newton.ik.newton_ik_manager import NewtonIKManager
 from isaaclab_newton.ik.newton_ik_manager_cfg import NewtonIKManagerCfg
 
 from . import waterhose_core as core
@@ -37,15 +37,13 @@ class NewtonTaskSpaceIKActionCfg(ActionTermCfg):
     max_joint_step: float = 0.02
     max_gripper_joint_step: float = 0.20
     max_gripper_joint_velocity: float = 0.03
-    ik_iterations: int = 12
-    left_hold_weight: float = 1.0
-    torso_hold_weight: float = 50.0
+    ik_iterations: int = 4
     controller: NewtonIKManagerCfg = NewtonIKManagerCfg(
         command_type="pose",
         use_relative_mode=True,
         optimizer="lm",
         jacobian_mode="analytic",
-        iterations=12,
+        iterations=4,
         position_weight=1.0,
         rotation_weight=1.0,
         joint_limit_weight=10.0,
@@ -77,8 +75,6 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         if self._rotation_frame not in ("eef", "world"):
             raise ValueError("NewtonTaskSpaceIKActionCfg.rotation_frame must be 'eef', 'world', or None.")
         self._body_ids = _resolve_body_ids(self._model.body_label, core.RIGHT_EE, self.num_envs)
-        self._left_body_ids = _resolve_body_ids(self._model.body_label, core.LEFT_EE, self.num_envs)
-        self._torso_body_ids = _resolve_body_ids(self._model.body_label, core.TORSO, self.num_envs)
         self._right_open_driver, self._right_closed_driver = _gripper_driver_targets(
             self._model, self._scene_builder.right_gripper_driver_dofs
         )
@@ -127,7 +123,7 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._ik_manager.set_target_pose(target_pos - self._env_origins_t, target_quat)
         solved_q = self._ik_manager.solve(self._current_q)
 
-        self._next_control_q.copy_(self._current_q)
+        self._next_control_q.copy_(self._nominal_control_q)
         self._next_control_q[:, self._ik_control_coord_ids_t] = solved_q[:, self._ik_control_coord_ids_t]
         self._set_gripper_targets_t(self._next_control_q, self._processed_actions[:, 6])
         self._joint_delta.copy_(self._next_control_q)
@@ -244,12 +240,9 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._target_quat[ids] = body_q[:, 3:7]
 
     def _setup_ik(self) -> None:
-        self._cache_nominal_hold_targets()
         link_index = _resolve_body_ids(self._single_robot_model.body_label, core.RIGHT_EE, 1)[0]
-        left_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.LEFT_EE, 1)[0]
-        torso_link_index = _resolve_body_ids(self._single_robot_model.body_label, core.TORSO, 1)[0]
         self.cfg.controller.iterations = int(self.cfg.ik_iterations)
-        self._ik_control_coord_ids = _controlled_ik_coord_ids(self._single_robot_model)
+        self._ik_control_coord_ids = _right_arm_ik_coord_ids(self._single_robot_model)
         self._ik_control_coord_ids_t = torch.as_tensor(self._ik_control_coord_ids, device=self.device, dtype=torch.long)
         self._ik_manager = NewtonIKManager(
             self.cfg.controller,
@@ -259,36 +252,12 @@ class NewtonTaskSpaceIKAction(ActionTerm):
             link_index=link_index,
             link_offset_pos=(0.0, 0.0, 0.0),
             link_offset_rot=(0.0, 0.0, 0.0, 1.0),
-            extra_pose_objectives=[
-                NewtonIKPoseObjective(
-                    link_index=left_link_index,
-                    position_weight=float(self.cfg.left_hold_weight),
-                    rotation_weight=float(self.cfg.left_hold_weight),
-                ),
-                NewtonIKPoseObjective(
-                    link_index=torso_link_index,
-                    position_weight=float(self.cfg.torso_hold_weight),
-                    rotation_weight=float(self.cfg.torso_hold_weight),
-                ),
-            ],
         )
-        self._ik_manager.set_extra_target_pose(0, self._hold_nominal_pos[:, 0], self._hold_nominal_quat[:, 0])
-        self._ik_manager.set_extra_target_pose(1, self._hold_nominal_pos[:, 1], self._hold_nominal_quat[:, 1])
-
-    def _cache_nominal_hold_targets(self) -> None:
-        left_ids = torch.as_tensor(self._left_body_ids, device=self.device, dtype=torch.long)
-        torso_ids = torch.as_tensor(self._torso_body_ids, device=self.device, dtype=torch.long)
-        left_q = self._body_q_t.index_select(0, left_ids)
-        torso_q = self._body_q_t.index_select(0, torso_ids)
-        self._hold_nominal_pos = torch.stack(
-            (left_q[:, :3] - self._env_origins_t, torso_q[:, :3] - self._env_origins_t),
-            dim=1,
-        ).contiguous()
-        self._hold_nominal_quat = torch.stack((left_q[:, 3:7], torso_q[:, 3:7]), dim=1).contiguous()
 
     def _seed_control_targets(self) -> None:
         initial = core.wp.to_torch(self._single_robot_model.joint_q).to(device=self.device, dtype=torch.float32)
-        self._last_control_q = initial.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
+        self._nominal_control_q = initial.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
+        self._last_control_q = self._nominal_control_q.clone()
         self._control_joint_target_pos_t.scatter_(0, self._joint_coord_ids_flat_t, self._last_control_q.reshape(-1))
 
     def _set_gripper_targets_t(self, q: torch.Tensor, gripper_action: torch.Tensor) -> None:
@@ -308,9 +277,9 @@ class NewtonTaskSpaceIKAction(ActionTerm):
     def _reset_control_targets(self, env_ids) -> None:
         ids = self._env_indices_t(env_ids)
         joint_coord_ids = self._joint_coord_ids_t.index_select(0, ids)
-        current_q = torch.take(self._joint_q_t, joint_coord_ids)
-        self._last_control_q[ids] = current_q
-        self._control_joint_target_pos_t.scatter_(0, joint_coord_ids.reshape(-1), current_q.reshape(-1))
+        target_q = self._nominal_control_q.index_select(0, ids)
+        self._last_control_q[ids] = target_q
+        self._control_joint_target_pos_t.scatter_(0, joint_coord_ids.reshape(-1), target_q.reshape(-1))
 
     def _gripper_joint_step_limit(self) -> float:
         max_step = float(self.cfg.max_gripper_joint_step)
@@ -363,19 +332,19 @@ def _first_index(indices: list[int]) -> int | None:
     return int(indices[0]) if indices else None
 
 
-def _controlled_ik_coord_ids(model) -> list[int]:
-    """Return torso and right-arm joint coordinates controlled by waterhose IK."""
+def _right_arm_ik_coord_ids(model) -> list[int]:
+    """Return right-arm joint coordinates controlled by waterhose IK."""
     coord_ids: list[int] = []
     joint_q_start = model.joint_q_start.numpy()
     for joint_id, label in enumerate(model.joint_label):
         short_label = str(label).rsplit("/", 1)[-1]
-        if not (short_label.startswith("torso_joint_") or short_label.startswith("right_arm_joint_")):
+        if not short_label.startswith("right_arm_joint_"):
             continue
         coord_id = int(joint_q_start[joint_id])
         if 0 <= coord_id < int(model.joint_coord_count):
             coord_ids.append(coord_id)
     if not coord_ids:
-        raise RuntimeError("No torso/right-arm joint coordinates were found for waterhose Newton IK.")
+        raise RuntimeError("No right-arm joint coordinates were found for waterhose Newton IK.")
     return sorted(set(coord_ids))
 
 
