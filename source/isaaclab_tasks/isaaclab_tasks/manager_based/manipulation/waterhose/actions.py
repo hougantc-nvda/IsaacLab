@@ -37,13 +37,14 @@ class NewtonTaskSpaceIKActionCfg(ActionTermCfg):
     max_joint_step: float = 0.02
     max_gripper_joint_step: float = 0.20
     max_gripper_joint_velocity: float = 0.03
-    ik_iterations: int = 4
+    ik_iterations: int = 6
     controller: NewtonIKManagerCfg = NewtonIKManagerCfg(
         command_type="pose",
         use_relative_mode=True,
         optimizer="lm",
         jacobian_mode="analytic",
-        iterations=4,
+        iterations=6,
+        lambda_initial=1.0,
         position_weight=1.0,
         rotation_weight=1.0,
         joint_limit_weight=10.0,
@@ -63,6 +64,8 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._debug_vis_handle = None
         self._raw_actions = torch.zeros(self.num_envs, 7, device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
+        self._position_step_norm = torch.empty((self.num_envs, 1), device=self.device)
+        self._position_step_scale = torch.empty_like(self._position_step_norm)
         self._scene_builder = env.waterhose_scene_builder
         self._model = core.NewtonManager.get_model()
         self._control = core.NewtonManager.get_control()
@@ -100,6 +103,14 @@ class NewtonTaskSpaceIKAction(ActionTerm):
     def process_actions(self, actions: torch.Tensor) -> None:
         self._raw_actions[:] = actions.clamp(-1.0, 1.0)
         self._processed_actions[:, :3] = self._raw_actions[:, :3] * float(self.cfg.position_scale)
+        max_target_step = float(self.cfg.max_target_step)
+        if max_target_step > 0.0:
+            position_step = self._processed_actions[:, :3]
+            torch.linalg.vector_norm(position_step, dim=-1, keepdim=True, out=self._position_step_norm)
+            self._position_step_norm.clamp_min_(1.0e-12)
+            torch.div(max_target_step, self._position_step_norm, out=self._position_step_scale)
+            self._position_step_scale.clamp_(max=1.0)
+            position_step.mul_(self._position_step_scale)
         self._processed_actions[:, 3:6] = self._raw_actions[:, 3:6] * float(self.cfg.rotation_scale)
         self._processed_actions[:, 6:] = self._raw_actions[:, 6:]
 
@@ -123,8 +134,7 @@ class NewtonTaskSpaceIKAction(ActionTerm):
         self._ik_manager.set_target_pose(target_pos - self._env_origins_t, target_quat)
         solved_q = self._ik_manager.solve(self._current_q)
 
-        self._next_control_q.copy_(self._nominal_control_q)
-        self._next_control_q[:, self._ik_control_coord_ids_t] = solved_q[:, self._ik_control_coord_ids_t]
+        self._next_control_q.copy_(solved_q)
         self._set_gripper_targets_t(self._next_control_q, self._processed_actions[:, 6])
         self._joint_delta.copy_(self._next_control_q)
         self._joint_delta.sub_(self._last_control_q)
@@ -242,8 +252,6 @@ class NewtonTaskSpaceIKAction(ActionTerm):
     def _setup_ik(self) -> None:
         link_index = _resolve_body_ids(self._single_robot_model.body_label, core.RIGHT_EE, 1)[0]
         self.cfg.controller.iterations = int(self.cfg.ik_iterations)
-        self._ik_control_coord_ids = _right_arm_ik_coord_ids(self._single_robot_model)
-        self._ik_control_coord_ids_t = torch.as_tensor(self._ik_control_coord_ids, device=self.device, dtype=torch.long)
         self._ik_manager = NewtonIKManager(
             self.cfg.controller,
             model=self._single_robot_model,
@@ -330,22 +338,6 @@ def _gripper_driver_targets(model, driver_dofs: list[int]) -> tuple[float, float
 
 def _first_index(indices: list[int]) -> int | None:
     return int(indices[0]) if indices else None
-
-
-def _right_arm_ik_coord_ids(model) -> list[int]:
-    """Return right-arm joint coordinates controlled by waterhose IK."""
-    coord_ids: list[int] = []
-    joint_q_start = model.joint_q_start.numpy()
-    for joint_id, label in enumerate(model.joint_label):
-        short_label = str(label).rsplit("/", 1)[-1]
-        if not short_label.startswith("right_arm_joint_"):
-            continue
-        coord_id = int(joint_q_start[joint_id])
-        if 0 <= coord_id < int(model.joint_coord_count):
-            coord_ids.append(coord_id)
-    if not coord_ids:
-        raise RuntimeError("No right-arm joint coordinates were found for waterhose Newton IK.")
-    return sorted(set(coord_ids))
 
 
 def _torch_quat_inverse(quat_xyzw: torch.Tensor) -> torch.Tensor:
