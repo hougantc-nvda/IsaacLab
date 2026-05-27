@@ -28,6 +28,131 @@ from isaaclab.utils.configclass import configclass
 from . import mdp
 from .actions import NewtonTaskSpaceIKAction, NewtonTaskSpaceIKActionCfg
 
+from isaaclab_teleop.isaac_teleop_cfg import IsaacTeleopCfg  # isort: skip
+from isaaclab_teleop.xr_cfg import XrCfg  # isort: skip
+
+
+def _build_rby1df_waterhose_pipeline(position_action_scale: float, rotation_action_scale: float):
+    """Build an IsaacTeleop pipeline for RBY1 waterhose teleoperation."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    from isaacteleop.retargeting_engine.deviceio_source_nodes import ControllersSource
+    from isaacteleop.retargeting_engine.interface import (
+        BaseRetargeter,
+        OptionalType,
+        OutputCombiner,
+        RetargeterIO,
+        RetargeterIOType,
+        TensorGroupType,
+        ValueInput,
+    )
+    from isaacteleop.retargeting_engine.tensor_types import (
+        ControllerInput,
+        ControllerInputIndex,
+        DLDataType,
+        NDArrayType,
+        TransformMatrix,
+    )
+
+    class WaterhoseControllerRetargeter(BaseRetargeter):
+        """Retarget the right motion controller into the waterhose 7D action."""
+
+        def __init__(self, name: str):
+            super().__init__(name=name)
+            self._previous_pos: np.ndarray | None = None
+            self._previous_rot: Rotation | None = None
+            self._max_rebaseline_delta = 0.15
+            self._position_deadzone = 5.0e-4
+            self._rotation_deadzone = 2.0e-3
+            self._trigger_threshold = 0.5
+            self._position_gain = 1.0 / max(float(position_action_scale), 1.0e-6)
+            self._rotation_gain = 1.0 / max(float(rotation_action_scale), 1.0e-6)
+
+        def input_spec(self) -> RetargeterIOType:
+            return {ControllersSource.RIGHT: OptionalType(ControllerInput())}
+
+        def output_spec(self) -> RetargeterIOType:
+            return {
+                "action": TensorGroupType(
+                    "action",
+                    [
+                        NDArrayType(
+                            "waterhose_action",
+                            shape=(7,),
+                            dtype=DLDataType.FLOAT,
+                            dtype_bits=32,
+                        )
+                    ],
+                )
+            }
+
+        def _compute_fn(self, inputs: RetargeterIO, outputs: RetargeterIO, context) -> None:
+            action = np.zeros(7, dtype=np.float32)
+            controller = inputs[ControllersSource.RIGHT]
+            if controller.is_none:
+                self._previous_pos = None
+                self._previous_rot = None
+                outputs["action"][0] = action
+                return
+
+            trigger = float(controller[ControllerInputIndex.TRIGGER_VALUE])
+            action[6] = 1.0 if trigger > self._trigger_threshold else -1.0
+
+            if not bool(controller[ControllerInputIndex.GRIP_IS_VALID]):
+                self._previous_pos = None
+                self._previous_rot = None
+                outputs["action"][0] = action
+                return
+
+            pos = np.asarray(np.from_dlpack(controller[ControllerInputIndex.GRIP_POSITION]), dtype=np.float64)
+            quat = np.asarray(np.from_dlpack(controller[ControllerInputIndex.GRIP_ORIENTATION]), dtype=np.float64)
+            quat_norm = np.linalg.norm(quat)
+            if quat_norm < 1.0e-6:
+                self._previous_pos = None
+                self._previous_rot = None
+                outputs["action"][0] = action
+                return
+            rot = Rotation.from_quat(quat / quat_norm)
+
+            if self._previous_pos is None or self._previous_rot is None:
+                self._previous_pos = pos.copy()
+                self._previous_rot = rot
+                outputs["action"][0] = action
+                return
+
+            delta_pos = pos - self._previous_pos
+            if np.linalg.norm(delta_pos) > self._max_rebaseline_delta:
+                self._previous_pos = pos.copy()
+                self._previous_rot = rot
+                outputs["action"][0] = action
+                return
+
+            # Translation is in the world frame, matching the waterhose play cfg.
+            if np.linalg.norm(delta_pos) >= self._position_deadzone:
+                action[:3] = delta_pos * self._position_gain
+
+            # The play cfg applies rotation actions in the EEF frame, so use the
+            # controller-local orientation delta rather than a world-frame delta.
+            delta_rot = self._previous_rot.inv() * rot
+            delta_rot_vec = delta_rot.as_rotvec()
+            if np.linalg.norm(delta_rot_vec) >= self._rotation_deadzone:
+                action[3:6] = delta_rot_vec * self._rotation_gain
+
+            self._previous_pos = pos.copy()
+            self._previous_rot = rot
+            outputs["action"][0] = np.clip(action, -1.0, 1.0).astype(np.float32)
+
+    controllers = ControllersSource(name="controllers")
+    transform_input = ValueInput("world_T_anchor", TransformMatrix())
+    transformed_controllers = controllers.transformed(transform_input.output(ValueInput.VALUE))
+
+    retargeter = WaterhoseControllerRetargeter(name="waterhose_controller")
+    connected_retargeter = retargeter.connect(
+        {ControllersSource.RIGHT: transformed_controllers.output(ControllersSource.RIGHT)}
+    )
+    return OutputCombiner({"action": connected_retargeter.output("action")})
+
 
 @configclass
 class ActionsCfg:
@@ -195,6 +320,14 @@ class RBY1DFWaterhoseEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         self.scene.num_envs = max(1, int(self.scene.num_envs))
         self.sync_waterhose_sim_cfg()
+        position_action_scale = float(self.actions.task_space.position_scale)
+        rotation_action_scale = float(self.actions.task_space.rotation_scale)
+        self.xr = XrCfg(anchor_pos=(0.0, 0.0, 0.0), anchor_rot=(0.0, 0.0, 0.0, 1.0))
+        self.isaac_teleop = IsaacTeleopCfg(
+            pipeline_builder=lambda: _build_rby1df_waterhose_pipeline(position_action_scale, rotation_action_scale),
+            sim_device=self.sim.device,
+            xr_cfg=self.xr,
+        )
 
     def sync_waterhose_sim_cfg(self) -> None:
         """Synchronize derived Newton simulation settings from task cfg fields."""
