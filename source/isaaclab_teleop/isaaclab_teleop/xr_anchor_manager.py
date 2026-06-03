@@ -115,11 +115,19 @@ class XrAnchorManager:
             except Exception as e:
                 logger.warning(f"Failed to create XR anchor prim: {e}")
 
-        # Configure carb settings for XR rendering
-        if hasattr(carb, "settings"):
-            carb.settings.get_settings().set_float("/persistent/xr/render/nearPlane", self._xr_cfg.near_plane)
-            carb.settings.get_settings().set_string("/persistent/xr/anchorMode", "custom anchor")
-            carb.settings.get_settings().set_string("/xrstage/customAnchor", self._xr_anchor_headset_path)
+        # Configure carb settings for Kit's XR rendering pipeline. These only
+        # take effect when Kit owns rendering; in kitless mode (e.g. the Newton
+        # renderer with renderer-owned OpenXR handles) the ``ISettings``
+        # interface cannot be acquired and ``get_settings()`` raises at runtime.
+        # The Newton renderer does not consume these Kit settings, so failing to
+        # set them is harmless -- treat the block as best-effort.
+        try:
+            settings = carb.settings.get_settings()
+            settings.set_float("/persistent/xr/render/nearPlane", self._xr_cfg.near_plane)
+            settings.set_string("/persistent/xr/anchorMode", "custom anchor")
+            settings.set_string("/xrstage/customAnchor", self._xr_anchor_headset_path)
+        except Exception as e:
+            logger.debug(f"Skipping Kit XR render carb settings (interface unavailable, e.g. kitless Newton): {e}")
 
         self._anchor_sync: XrAnchorSynchronizer | None = None
         if self._xr_core is not None:

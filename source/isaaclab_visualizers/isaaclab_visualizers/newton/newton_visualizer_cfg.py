@@ -63,3 +63,36 @@ class NewtonVisualizerCfg(VisualizerCfg):
 
     light_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
     """Light color RGB [0,1]."""
+
+    openxr_submit_mode: str = "cuda-vulkan"
+    """OpenXR submit mode: ``auto``, ``host-staging``, ``cuda-vulkan``, or ``mixed``."""
+
+    openxr_swapchain_scale: float = 0.5
+    """OpenXR swapchain resolution scale, clamped to ``[0.1, 1.0]``."""
+
+    openxr_max_view_width: int = 0
+    """Maximum OpenXR per-eye swapchain width in pixels; ``0`` means no explicit cap."""
+
+    openxr_max_view_height: int = 0
+    """Maximum OpenXR per-eye swapchain height in pixels; ``0`` means no explicit cap."""
+
+    openxr_scene_depth: bool = False
+    """Render scene depth for OpenXR submissions instead of far-plane depth."""
+
+    openxr_far_z: float = 1000.0
+    """OpenXR far clipping distance [m]."""
+
+    openxr_app_side_pqw: bool = False
+    """Submit app-side PQW foveation metadata when runtime/client support is available."""
+
+    openxr_desktop_mirror: bool = True
+    """Mirror submitted OpenXR color frames in the Newton desktop viewer."""
+
+    openxr_desktop_rendering: bool = False
+    """Keep the normal Newton desktop render loop active while OpenXR streaming is active."""
+
+    openxr_profile: bool = False
+    """Print Newton OpenXR frame timing diagnostics."""
+
+    openxr_profile_interval: int = 60
+    """Number of frames per Newton OpenXR timing diagnostic print."""

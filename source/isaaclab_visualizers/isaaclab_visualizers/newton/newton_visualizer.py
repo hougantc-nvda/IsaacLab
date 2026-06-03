@@ -37,6 +37,12 @@ from .newton_visualizer_cfg import NewtonVisualizerCfg
 
 logger = logging.getLogger(__name__)
 
+
+def _newton_openxr_desktop_rendering_enabled(cfg: NewtonVisualizerCfg) -> bool:
+    """Return whether desktop Newton GL rendering should stay enabled during OpenXR streaming."""
+    return bool(getattr(cfg, "openxr_desktop_rendering", False))
+
+
 if TYPE_CHECKING:
     from isaaclab.scene_data import SceneDataProvider
 
@@ -79,6 +85,31 @@ class NewtonViewerGL(ViewerGL):
     def is_rendering_paused(self) -> bool:
         """Return whether rendering is paused by viewer controls."""
         return self._paused_rendering
+
+    def update_image_windows_only(self) -> None:
+        """Update the desktop window without rendering the Newton 3D scene."""
+        self.renderer.update()
+        if self.renderer.has_exit():
+            return
+
+        try:
+            self.renderer._make_current()
+            from pyglet import gl
+
+            bg = getattr(self.renderer, "sky_upper", (0.0, 0.0, 0.0))
+            gl.glClearColor(float(bg[0]), float(bg[1]), float(bg[2]), 1.0)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        except Exception as exc:
+            logger.debug("[NewtonVisualizer] Mirror-only window clear failed: %s", exc)
+
+        self._update_fps()
+        if self.ui and self.ui.is_available and self.show_ui:
+            self.ui.begin_frame()
+            self._render_ui()
+            self.ui.end_frame()
+            self.ui.render()
+
+        self.renderer.present()
 
     def _render_training_controls(self, imgui):
         """Render Isaac Lab-specific control widgets in the Newton viewer UI."""
@@ -357,6 +388,36 @@ class NewtonVisualizer(BaseVisualizer):
         self._camera_env_indices: list[int] = []
         self._camera_is_owned = False
         self._generated_camera_prim_paths: list[str] = []
+        self._openxr_teleop = None
+        self._openxr_mirror_ready = False
+
+    def configure_openxr_teleop(self, *, env_cfg, env) -> object:
+        """Enable renderer-owned OpenXR teleop support for this visualizer.
+
+        Args:
+            env_cfg: Isaac Lab environment configuration.
+            env: Isaac Lab environment instance.
+
+        Returns:
+            The renderer-owned OpenXR teleop session.
+        """
+        if self._openxr_teleop is None:
+            from .newton_openxr import NewtonOpenXRTeleopSession
+
+            self._openxr_teleop = NewtonOpenXRTeleopSession(visualizer=self, env_cfg=env_cfg, env=env)
+            self._pause_desktop_rendering_for_openxr()
+        return self._openxr_teleop
+
+    def _pause_desktop_rendering_for_openxr(self) -> None:
+        """Pause desktop Newton GL rendering while the renderer-owned OpenXR path is active."""
+        if _newton_openxr_desktop_rendering_enabled(self.cfg) or self._viewer is None:
+            return
+        self._viewer._paused_rendering = True
+        self._viewer._paused = True
+        print(
+            "Newton OpenXR paused desktop Newton viewer rendering; set "
+            "NewtonVisualizerCfg.openxr_desktop_rendering=True to keep the desktop viewer active."
+        )
 
     def initialize(self, scene_data_provider: SceneDataProvider) -> None:
         """Initialize viewer resources and bind scene data provider.
@@ -469,9 +530,14 @@ class NewtonVisualizer(BaseVisualizer):
 
         if self._viewer is None:
             self._state = NewtonManager.get_state(self._scene_data_provider)
+            if self._openxr_teleop is not None and not self._openxr_teleop.step(self._state):
+                self.close()
             return
 
         self._state = NewtonManager.get_state(self._scene_data_provider)
+        if self._openxr_teleop is not None and not self._openxr_teleop.step(self._state):
+            self.close()
+            return
 
         update_frequency = self._viewer._update_frequency if self._viewer else self._update_frequency
         if self._step_counter % update_frequency != 0:
@@ -480,7 +546,12 @@ class NewtonVisualizer(BaseVisualizer):
         num_envs = NewtonManager.get_num_envs()
 
         try:
-            if not self._viewer.is_paused():
+            openxr_waiting_for_mirror = (
+                self._openxr_teleop is not None and self._viewer.is_rendering_paused() and not self._openxr_mirror_ready
+            )
+            if self._openxr_teleop is not None and self._viewer.is_rendering_paused() and self._openxr_mirror_ready:
+                self._viewer.update_image_windows_only()
+            elif openxr_waiting_for_mirror or not self._viewer.is_paused():
                 self._viewer.begin_frame(self._sim_time)
                 try:
                     if self._state is not None:
@@ -504,6 +575,10 @@ class NewtonVisualizer(BaseVisualizer):
         """Release viewer resources."""
         if self._is_closed:
             return
+        if self._openxr_teleop is not None:
+            self._openxr_teleop.close()
+            self._openxr_teleop = None
+        self._openxr_mirror_ready = False
         if self._viewer is not None:
             self._viewer = None
         if self._camera_sensor is not None and self._camera_is_owned:

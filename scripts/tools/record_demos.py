@@ -29,18 +29,26 @@ optional arguments:
                               (default: 10)
 """
 
-"""Launch Isaac Sim Simulator first."""
-
 # Standard library imports
 import argparse
 import contextlib
+import logging
+import os
+import sys
+import time
+from collections.abc import Callable
 
-# Isaac Lab AppLauncher
-from isaaclab.app import AppLauncher
+from isaaclab_teleop.openxr_runtime import KitlessTeleopLauncher
+
+from isaaclab.app import add_launcher_args, launch_simulation
+
+import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils.hydra import resolve_task_config
+from isaaclab_tasks.utils.preset_cli import fold_preset_tokens, setup_preset_cli
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Record demonstrations for Isaac Lab environments.")
-parser.add_argument("--task", type=str, required=True, help="Name of the task.")
+parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument(
     "--teleop_device",
     type=str,
@@ -69,8 +77,9 @@ parser.add_argument(
     type=str,
     default="cloudxrjs",
     help=(
-        "Path to a CloudXR .env file, or a shorthand: 'cloudxrjs' (Quest/Pico, default) or 'avp' (Apple Vision Pro)."
-        " Set to 'none' to disable CloudXR auto-launch entirely."
+        "Path to a CloudXR .env file, or a shorthand: 'cloudxrjs' (Quest/Pico, default), 'avp' "
+        "(Apple Vision Pro), or 'newton' (Newton OpenXR CloudXR). Set to 'none' to disable CloudXR "
+        "auto-launch entirely."
     ),
 )
 parser.add_argument(
@@ -92,68 +101,33 @@ parser.add_argument(
     ),
 )
 
-# append AppLauncher cli args
-AppLauncher.add_app_launcher_args(parser)
-# parse the arguments
-args_cli = parser.parse_args()
+# append launcher cli args and preserve Hydra/preset overrides
+add_launcher_args(parser)
+_ORIGINAL_ARGV = sys.argv[:]
+args_cli, hydra_args = setup_preset_cli(parser)
+sys.argv = [sys.argv[0]] + fold_preset_tokens(hydra_args)
 
 # Validate required arguments
 if args_cli.task is None:
     parser.error("--task is required")
 
-app_launcher_args = vars(args_cli)
-
-# launch the simulator
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
-
-"""Rest everything follows."""
+logger = logging.getLogger(__name__)
+_KITLESS_TELEOP_LAUNCHER = KitlessTeleopLauncher(args_cli, _ORIGINAL_ARGV, logger=logger)
 
 
 # Third-party imports
-import logging
-import os
-import time
-from collections.abc import Callable
-
 import gymnasium as gym
 import torch
-
-import omni.ui as ui
+from isaaclab_teleop.xr_cfg import remove_camera_configs
 
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg, Se3SpaceMouse, Se3SpaceMouseCfg
-from isaaclab.devices.openxr import remove_camera_configs
 from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
 from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
-from isaaclab.envs.ui import EmptyWindow
 from isaaclab.managers import DatasetExportMode
 
 import isaaclab_mimic.envs  # noqa: F401
 from isaaclab_mimic.ui.instruction_display import InstructionDisplay, show_subtask_instructions
-
-import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-
-logger = logging.getLogger(__name__)
-
-_CLOUDXR_ENV_SHORTHANDS: dict[str, str] = {}
-
-
-def _resolve_cloudxr_env(value: str | None) -> str | None:
-    """Resolve ``--cloudxr_env`` shorthands to absolute ``.env`` file paths.
-
-    Accepts ``"cloudxrjs"`` (Quest/Pico), ``"avp"`` (Apple Vision Pro),
-    ``"none"`` / ``None`` (disable), or an arbitrary file path.
-    """
-    if value is None or value.strip() == "" or value.lower() == "none":
-        return None
-    if not _CLOUDXR_ENV_SHORTHANDS:
-        from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV
-
-        _CLOUDXR_ENV_SHORTHANDS["cloudxrjs"] = CLOUDXR_JS_ENV
-        _CLOUDXR_ENV_SHORTHANDS["avp"] = CLOUDXR_AVP_ENV
-    return _CLOUDXR_ENV_SHORTHANDS.get(value.lower(), value)
 
 
 class RateLimiter:
@@ -235,8 +209,11 @@ def create_environment_config(
     """
     # parse configuration
     try:
-        env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1)
+        env_cfg, _ = _KITLESS_TELEOP_LAUNCHER.resolve_env_cfg(args_cli.task, resolve_task_config, sys.argv)
         env_cfg.env_name = args_cli.task.split(":")[-1]
+        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+        if hasattr(env_cfg, "scene"):
+            env_cfg.scene.num_envs = 1
     except Exception as e:
         logger.error(f"Failed to parse environment configuration: {e}")
         exit(1)
@@ -247,6 +224,11 @@ def create_environment_config(
     use_isaac_teleop = (
         not teleop_device_explicitly_set and hasattr(env_cfg, "isaac_teleop") and env_cfg.isaac_teleop is not None
     )
+
+    if use_isaac_teleop:
+        env_cfg.isaac_teleop.sim_device = env_cfg.sim.device
+
+    _KITLESS_TELEOP_LAUNCHER.configure_env_cfg(env_cfg, sys.argv)
 
     # extract success checking function to invoke in the main loop
     success_term = None
@@ -309,7 +291,13 @@ def _create_builtin_device(device_name: str) -> object | None:
     return None
 
 
-def setup_teleop_device(callbacks: dict[str, Callable], use_isaac_teleop: bool = False) -> object:
+def setup_teleop_device(
+    callbacks: dict[str, Callable],
+    use_isaac_teleop: bool = False,
+    renderer_openxr_session: object | None = None,
+    cloudxr_env_path: str | None = None,
+    cloudxr_launcher: object | None = None,
+) -> object:
     """Set up the teleoperation device based on configuration.
 
     Attempts to create a teleoperation device based on the environment configuration.
@@ -336,10 +324,11 @@ def setup_teleop_device(callbacks: dict[str, Callable], use_isaac_teleop: bool =
                 env_cfg.isaac_teleop,
                 sim_device=args_cli.device,
                 callbacks=callbacks,
-                cloudxr_env_file=_resolve_cloudxr_env(args_cli.cloudxr_env),
-                auto_launch_cloudxr=args_cli.auto_launch_cloudxr,
+                cloudxr_env_file=None if cloudxr_launcher is not None else cloudxr_env_path,
+                auto_launch_cloudxr=args_cli.auto_launch_cloudxr and cloudxr_launcher is None,
                 mcap_record_path=args_cli.mcap_record_path,
             )
+            _KITLESS_TELEOP_LAUNCHER.attach_anchor_provider(teleop_interface, renderer_openxr_session)
             if args_cli.mcap_record_path is not None:
                 logger.info("Recording live IsaacTeleop session to MCAP (debug-only): %s", args_cli.mcap_record_path)
 
@@ -376,7 +365,21 @@ def setup_teleop_device(callbacks: dict[str, Callable], use_isaac_teleop: bool =
     return teleop_interface
 
 
-def setup_ui(label_text: str, env: gym.Env) -> InstructionDisplay:
+class _NullInstructionDisplay:
+    """Instruction-display stub for kitless renderers without Kit UI widgets."""
+
+    def set_labels(self, subtask_label, demo_label) -> None:
+        """Accept non-XR labels for API compatibility."""
+
+    def show_subtask(self, text: str) -> None:
+        """Skip subtask UI text for kitless renderers."""
+
+    def show_demo(self, text: str) -> None:
+        """Print demo status for kitless renderers."""
+        print(text)
+
+
+def setup_ui(label_text: str, env: gym.Env) -> object:
     """Set up the user interface elements.
 
     Creates instruction display and UI window with labels for showing information
@@ -389,8 +392,15 @@ def setup_ui(label_text: str, env: gym.Env) -> InstructionDisplay:
     Returns:
         InstructionDisplay: The configured instruction display object
     """
+    if _KITLESS_TELEOP_LAUNCHER.enabled:
+        return _NullInstructionDisplay()
+
     instruction_display = InstructionDisplay(args_cli.xr)
     if not args_cli.xr:
+        import omni.ui as ui
+
+        from isaaclab.envs.ui import EmptyWindow
+
         window = EmptyWindow(env, "Instruction")
         with window.ui_window_elements["main_vstack"]:
             demo_label = ui.Label(label_text)
@@ -475,6 +485,9 @@ def run_simulation_loop(
     success_term: object | None,
     rate_limiter: RateLimiter | None,
     use_isaac_teleop: bool = False,
+    renderer_openxr_session: object | None = None,
+    cloudxr_env_path: str | None = None,
+    cloudxr_launcher: object | None = None,
 ) -> int:
     """Run the main simulation loop for collecting demonstrations.
 
@@ -524,20 +537,39 @@ def run_simulation_loop(
         "RESET": reset_recording_instance,
     }
 
-    teleop_interface = setup_teleop_device(teleoperation_callbacks, use_isaac_teleop)
+    teleop_interface = setup_teleop_device(
+        teleoperation_callbacks,
+        use_isaac_teleop,
+        renderer_openxr_session=renderer_openxr_session,
+        cloudxr_env_path=cloudxr_env_path,
+        cloudxr_launcher=cloudxr_launcher,
+    )
 
     label_text = f"Recorded {current_recorded_demo_count} successful demonstrations."
     instruction_display = setup_ui(label_text, env)
 
+    runtime_physics_active = _KITLESS_TELEOP_LAUNCHER.env_uses_runtime_physics(env)
+    if use_isaac_teleop:
+        runtime_hooks = getattr(env_cfg, "install_kitless_teleop_runtime_hooks", None)
+        if runtime_physics_active and callable(runtime_hooks):
+            runtime_hooks(env)
+
+    action_conditioner = getattr(env_cfg, "condition_kitless_teleop_action", None)
+    action_issue_checker = getattr(env_cfg, "teleop_action_target_issue", None)
+    action_formatter = getattr(env_cfg, "format_kitless_teleop_action", None)
+    skipped_action_log_count = 0
+    kitless_action_state: dict[str, torch.Tensor] = {}
+
     def inner_loop():
         """Inner loop function with access to nonlocal variables."""
         nonlocal current_recorded_demo_count, success_step_count, should_reset_recording_instance
-        nonlocal running_recording_instance, label_text
+        nonlocal running_recording_instance, label_text, skipped_action_log_count
 
         # Reset before starting
         env.sim.reset()
         env.reset()
         teleop_interface.reset()
+        kitless_action_state.clear()
 
         subtasks = {}
         stack_name = "IsaacTeleop" if use_isaac_teleop else "native"
@@ -547,7 +579,7 @@ def run_simulation_loop(
             from isaaclab_teleop import poll_control_events
 
         with contextlib.suppress(KeyboardInterrupt), torch.inference_mode():
-            while simulation_app.is_running():
+            while _KITLESS_TELEOP_LAUNCHER.is_loop_running(env):
                 # Get teleop command (may be None while waiting for session start)
                 action = teleop_interface.advance()
 
@@ -558,7 +590,38 @@ def run_simulation_loop(
                     if ctrl.should_reset:
                         should_reset_recording_instance = True
 
+                if (
+                    action is not None
+                    and use_isaac_teleop
+                    and running_recording_instance
+                    and runtime_physics_active
+                    and callable(action_conditioner)
+                ):
+                    action = action_conditioner(env, action, kitless_action_state)
+                elif action is None or not running_recording_instance:
+                    kitless_action_state.clear()
+
+                action_target_issue = (
+                    action_issue_checker(action)
+                    if callable(action_issue_checker)
+                    and use_isaac_teleop
+                    and runtime_physics_active
+                    and action is not None
+                    else None
+                )
+
                 if action is None:
+                    env.sim.render()
+                    continue
+                if action_target_issue is not None:
+                    if skipped_action_log_count < 20:
+                        action_summary = (
+                            action_formatter(action)
+                            if callable(action_formatter)
+                            else f"action_shape={tuple(action.shape)}"
+                        )
+                        print(f"Skipping unsafe IsaacTeleop action: {action_target_issue}; {action_summary}")
+                        skipped_action_log_count += 1
                     env.sim.render()
                     continue
                 # Expand to batch dimension
@@ -611,6 +674,7 @@ def run_simulation_loop(
                     success_step_count = handle_reset(
                         env, success_step_count, instruction_display, label_text, teleop_interface
                     )
+                    kitless_action_state.clear()
                     should_reset_recording_instance = False
 
                 # Check if simulation is stopped
@@ -654,21 +718,49 @@ def main() -> None:
     # if handtracking or IsaacTeleop is selected, rate limiting is achieved via OpenXR
     if args_cli.xr or use_isaac_teleop:
         rate_limiter = None
-        from isaaclab.ui.xr_widgets import TeleopVisualizationManager, XRVisualization
+        if not _KITLESS_TELEOP_LAUNCHER.enabled:
+            from isaaclab.ui.xr_widgets import TeleopVisualizationManager, XRVisualization
 
-        # Assign the teleop visualization manager to the visualization system
-        XRVisualization.assign_manager(TeleopVisualizationManager)
+            # Assign the teleop visualization manager to the visualization system
+            XRVisualization.assign_manager(TeleopVisualizationManager)
     else:
         rate_limiter = RateLimiter(args_cli.step_hz)
 
-    # Create environment
-    env = create_environment(env_cfg)
+    launcher_args = _KITLESS_TELEOP_LAUNCHER.simulation_launcher_args()
+    cloudxr_env_path = _KITLESS_TELEOP_LAUNCHER.resolve_cloudxr_env(args_cli.cloudxr_env)
+    cloudxr_launcher = _KITLESS_TELEOP_LAUNCHER.launch_cloudxr(
+        use_isaac_teleop=use_isaac_teleop,
+        cloudxr_env_path=cloudxr_env_path,
+        auto_launch=args_cli.auto_launch_cloudxr,
+    )
+    env = None
+    current_recorded_demo_count = 0
+    try:
+        with launch_simulation(env_cfg, launcher_args):
+            # Create environment
+            env = create_environment(env_cfg)
+            renderer_openxr_session = _KITLESS_TELEOP_LAUNCHER.configure_openxr_teleop(
+                env,
+                env_cfg,
+                enabled=use_isaac_teleop and _KITLESS_TELEOP_LAUNCHER.enabled,
+            )
 
-    # Run simulation loop
-    current_recorded_demo_count = run_simulation_loop(env, None, success_term, rate_limiter, use_isaac_teleop)
+            # Run simulation loop
+            current_recorded_demo_count = run_simulation_loop(
+                env,
+                None,
+                success_term,
+                rate_limiter,
+                use_isaac_teleop,
+                renderer_openxr_session=renderer_openxr_session,
+                cloudxr_env_path=cloudxr_env_path,
+                cloudxr_launcher=cloudxr_launcher,
+            )
+    finally:
+        if env is not None:
+            env.close()
+        _KITLESS_TELEOP_LAUNCHER.stop_cloudxr(cloudxr_launcher)
 
-    # Clean up
-    env.close()
     print(f"Recording session completed with {current_recorded_demo_count} successful demonstrations")
     print(f"Demonstrations saved to: {args_cli.dataset_file}")
 
@@ -676,7 +768,3 @@ def main() -> None:
 if __name__ == "__main__":
     # run the main function
     main()
-    # env.close() already closes the USD stage via sim.clear_instance().
-    # Pump the event loop so the viewport processes closure, then close the app.
-    simulation_app.update()
-    simulation_app.close()

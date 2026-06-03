@@ -12,7 +12,7 @@ import ctypes
 import logging
 from abc import abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
@@ -227,6 +227,7 @@ class NewtonManager(PhysicsManager):
     _pending_extended_state_attributes: set[str] = set()
     _pending_extended_contact_attributes: set[str] = set()
     _report_contacts: bool = False
+    _visualization_device: str | None = None
     # Per-world reset masks (allocated in start_simulation, consumed in step)
     _world_reset_mask: wp.array | None = None  # (num_envs,) wp.int32 — for SolverKamino.reset(world_mask=...)
     _fk_reset_mask: wp.array | None = None  # (articulation_count,) wp.bool — for eval_fk(mask=...)
@@ -237,6 +238,9 @@ class NewtonManager(PhysicsManager):
     # substeps, in registration order. Multiple articulations register their
     # implicit-DOF telemetry / FF-routing kernels here.
     _post_actuator_callbacks: list[Callable[[], None]] = []
+
+    # Per-task USD import overrides consumed by Newton model construction.
+    _usd_import_options: dict[str, dict[str, Any]] = {}
 
     # CUDA graphing
     _graph = None
@@ -268,6 +272,9 @@ class NewtonManager(PhysicsManager):
     # frame in :meth:`update_visualization_state`.
     _scene_data: SceneDataFormat.Transform | None = None
     _scene_data_mapping: wp.array | None = None
+    _scene_data_staging: SceneDataFormat.Transform | None = None
+    _scene_data_staging_mapping: wp.array | None = None
+    _scene_data_staging_device: str | None = None
 
     # Views list for assets to register their views
     _views: list = []
@@ -688,6 +695,9 @@ class NewtonManager(PhysicsManager):
         NewtonManager._up_axis = "Z"
         NewtonManager._scene_data = None
         NewtonManager._scene_data_mapping = None
+        NewtonManager._scene_data_staging = None
+        NewtonManager._scene_data_staging_mapping = None
+        NewtonManager._scene_data_staging_device = None
         NewtonManager._model_changes = set()
         NewtonManager._scene_data_backend = None
         NewtonManager._cl_pending_sites = {}
@@ -1043,6 +1053,92 @@ class NewtonManager(PhysicsManager):
                 cls.sync_transforms_to_usd()
 
     @classmethod
+    def register_usd_import_options(cls, relative_path: str, **options: Any) -> None:
+        """Register per-task options for an env-relative USD import subtree.
+
+        Args:
+            relative_path: Prim path relative to an environment root, for example
+                ``"PackingTable"`` or ``"Object"``.
+            options: Keyword arguments forwarded to :meth:`newton.ModelBuilder.add_usd`
+                when that subtree is imported explicitly.
+        """
+        normalized_path = relative_path.strip("/")
+        if not normalized_path:
+            raise ValueError("relative_path must name a prim below the environment root")
+        NewtonManager._usd_import_options[normalized_path] = dict(options)
+
+    @classmethod
+    def clear_usd_import_options(cls) -> None:
+        """Clear per-task USD import options registered on :class:`NewtonManager`."""
+        NewtonManager._usd_import_options.clear()
+
+    @classmethod
+    def _add_usd_with_registered_imports(
+        cls,
+        builder: ModelBuilder,
+        stage,
+        *,
+        root_path: str,
+        schema_resolvers: list[Any],
+        ignore_paths: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Import USD while honoring env-relative explicit import options."""
+        import re
+
+        base_ignore_paths = list(ignore_paths or [])
+        explicit_imports: list[tuple[str, dict[str, Any]]] = []
+        root_prefix = "" if root_path == "/" else root_path.rstrip("/")
+        for relative_path, options in NewtonManager._usd_import_options.items():
+            child_path = f"{root_prefix}/{relative_path}" if root_prefix else f"/{relative_path}"
+            prim = stage.GetPrimAtPath(child_path)
+            if not prim or not prim.IsValid():
+                continue
+            explicit_imports.append((child_path, options))
+            base_ignore_paths.append(rf"{re.escape(child_path)}($|/.*)")
+
+        builder.add_usd(
+            stage,
+            root_path=root_path,
+            ignore_paths=base_ignore_paths or None,
+            schema_resolvers=schema_resolvers,
+            **kwargs,
+        )
+
+        for child_path, options in explicit_imports:
+            explicit_kwargs = dict(kwargs)
+            explicit_kwargs.update(options)
+            builder.add_usd(
+                stage,
+                root_path=child_path,
+                schema_resolvers=schema_resolvers,
+                **explicit_kwargs,
+            )
+
+    @staticmethod
+    def _discover_env_paths(stage) -> list[tuple[int, str]]:
+        """Return environment root paths from supported Isaac Lab USD layouts."""
+        import re
+
+        env_pattern = re.compile(r"^[Ee]nv_(\d+)$")
+
+        def _collect_children(root_path: str) -> list[tuple[int, str]]:
+            root_prim = stage.GetPrimAtPath(root_path)
+            if not root_prim or not root_prim.IsValid():
+                return []
+            env_paths: list[tuple[int, str]] = []
+            for child in root_prim.GetChildren():
+                if match := env_pattern.match(child.GetName()):
+                    env_paths.append((int(match.group(1)), child.GetPath().pathString))
+            env_paths.sort(key=lambda item: item[0])
+            return env_paths
+
+        direct_env_paths = _collect_children("/World")
+        if direct_env_paths:
+            return direct_env_paths
+        return _collect_children("/World/envs")
+
+    @classmethod
     def instantiate_builder_from_stage(cls):
         """Create builder from USD stage.
 
@@ -1051,23 +1147,12 @@ class NewtonManager(PhysicsManager):
         Falls back to a flat ``add_usd`` when no env Xforms are found.
 
         """
-        import re
-
         from pxr import UsdGeom
 
         stage = get_current_stage()
         up_axis = UsdGeom.GetStageUpAxis(stage)
 
-        # Scan /World children for env-like Xforms (Env_0, env_1, ...)
-        env_pattern = re.compile(r"^[Ee]nv_(\d+)$")
-        world_prim = stage.GetPrimAtPath("/World")
-        env_paths: list[tuple[int, str]] = []
-        if world_prim and world_prim.IsValid():
-            for child in world_prim.GetChildren():
-                m = env_pattern.match(child.GetName())
-                if m:
-                    env_paths.append((int(m.group(1)), child.GetPath().pathString))
-        env_paths.sort(key=lambda x: x[0])
+        env_paths = cls._discover_env_paths(stage)
 
         builder = ModelBuilder(up_axis=up_axis)
 
@@ -1075,7 +1160,12 @@ class NewtonManager(PhysicsManager):
 
         if not env_paths:
             # No env Xforms — flat loading
-            builder.add_usd(stage, schema_resolvers=schema_resolvers)
+            cls._add_usd_with_registered_imports(
+                builder,
+                stage,
+                root_path="/",
+                schema_resolvers=schema_resolvers,
+            )
             NewtonManager._world_xforms = [wp.transform()]
         else:
             # Load everything except the env subtrees (ground plane, lights, etc.)
@@ -1085,7 +1175,8 @@ class NewtonManager(PhysicsManager):
             # Build a prototype from the first env (all envs assumed identical)
             _, proto_path = env_paths[0]
             proto = ModelBuilder(up_axis=up_axis)
-            proto.add_usd(
+            cls._add_usd_with_registered_imports(
+                proto,
                 stage,
                 root_path=proto_path,
                 schema_resolvers=schema_resolvers,
@@ -1589,11 +1680,52 @@ class NewtonManager(PhysicsManager):
         return cls._num_envs
 
     @classmethod
+    def set_visualization_device(cls, device: str | None) -> None:
+        """Set the device used for shadow Newton visualization models."""
+        NewtonManager._visualization_device = str(device) if device else None
+
+    @classmethod
+    def get_visualization_device_override(cls) -> str | None:
+        """Return the configured shadow Newton visualization model device, if any."""
+        return NewtonManager._visualization_device
+
+    @classmethod
     def _backend_is_newton(cls, scene_data_provider: SceneDataProvider | None = None) -> bool:
         """Return ``True`` when the active sim backend is Newton."""
         if scene_data_provider is not None:
             return isinstance(scene_data_provider.backend, NewtonSceneDataBackend)
         return isinstance(cls.get_scene_data_provider().backend, NewtonSceneDataBackend)
+
+    @classmethod
+    def _resolve_visualization_device(cls) -> str:
+        """Return the device for shadow Newton visualization models."""
+        if cls._visualization_device:
+            return cls._visualization_device
+        return str(PhysicsManager._device or "cpu")
+
+    @staticmethod
+    def _make_scene_data_mapping(
+        paths: list[str | None], input_paths: list[str], device: str
+    ) -> wp.array(dtype=wp.int32) | None:
+        """Create a scene-data mapping array on a specific Warp device."""
+        if not input_paths:
+            return None
+        mapping = [-1] * len(input_paths)
+        for index, path in enumerate(input_paths):
+            with contextlib.suppress(ValueError):
+                mapping[index] = paths.index(path)
+        if all(mapped_index == index for index, mapped_index in enumerate(mapping)):
+            return None
+        return wp.array(mapping, dtype=wp.int32, device=device)
+
+    @staticmethod
+    def _ensure_mapping_device(
+        mapping: wp.array(dtype=wp.int32) | None, device: str
+    ) -> wp.array(dtype=wp.int32) | None:
+        """Return ``mapping`` on ``device`` when a mapping is present."""
+        if mapping is None or str(mapping.device) == device:
+            return mapping
+        return wp.array(mapping.numpy(), dtype=wp.int32, device=device)
 
     @classmethod
     def _ensure_visualization_model(cls) -> None:
@@ -1644,7 +1776,7 @@ class NewtonManager(PhysicsManager):
             )
             return
 
-        device = PhysicsManager._device or "cpu"
+        device = cls._resolve_visualization_device()
         try:
             NewtonManager._model = builder.finalize(device=device)
             NewtonManager._state_0 = cls._model.state()
@@ -1706,7 +1838,12 @@ class NewtonManager(PhysicsManager):
 
         if not env_paths:
             # Fallback: ingest the whole stage as a single world.
-            builder.add_usd(stage, schema_resolvers=schema_resolvers)
+            cls._add_usd_with_registered_imports(
+                builder,
+                stage,
+                root_path="/",
+                schema_resolvers=schema_resolvers,
+            )
             NewtonManager._num_envs = 1
             return builder
 
@@ -1726,7 +1863,8 @@ class NewtonManager(PhysicsManager):
         # Build env_0 as a prototype, then replicate across envs.
         proto_env_path = env_paths[0][1]
         proto = ModelBuilder(up_axis=up_axis)
-        proto.add_usd(
+        cls._add_usd_with_registered_imports(
+            proto,
             stage,
             root_path=proto_env_path,
             schema_resolvers=schema_resolvers,
@@ -1838,14 +1976,48 @@ class NewtonManager(PhysicsManager):
         if cls._state_0 is None or cls._model is None or cls._state_0.body_q is None:
             return
 
-        if cls._scene_data is None:
-            cls._scene_data = SceneDataFormat.Transform()
-        if cls._scene_data_mapping is None:
-            body_paths = list(getattr(cls._model, "body_label", None) or [])
-            cls._scene_data_mapping = scene_data_provider.create_mapping(body_paths)
+        target_transforms = cls._state_0.body_q
+        target_device = str(target_transforms.device)
+        backend_data = scene_data_provider.backend.transforms
+        backend_transforms = getattr(backend_data, "transforms", None)
+        backend_device = str(getattr(backend_transforms, "device", target_device))
+        body_paths = list(getattr(cls._model, "body_label", None) or [])
 
-        cls._scene_data.transforms = cls._state_0.body_q
-        scene_data_provider.get_transforms(cls._scene_data, mapping=cls._scene_data_mapping)
+        if backend_device == target_device:
+            if cls._scene_data is None:
+                cls._scene_data = SceneDataFormat.Transform()
+            if cls._scene_data_mapping is None:
+                cls._scene_data_mapping = cls._make_scene_data_mapping(
+                    body_paths, scene_data_provider.backend.transform_paths, target_device
+                )
+            cls._scene_data_mapping = cls._ensure_mapping_device(cls._scene_data_mapping, target_device)
+            cls._scene_data.transforms = target_transforms
+            scene_data_provider.get_transforms(
+                cls._scene_data, mapping=cls._scene_data_mapping, allow_passthrough=False
+            )
+            return
+
+        if cls._scene_data_staging is None or cls._scene_data_staging_device != backend_device:
+            cls._scene_data_staging = SceneDataFormat.Transform()
+            cls._scene_data_staging_mapping = cls._make_scene_data_mapping(
+                body_paths, scene_data_provider.backend.transform_paths, backend_device
+            )
+            cls._scene_data_staging_device = backend_device
+
+        if (
+            cls._scene_data_staging.transforms is None
+            or cls._scene_data_staging.transforms.shape != target_transforms.shape
+        ):
+            cls._scene_data_staging.transforms = wp.empty(
+                target_transforms.shape, dtype=wp.transformf, device=backend_device
+            )
+
+        staging_device = str(cls._scene_data_staging.transforms.device)
+        cls._scene_data_staging_mapping = cls._ensure_mapping_device(cls._scene_data_staging_mapping, staging_device)
+        if scene_data_provider.get_transforms(
+            cls._scene_data_staging, mapping=cls._scene_data_staging_mapping, allow_passthrough=False
+        ):
+            wp.copy(target_transforms, cls._scene_data_staging.transforms)
 
     @classmethod
     def get_state_1(cls) -> State:

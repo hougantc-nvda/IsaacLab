@@ -18,10 +18,10 @@ from .command_handler import CommandHandler
 from .control_events import ControlEvents
 from .isaac_teleop_cfg import IsaacTeleopCfg
 from .session_lifecycle import TeleopSessionLifecycle
-from .xr_anchor_manager import XrAnchorManager
 
 if TYPE_CHECKING:
     from .session_lifecycle import SupportsDLPack
+    from .xr_anchor_manager import XrAnchorManager
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,11 @@ class IsaacTeleopDevice:
         """
         self._cfg = cfg
 
-        self._anchor_manager = XrAnchorManager(cfg.xr_cfg)
+        self._anchor_manager: XrAnchorManager | None = None
+        if cfg.openxr_handles_provider is None:
+            from .xr_anchor_manager import XrAnchorManager
+
+            self._anchor_manager = XrAnchorManager(cfg.xr_cfg)
         self._command_handler = CommandHandler()
         self._session_lifecycle = TeleopSessionLifecycle(
             cfg,
@@ -142,6 +146,7 @@ class IsaacTeleopDevice:
             mcap_replay_path=mcap_replay_path,
         )
 
+        self._anchor_world_matrix_provider: Callable[[], np.ndarray] | None = None
         self._prev_right_a_pressed = False
         self._prev_control_is_active: bool | None = None
 
@@ -149,7 +154,7 @@ class IsaacTeleopDevice:
         """Clean up resources when the object is destroyed."""
         if hasattr(self, "_command_handler"):
             self._command_handler.cleanup()
-        if hasattr(self, "_anchor_manager"):
+        if hasattr(self, "_anchor_manager") and self._anchor_manager is not None:
             self._anchor_manager.cleanup()
 
     def __str__(self) -> str:
@@ -193,7 +198,8 @@ class IsaacTeleopDevice:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context manager and clean up the IsaacTeleop session."""
-        self._anchor_manager.cleanup()
+        if self._anchor_manager is not None:
+            self._anchor_manager.cleanup()
         self._session_lifecycle.stop(exc_type, exc_val, exc_tb)
         return False
 
@@ -205,7 +211,8 @@ class IsaacTeleopDevice:
         for the next pipeline step so that all retargeters reinitialize
         their cross-step state.
         """
-        self._anchor_manager.reset()
+        if self._anchor_manager is not None:
+            self._anchor_manager.reset()
         self._session_lifecycle.request_reset()
 
     @property
@@ -226,6 +233,15 @@ class IsaacTeleopDevice:
             func: The function to call when the command is received. Should take no arguments.
         """
         self._command_handler.add_callback(key, func)
+
+    def set_anchor_world_matrix_provider(self, provider: Callable[[], np.ndarray] | None) -> None:
+        """Set an external provider for the OpenXR-local to world anchor matrix.
+
+        Args:
+            provider: Callable returning a 4x4 transform matrix in meters, or
+                ``None`` to use :class:`XrAnchorManager`.
+        """
+        self._anchor_world_matrix_provider = provider
 
     def advance(self, target_T_world: np.ndarray | torch.Tensor | SupportsDLPack | None = None) -> torch.Tensor | None:
         """Process current device state and return control commands.
@@ -268,9 +284,19 @@ class IsaacTeleopDevice:
         if target_T_world is None and self._cfg.target_frame_prim_path is not None:
             target_T_world = self._get_target_frame_T_world()
 
+        if self._anchor_world_matrix_provider is not None:
+            anchor_world_matrix_fn = self._anchor_world_matrix_provider
+        elif self._anchor_manager is not None:
+            anchor_world_matrix_fn = self._anchor_manager.get_world_matrix
+        else:
+            raise RuntimeError(
+                "IsaacTeleopDevice requires an anchor provider when Kit's XrAnchorManager is disabled. "
+                "Call set_anchor_world_matrix_provider() before advance()."
+            )
+
         # Step the session (handles lazy start and action extraction)
         action = self._session_lifecycle.step(
-            anchor_world_matrix_fn=self._anchor_manager.get_world_matrix,
+            anchor_world_matrix_fn=anchor_world_matrix_fn,
             target_T_world=target_T_world,
         )
 
@@ -305,7 +331,8 @@ class IsaacTeleopDevice:
             return
         if events.should_reset:
             self._command_handler.fire("RESET")
-            self._anchor_manager.reset()
+            if self._anchor_manager is not None:
+                self._anchor_manager.reset()
         if events.is_active is not None:
             if self._prev_control_is_active is not None and events.is_active != self._prev_control_is_active:
                 self._command_handler.fire("START" if events.is_active else "STOP")
@@ -400,7 +427,7 @@ class IsaacTeleopDevice:
             return
 
         current = float(right_data[ControllerInputIndex.PRIMARY_CLICK]) > 0.5
-        if current and not self._prev_right_a_pressed:
+        if current and not self._prev_right_a_pressed and self._anchor_manager is not None:
             self._anchor_manager.toggle_anchor_rotation()
         self._prev_right_a_pressed = current
 
@@ -478,7 +505,7 @@ def create_isaac_teleop_device(
 
     # Replay sessions never talk to Kit's XR bridge, so loading/enabling the
     # bridge extension would only add startup latency and noisy log lines.
-    if mcap_replay_path is None:
+    if mcap_replay_path is None and cfg.openxr_handles_provider is None:
         _enable_teleop_bridge()
 
     if sim_device is not None:

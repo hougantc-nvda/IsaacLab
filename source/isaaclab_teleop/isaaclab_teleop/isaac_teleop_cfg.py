@@ -27,7 +27,18 @@ CLOUDXR_AVP_ENV: str = str(_CLOUDXR_ENV_DIR / "avp-cloudxr.env")
 CLOUDXR_JS_ENV: str = str(_CLOUDXR_ENV_DIR / "cloudxrjs-cloudxr.env")
 """Absolute path to the CloudXR JS (Quest/Pico) ``.env`` profile (``auto-webrtc``)."""
 
+NEWTON_OPENXR_CLOUDXR_ENV: str = str(_CLOUDXR_ENV_DIR / "newton-openxr-cloudxr.env")
+"""Absolute path to Newton OpenXR renderer defaults for CloudXR JS clients."""
+
+CLOUDXR_ENV_PROFILES: dict[str, str] = {
+    "cloudxrjs": CLOUDXR_JS_ENV,
+    "avp": CLOUDXR_AVP_ENV,
+    "newton": NEWTON_OPENXR_CLOUDXR_ENV,
+}
+"""CloudXR profile shorthands mapped to packaged ``.env`` files."""
+
 if TYPE_CHECKING:
+    from isaacteleop.oxr import OpenXRSessionHandles
     from isaacteleop.retargeting_engine.interface import BaseRetargeter, OutputCombiner
     from isaacteleop.teleop_session_manager import PluginConfig
 
@@ -92,6 +103,14 @@ class IsaacTeleopCfg:
 
     Plugins can provide additional functionality like synthetic hand tracking
     from controller inputs.
+    """
+
+    openxr_handles_provider: Callable[[], OpenXRSessionHandles | None] | None = None
+    """Optional provider for renderer-owned OpenXR handles.
+
+    When set, live IsaacTeleop sessions use these handles instead of reading
+    Kit XR bridge handles. Returning ``None`` defers session creation until the
+    renderer's OpenXR session is ready.
     """
 
     sim_device: str = "cuda:0"

@@ -157,7 +157,21 @@ class SceneDataProvider:
 
         if conversion_kernel := getattr(ConversionKernels, conversion_kernel_name, None):
             self.init_output(output)
-            wp.launch(kernel=conversion_kernel, dim=self.transform_count, inputs=[input, mapping], outputs=[output])
+            launch_device = None
+            for field_name in output._cls.vars:
+                field = getattr(output, field_name)
+                if field is not None:
+                    launch_device = str(field.device)
+                    break
+            if mapping is not None and launch_device is not None and str(mapping.device) != launch_device:
+                mapping = wp.array(mapping.numpy(), dtype=wp.int32, device=launch_device)
+            wp.launch(
+                kernel=conversion_kernel,
+                dim=self.transform_count,
+                inputs=[input, mapping],
+                outputs=[output],
+                device=launch_device,
+            )
             return True
 
         return False

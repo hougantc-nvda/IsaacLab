@@ -158,6 +158,7 @@ class TeleopSessionLifecycle:
         self._mcap_record_path = mcap_record_path
         self._mcap_replay_path = mcap_replay_path
         self._is_replay = mcap_replay_path is not None
+        self._uses_renderer_owned_openxr = cfg.openxr_handles_provider is not None
 
         # Session state (populated during start)
         self._session: TeleopSession | None = None
@@ -176,10 +177,10 @@ class TeleopSessionLifecycle:
         self._retargeting_ui_ctx: MultiRetargeterTuningUIImGui | None = None
         self._retargeting_ui = None
 
-        # Replay sessions never talk to Kit's XR system, so skip all XR
-        # extension subscriptions; they would only generate noise and could
-        # mis-fire if a parallel live session ever toggled /xr/enabled.
-        if not self._is_replay:
+        # Replay and renderer-owned OpenXR sessions never talk to Kit's XR
+        # system, so skip all XR extension subscriptions; they would only add
+        # noisy unavailable-interface failures in kitless runs.
+        if not self._is_replay and not self._uses_renderer_owned_openxr:
             try:
                 # Importing bridge also performs polyfill of missing omni.kit.xr.system.openxr functions.
                 import isaacsim.kit.xr.teleop.bridge as bridge
@@ -207,26 +208,29 @@ class TeleopSessionLifecycle:
                     "/xr/enabled",
                     self._on_xr_enabled_changed,
                 )
-            except (ImportError, ModuleNotFoundError):
+            except (ImportError, ModuleNotFoundError, RuntimeError):
                 logger.info("carb.settings not available; IsaacTeleop will not be able to detect XR enabled state")
 
-        # Pre-shutdown is still wanted in replay mode so the MCAP writer/reader
-        # gets a chance to flush before Kit tears down its event loop.
-        try:
-            import omni.kit.app
-            from carb.eventdispatcher import get_eventdispatcher
+        if not self._uses_renderer_owned_openxr:
+            # Pre-shutdown is still wanted in replay mode so the MCAP writer/reader
+            # gets a chance to flush before Kit tears down its event loop.
+            try:
+                import omni.kit.app
+                from carb.eventdispatcher import get_eventdispatcher
 
-            # Subscribe to Kit pre-shutdown so we tear down our session before XRCore
-            # tears down the OpenXR instance/session (XRCore uses order=0; lowest runs first).
-            # The /xr/enabled setting often does not fire on close, so this is required.
-            self._pre_shutdown_subscription = get_eventdispatcher().observe_event(
-                event_name=omni.kit.app.GLOBAL_EVENT_PRE_SHUTDOWN,
-                on_event=self._on_pre_shutdown,
-                observer_name="IsaacTeleop session lifecycle",
-                order=-100,
-            )
-        except (ImportError, ModuleNotFoundError):
-            logger.info("omni.kit.app/carb.eventdispatcher not available; IsaacTeleop will not clean up on Kit close")
+                # Subscribe to Kit pre-shutdown so we tear down our session before XRCore
+                # tears down the OpenXR instance/session (XRCore uses order=0; lowest runs first).
+                # The /xr/enabled setting often does not fire on close, so this is required.
+                self._pre_shutdown_subscription = get_eventdispatcher().observe_event(
+                    event_name=omni.kit.app.GLOBAL_EVENT_PRE_SHUTDOWN,
+                    on_event=self._on_pre_shutdown,
+                    observer_name="IsaacTeleop session lifecycle",
+                    order=-100,
+                )
+            except (ImportError, ModuleNotFoundError, AttributeError, RuntimeError):
+                logger.info(
+                    "omni.kit.app/carb.eventdispatcher not available; IsaacTeleop will not clean up on Kit close"
+                )
 
     @property
     def is_active(self) -> bool:
@@ -526,16 +530,23 @@ class TeleopSessionLifecycle:
         if self._is_replay:
             return self._start_replay_session()
 
-        self._ensure_xr_ar_profile_enabled()
-
         from isaacteleop.oxr import OpenXRSessionHandles
         from isaacteleop.teleop_session_manager import TeleopSession, TeleopSessionConfig
 
-        oxr_handles = self._acquire_kit_oxr_handles(OpenXRSessionHandles)
+        handles_provider = self._cfg.openxr_handles_provider
+        if handles_provider is None:
+            self._ensure_xr_ar_profile_enabled()
+            oxr_handles = self._acquire_kit_oxr_handles(OpenXRSessionHandles)
+        else:
+            oxr_handles = handles_provider()
 
         if oxr_handles is None:
             if not self._session_start_deferred_logged:
-                if self._kit_xr_session_is_active():
+                if handles_provider is not None:
+                    logger.info(
+                        "Renderer-owned OpenXR handles not yet available; IsaacTeleop session creation deferred"
+                    )
+                elif self._kit_xr_session_is_active():
                     logger.info(
                         "Kit XR session active but bridge handles incomplete; IsaacTeleop session creation deferred"
                     )
@@ -778,11 +789,12 @@ class TeleopSessionLifecycle:
         for leaf_name in ext_specs:
             if leaf_name == self.WORLD_T_ANCHOR_INPUT_NAME:
                 if anchor_world_matrix_fn is not None:
-                    anchor_matrix = anchor_world_matrix_fn()
+                    anchor_matrix = _to_numpy_4x4(anchor_world_matrix_fn())
                 else:
                     anchor_matrix = np.eye(4, dtype=np.float32)
                 if target_T_world is not None:
                     anchor_matrix = _to_numpy_4x4(target_T_world) @ anchor_matrix
+                anchor_matrix = np.ascontiguousarray(anchor_matrix, dtype=np.float32)
                 xform_tg = TensorGroup(TransformMatrix())
                 xform_tg[0] = anchor_matrix
                 external_inputs[leaf_name] = {ValueInput.VALUE: xform_tg}
@@ -806,15 +818,9 @@ class TeleopSessionLifecycle:
         TLS proxy in a background thread.  The launcher is stored in
         ``self._cloudxr_launcher`` and shut down in :meth:`stop`.
 
-        Auto-launch is skipped when ``auto_launch_cloudxr`` is ``False``
-        or the ``ISAACLAB_CXR_SKIP_AUTOLAUNCH=1`` environment variable is
-        set (the env var takes precedence).
+        Auto-launch is skipped when ``auto_launch_cloudxr`` is ``False``.
         """
         if self._cloudxr_launcher is not None:
-            return
-
-        if os.environ.get("ISAACLAB_CXR_SKIP_AUTOLAUNCH", "").strip() == "1":
-            logger.info("CloudXR auto-launch skipped (ISAACLAB_CXR_SKIP_AUTOLAUNCH=1)")
             return
 
         if not self._auto_launch_cloudxr:
@@ -871,7 +877,7 @@ class TeleopSessionLifecycle:
             if not settings.get("/xr/profile/ar/enabled"):
                 settings.set("/xr/profile/ar/enabled", True)
                 logger.info("Enabled /xr/profile/ar/enabled via carb.settings")
-        except (ImportError, AttributeError):
+        except (ImportError, AttributeError, RuntimeError):
             pass
 
     @staticmethod

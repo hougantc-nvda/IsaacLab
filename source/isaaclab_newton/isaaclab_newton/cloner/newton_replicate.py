@@ -85,7 +85,8 @@ def _build_newton_builder_from_mapping(
     for src_path in sources:
         p = NewtonManager.create_builder(up_axis=up_axis)
         solvers.SolverMuJoCo.register_custom_attributes(p)
-        p.add_usd(
+        NewtonManager._add_usd_with_registered_imports(
+            p,
             stage,
             root_path=src_path,
             load_visual_shapes=True,

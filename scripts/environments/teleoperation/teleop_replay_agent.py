@@ -339,8 +339,9 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "Path to a CloudXR ``.env`` file, or a shorthand: 'cloudxrjs' (Quest/Pico) or 'avp'"
-        " (Apple Vision Pro). Default is None -- CloudXR is not launched. Pair with"
+        "Path to a CloudXR ``.env`` file, or a shorthand: 'cloudxrjs' (Quest/Pico), 'avp' "
+        "(Apple Vision Pro), or 'newton' (Newton OpenXR CloudXR). Default is None -- "
+        "CloudXR is not launched. Pair with"
         " AppLauncher's ``--xr`` and simulator-side AR-profile settings for spectate-on-headset"
         " replay; see the script docstring for the full command."
     ),
@@ -367,7 +368,6 @@ simulation_app = app_launcher.app
 
 import json
 import logging
-import os
 import statistics
 import sys
 import time
@@ -379,6 +379,7 @@ from typing import Protocol, runtime_checkable
 import gymnasium as gym
 import torch
 from isaaclab_teleop import IsaacTeleopDevice, create_isaac_teleop_device, poll_control_events
+from isaaclab_teleop.openxr_runtime import resolve_cloudxr_env
 
 from isaaclab.devices.openxr import remove_camera_configs
 from isaaclab.envs import ManagerBasedRLEnvCfg
@@ -387,8 +388,6 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
 logger = logging.getLogger(__name__)
-
-_CLOUDXR_ENV_SHORTHANDS: dict[str, str] = {}
 
 
 # ----------------------------------------------------------------------
@@ -920,24 +919,6 @@ def _exit_code_for_outcomes(all_runs: list[_RunStats]) -> int:
     return 1  # any "failure" or "incomplete"
 
 
-def _resolve_cloudxr_env(value: str | None) -> str | None:
-    """Resolve ``--cloudxr_env`` shorthands to absolute ``.env`` file paths.
-
-    Mirrors :func:`scripts.tools.record_demos._resolve_cloudxr_env` so the same
-    short names (``"cloudxrjs"``, ``"avp"``) behave identically on the
-    recording and replay sides. Accepts ``"none"`` / empty / ``None`` to mean
-    "no CloudXR" and otherwise returns the value unchanged.
-    """
-    if value is None or value.strip() == "" or value.lower() == "none":
-        return None
-    if not _CLOUDXR_ENV_SHORTHANDS:
-        from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV
-
-        _CLOUDXR_ENV_SHORTHANDS["cloudxrjs"] = CLOUDXR_JS_ENV
-        _CLOUDXR_ENV_SHORTHANDS["avp"] = CLOUDXR_AVP_ENV
-    return _CLOUDXR_ENV_SHORTHANDS.get(value.lower(), value)
-
-
 def _maybe_launch_cloudxr(cloudxr_env_path: str | None, auto_launch: bool):
     """Launch a CloudXR runtime owned at the agent (batch) scope.
 
@@ -953,8 +934,7 @@ def _maybe_launch_cloudxr(cloudxr_env_path: str | None, auto_launch: bool):
     alone; the agent terminates the launcher in its ``finally`` block.
 
     Mirrors the gating in :meth:`TeleopSessionLifecycle._ensure_cloudxr_runtime`
-    (``--cloudxr_env`` set, ``--auto_launch_cloudxr`` enabled,
-    ``ISAACLAB_CXR_SKIP_AUTOLAUNCH=1`` env var not set) so behavior parity
+    (``--cloudxr_env`` set and ``--auto_launch_cloudxr`` enabled) so behavior parity
     is preserved.
 
     Args:
@@ -969,10 +949,6 @@ def _maybe_launch_cloudxr(cloudxr_env_path: str | None, auto_launch: bool):
         ``.stop()`` at the end of the batch.
     """
     if cloudxr_env_path is None or not auto_launch:
-        return None
-
-    if os.environ.get("ISAACLAB_CXR_SKIP_AUTOLAUNCH", "").strip() == "1":
-        logger.info("CloudXR auto-launch skipped (ISAACLAB_CXR_SKIP_AUTOLAUNCH=1)")
         return None
 
     from isaacteleop.cloudxr import CloudXRLauncher
@@ -1539,7 +1515,7 @@ def main() -> int:
         # work in XR-active mode without losing the OpenXR runtime
         # IPC between runs.
         cloudxr_launcher = _maybe_launch_cloudxr(
-            _resolve_cloudxr_env(args_cli.cloudxr_env), args_cli.auto_launch_cloudxr
+            resolve_cloudxr_env(args_cli.cloudxr_env), args_cli.auto_launch_cloudxr
         )
 
         env_cfg, success_term = _prepare_env_cfg(args_cli.task, args_cli.num_envs, args_cli.device)

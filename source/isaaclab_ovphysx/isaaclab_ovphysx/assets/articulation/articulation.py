@@ -2266,8 +2266,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_pos_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_POSITION_TARGET)
-        binding.write(self._data._joint_pos_target, indices=env_ids)
 
     def set_joint_position_target_mask(
         self,
@@ -2303,8 +2301,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_pos_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_POSITION_TARGET)
-        binding.write(self._data._joint_pos_target, mask=env_mask_wp)
 
     def set_joint_velocity_target_index(
         self,
@@ -2343,8 +2339,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_vel_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_VELOCITY_TARGET)
-        binding.write(self._data._joint_vel_target, indices=env_ids)
 
     def set_joint_velocity_target_mask(
         self,
@@ -2380,8 +2374,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_vel_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_VELOCITY_TARGET)
-        binding.write(self._data._joint_vel_target, mask=env_mask_wp)
 
     def set_joint_effort_target_index(
         self,
@@ -2420,8 +2412,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_effort_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_ACTUATION_FORCE)
-        binding.write(self._data._joint_effort_target, indices=env_ids)
 
     def set_joint_effort_target_mask(
         self,
@@ -2457,8 +2447,6 @@ class Articulation(BaseArticulation):
             outputs=[self._data._joint_effort_target],
             device=self._device,
         )
-        binding = self._get_binding(TT.DOF_ACTUATION_FORCE)
-        binding.write(self._data._joint_effort_target, mask=env_mask_wp)
 
     """
     Operations - Tendons.
@@ -3594,22 +3582,11 @@ class Articulation(BaseArticulation):
         # build actuator instances and write drive properties to PhysX
         self._process_actuators_cfg()
 
-        # cache effort / target bindings and write-views for write_data_to_sim().
-        # The effort view aliases applied_torque so the binding gets the actuator
-        # output without an extra copy.
+        # Cache effort / target bindings and PhysX-style staging buffers for write_data_to_sim().
         self._effort_binding = self._get_binding(TT.DOF_ACTUATION_FORCE)
-        if self._effort_binding is not None:
-            torque = self._data._applied_torque
-            shape = self._effort_binding.shape
-            self._effort_write_view = wp.array(
-                ptr=torque.ptr,
-                shape=shape,
-                dtype=wp.float32,
-                device=str(torque.device),
-                copy=False,
-            )
-        else:
-            self._effort_write_view = None
+        self._joint_pos_target_sim = wp.zeros_like(self._data._joint_pos_target)
+        self._joint_vel_target_sim = wp.zeros_like(self._data._joint_vel_target)
+        self._joint_effort_target_sim = wp.zeros_like(self._data._joint_effort_target)
 
         def _make_write_view(tt, buf):
             b = self._get_binding(tt)
@@ -3618,11 +3595,12 @@ class Articulation(BaseArticulation):
             v = wp.array(ptr=buf.ptr, shape=b.shape, dtype=wp.float32, device=str(buf.device), copy=False)
             return b, v
 
+        _, self._effort_write_view = _make_write_view(TT.DOF_ACTUATION_FORCE, self._joint_effort_target_sim)
         self._pos_target_binding, self._pos_target_write_view = _make_write_view(
-            TT.DOF_POSITION_TARGET, self._data._joint_pos_target
+            TT.DOF_POSITION_TARGET, self._joint_pos_target_sim
         )
         self._vel_target_binding, self._vel_target_write_view = _make_write_view(
-            TT.DOF_VELOCITY_TARGET, self._data._joint_vel_target
+            TT.DOF_VELOCITY_TARGET, self._joint_vel_target_sim
         )
 
         # validate the resolved configuration AFTER actuator/tendon processing
@@ -3908,12 +3886,16 @@ class Articulation(BaseArticulation):
 
         IsaacLab actuators are torch-based. The method converts Warp buffers to
         torch via DLPack (zero-copy on GPU), runs each actuator's
-        :meth:`~isaaclab.actuators.ActuatorBase.compute` method, then writes the
-        computed effort back to the private ``_computed_torque`` / ``_applied_torque``
-        buffers of the data container. :meth:`write_data_to_sim` then pushes
-        ``_applied_torque`` to the ``DOF_ACTUATION_FORCE`` binding in one shot.
+        :meth:`~isaaclab.actuators.ActuatorBase.compute` method, then stages the
+        returned action into the simulation target buffers. For implicit actuators
+        this means position/velocity targets plus feed-forward effort, matching the
+        Kit PhysX path; approximate ``applied_torque`` is telemetry only.
         """
         from isaaclab.utils.types import ArticulationActions
+
+        pos_sim = wp.to_torch(self._joint_pos_target_sim)
+        vel_sim = wp.to_torch(self._joint_vel_target_sim)
+        effort_sim = wp.to_torch(self._joint_effort_target_sim)
 
         for name, act in self.actuators.items():
             jids = act.joint_indices
@@ -3942,6 +3924,21 @@ class Articulation(BaseArticulation):
             jv_cur = jv_cur_full if all_joints else jv_cur_full[:, jids_t]
 
             control_action = act.compute(control_action, jp_cur, jv_cur)
+
+            if all_joints:
+                if control_action.joint_positions is not None:
+                    pos_sim[:] = control_action.joint_positions
+                if control_action.joint_velocities is not None:
+                    vel_sim[:] = control_action.joint_velocities
+                if control_action.joint_efforts is not None:
+                    effort_sim[:] = control_action.joint_efforts
+            else:
+                if control_action.joint_positions is not None:
+                    pos_sim[:, jids_t] = control_action.joint_positions
+                if control_action.joint_velocities is not None:
+                    vel_sim[:, jids_t] = control_action.joint_velocities
+                if control_action.joint_efforts is not None:
+                    effort_sim[:, jids_t] = control_action.joint_efforts
 
             if act.computed_effort is not None:
                 ct = wp.to_torch(self._data._computed_torque)

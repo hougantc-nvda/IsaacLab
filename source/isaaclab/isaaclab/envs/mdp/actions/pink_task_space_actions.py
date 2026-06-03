@@ -73,7 +73,9 @@ class PinkInverseKinematicsAction(ActionTerm):
         self.cfg.controller.all_joint_names = self._asset.data.joint_names
 
         # Resolve hand joints
-        self._hand_joint_ids, self._hand_joint_names = self._asset.find_joints(self.cfg.hand_joint_names)
+        self._hand_joint_ids, self._hand_joint_names = self._asset.find_joints(
+            self.cfg.hand_joint_names, preserve_order=True
+        )
 
         # Combine all joint information
         self._controlled_joint_ids = self._isaaclab_controlled_joint_ids + self._hand_joint_ids

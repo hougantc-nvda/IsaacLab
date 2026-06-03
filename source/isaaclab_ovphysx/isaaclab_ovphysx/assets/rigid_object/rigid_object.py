@@ -865,6 +865,20 @@ class RigidObject(BaseRigidObject):
         pattern = re.sub(r"\.\*", "*", pattern)
         self._binding_pattern = pattern
 
+        articulation_prims = get_all_matching_child_prims(
+            walk_root,
+            predicate=lambda prim: prim.HasAPI(UsdPhysics.ArticulationRootAPI),
+            traverse_instance_prims=False,
+        )
+        if len(articulation_prims) != 0:
+            if articulation_prims[0].GetAttribute("physxArticulation:articulationEnabled").Get():
+                raise RuntimeError(
+                    f"Found an enabled articulation root while resolving {self.cfg.prim_path!r} for rigid objects. "
+                    f"These are located at: {articulation_prims!r} under {walk_root!r}. "
+                    "Please disable the articulation root in the USD or set "
+                    "ArticulationRootPropertiesCfg.articulation_enabled to False in the spawn configuration."
+                )
+
         # Eagerly create every binding the data container reads at init, so failures
         # surface here with a helpful message rather than as a raw wheel exception
         # (or a KeyError) at first writer call.
