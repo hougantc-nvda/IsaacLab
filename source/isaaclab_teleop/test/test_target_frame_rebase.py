@@ -15,7 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from isaaclab_teleop.session_lifecycle import _to_numpy_4x4
+from isaaclab_teleop import IsaacTeleopCfg
+from isaaclab_teleop.session_lifecycle import TeleopSessionLifecycle, _to_numpy_4x4
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -101,6 +102,42 @@ class TestToNumpy4x4:
         assert isinstance(result, np.ndarray)
         assert result.dtype == np.float32
         np.testing.assert_array_equal(result, np.eye(4, dtype=np.float32))
+
+
+# ---------------------------------------------------------------------------
+# External input construction tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeExternalInputSession:
+    def has_external_inputs(self):
+        return True
+
+    def get_external_input_specs(self):
+        return [TeleopSessionLifecycle.WORLD_T_ANCHOR_INPUT_NAME]
+
+
+def test_build_external_inputs_casts_float64_anchor_provider():
+    """Anchor providers may return float64, but IsaacTeleop TransformMatrix expects float32."""
+    lifecycle = TeleopSessionLifecycle(
+        IsaacTeleopCfg(
+            pipeline_builder=lambda: None,
+            control_channel_uuid=None,
+            openxr_handles_provider=lambda: None,
+        )
+    )
+    lifecycle._session = _FakeExternalInputSession()
+    anchor_matrix = np.eye(4, dtype=np.float64)
+    anchor_matrix[:3, 3] = [1.0, 2.0, 3.0]
+
+    external_inputs = lifecycle._build_external_inputs(lambda: anchor_matrix)
+
+    from isaacteleop.retargeting_engine.interface import ValueInput
+
+    assert external_inputs is not None
+    xform_tg = external_inputs[TeleopSessionLifecycle.WORLD_T_ANCHOR_INPUT_NAME][ValueInput.VALUE]
+    assert xform_tg[0].dtype == np.float32
+    np.testing.assert_array_equal(xform_tg[0], anchor_matrix.astype(np.float32))
 
 
 # ---------------------------------------------------------------------------

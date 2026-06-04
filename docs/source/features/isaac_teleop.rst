@@ -767,11 +767,11 @@ Disable auto-launch
 ~~~~~~~~~~~~~~~~~~~
 
 If you prefer to run the CloudXR runtime manually in a separate terminal
-(``python -m isaacteleop.cloudxr``), you can disable auto-launch in several ways:
+(``python -m isaacteleop.cloudxr``), disable auto-launch with the teleop script
+CLI instead:
 
 * **CLI flag**: ``--no-auto_launch_cloudxr`` on the teleop script.
 * **Disable CloudXR entirely**: ``--cloudxr_env none``.
-* **Environment variable**: ``ISAACLAB_CXR_SKIP_AUTOLAUNCH=1`` overrides the CLI flag at runtime.
 
 .. code-block:: bash
 
@@ -780,11 +780,6 @@ If you prefer to run the CloudXR runtime manually in a separate terminal
        --task Isaac-PickPlace-GR1T2-WaistEnabled-Abs-v0 \
        --visualizer kit --xr \
        --no-auto_launch_cloudxr
-
-   # Or disable via environment variable
-   ISAACLAB_CXR_SKIP_AUTOLAUNCH=1 ./isaaclab.sh -p scripts/environments/teleoperation/teleop_se3_agent.py \
-       --task Isaac-PickPlace-GR1T2-WaistEnabled-Abs-v0 \
-       --visualizer kit --xr
 
 
 .. _isaac-teleop-xr-anchor:

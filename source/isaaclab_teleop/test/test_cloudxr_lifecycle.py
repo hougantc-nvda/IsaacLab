@@ -18,11 +18,12 @@ in a plain Python environment.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -110,7 +111,16 @@ _install_stubs()
 from isaaclab_teleop.isaac_teleop_cfg import (  # noqa: E402
     CLOUDXR_AVP_ENV,
     CLOUDXR_JS_ENV,
+    NEWTON_OPENXR_CLOUDXR_ENV,
     IsaacTeleopCfg,
+)
+from isaaclab_teleop.openxr_runtime import (  # noqa: E402
+    attach_renderer_openxr_anchor_provider,
+    configure_renderer_openxr_teleop,
+    launcher_args_for_renderer_owned_openxr,
+    renderer_owned_openxr_requested,
+    resolve_cloudxr_env,
+    strip_preset_tokens,
 )
 from isaaclab_teleop.session_lifecycle import TeleopSessionLifecycle  # noqa: E402
 
@@ -151,6 +161,87 @@ def _make_lifecycle(
 
 
 # ============================================================================
+# Renderer-owned OpenXR visualizer hooks
+# ============================================================================
+
+
+class TestRendererOwnedOpenXRRuntimeHelpers:
+    """Tests for generic renderer-owned OpenXR launch decisions."""
+
+    def test_renderer_owned_openxr_requested_requires_xr_renderer_without_kit(self):
+        args = argparse.Namespace(xr=True, visualizer="newton")
+        assert renderer_owned_openxr_requested(args, renderer_types={"newton"})
+
+        kit_args = argparse.Namespace(xr=True, visualizer="kit,newton")
+        assert not renderer_owned_openxr_requested(kit_args, renderer_types={"newton"})
+
+        non_xr_args = argparse.Namespace(xr=False, visualizer="newton")
+        assert not renderer_owned_openxr_requested(non_xr_args, renderer_types={"newton"})
+
+    def test_launcher_args_for_renderer_owned_openxr_disables_kit_xr_only_on_copy(self):
+        args = argparse.Namespace(xr=True, visualizer="newton", device="cpu")
+
+        copied = launcher_args_for_renderer_owned_openxr(args, runtime=SimpleNamespace())
+
+        assert copied is not args
+        assert copied.xr is False
+        assert copied.visualizer == "newton"
+        assert args.xr is True
+
+    def test_strip_preset_tokens_removes_only_runtime_fallback_presets(self):
+        tokens = ["--task", "Demo", "presets=newton_mjwarp,newton_renderer,ovphysx", "foo=bar"]
+
+        stripped = strip_preset_tokens(tokens, {"newton_mjwarp", "newton_renderer"})
+
+        assert stripped == ["--task", "Demo", "presets=ovphysx", "foo=bar"]
+
+
+class TestRendererOpenXRTeleopHelpers:
+    """Tests for duck-typed OpenXR visualizer integration helpers."""
+
+    def test_configure_renderer_openxr_teleop_sets_handle_provider(self):
+        """The first OpenXR-capable visualizer supplies IsaacTeleop handles."""
+        handles = object()
+
+        class FakeSession:
+            def openxr_handles_provider(self):
+                return handles
+
+        class FakeVisualizer:
+            def __init__(self):
+                self.session = FakeSession()
+                self.configure_args = None
+
+            def configure_openxr_teleop(self, *, env_cfg, env):
+                self.configure_args = (env_cfg, env)
+                return self.session
+
+        teleop_cfg = SimpleNamespace(openxr_handles_provider=None)
+        env_cfg = SimpleNamespace(isaac_teleop=teleop_cfg)
+        visualizer = FakeVisualizer()
+        env = SimpleNamespace(sim=SimpleNamespace(visualizers=[object(), visualizer]))
+
+        session = configure_renderer_openxr_teleop(env, env_cfg)
+
+        assert session is visualizer.session
+        assert visualizer.configure_args == (env_cfg, env)
+        assert teleop_cfg.openxr_handles_provider() is handles
+
+    def test_attach_renderer_openxr_anchor_provider_uses_session_anchor(self):
+        """Renderer-owned input anchoring is attached without knowing the renderer type."""
+
+        def anchor_provider():
+            return "anchor"
+
+        session = SimpleNamespace(anchor_world_matrix=anchor_provider)
+        teleop_interface = SimpleNamespace(set_anchor_world_matrix_provider=MagicMock())
+
+        attach_renderer_openxr_anchor_provider(teleop_interface, session)
+
+        teleop_interface.set_anchor_world_matrix_provider.assert_called_once_with(anchor_provider)
+
+
+# ============================================================================
 # Shipped .env profile paths
 # ============================================================================
 
@@ -164,11 +255,17 @@ class TestEnvProfilePaths:
     def test_js_env_is_absolute_path(self):
         assert os.path.isabs(CLOUDXR_JS_ENV)
 
+    def test_newton_openxr_env_is_absolute_path(self):
+        assert os.path.isabs(NEWTON_OPENXR_CLOUDXR_ENV)
+
     def test_avp_env_file_exists(self):
         assert Path(CLOUDXR_AVP_ENV).is_file(), f"Missing: {CLOUDXR_AVP_ENV}"
 
     def test_js_env_file_exists(self):
         assert Path(CLOUDXR_JS_ENV).is_file(), f"Missing: {CLOUDXR_JS_ENV}"
+
+    def test_newton_openxr_env_file_exists(self):
+        assert Path(NEWTON_OPENXR_CLOUDXR_ENV).is_file(), f"Missing: {NEWTON_OPENXR_CLOUDXR_ENV}"
 
     def test_avp_env_filename(self):
         assert Path(CLOUDXR_AVP_ENV).name == "avp-cloudxr.env"
@@ -176,8 +273,18 @@ class TestEnvProfilePaths:
     def test_js_env_filename(self):
         assert Path(CLOUDXR_JS_ENV).name == "cloudxrjs-cloudxr.env"
 
+    def test_newton_openxr_env_filename(self):
+        assert Path(NEWTON_OPENXR_CLOUDXR_ENV).name == "newton-openxr-cloudxr.env"
+
     def test_profiles_are_in_same_directory(self):
         assert Path(CLOUDXR_AVP_ENV).parent == Path(CLOUDXR_JS_ENV).parent
+        assert Path(CLOUDXR_JS_ENV).parent == Path(NEWTON_OPENXR_CLOUDXR_ENV).parent
+
+    def test_resolve_cloudxr_env_maps_newton_profile(self):
+        assert resolve_cloudxr_env("newton") == NEWTON_OPENXR_CLOUDXR_ENV
+
+    def test_resolve_cloudxr_env_none_disables_launch(self):
+        assert resolve_cloudxr_env("None") is None
 
 
 # ============================================================================
@@ -224,40 +331,6 @@ class TestRetargetingExecutionConfig:
 class TestEnsureCloudXRRuntime:
     """Tests for the ``_ensure_cloudxr_runtime`` method on TeleopSessionLifecycle."""
 
-    def test_skip_when_env_var_set(self):
-        """ISAACLAB_CXR_SKIP_AUTOLAUNCH=1 skips the launch entirely."""
-        lifecycle = _make_lifecycle(cloudxr_env_file="/tmp/test.env")
-
-        with patch.dict(os.environ, {"ISAACLAB_CXR_SKIP_AUTOLAUNCH": "1"}):
-            lifecycle._ensure_cloudxr_runtime()
-
-        assert lifecycle._cloudxr_launcher is None
-
-    def test_skip_when_env_var_set_with_whitespace(self):
-        """Whitespace around the env var value is stripped before comparison."""
-        lifecycle = _make_lifecycle(cloudxr_env_file="/tmp/test.env")
-
-        with patch.dict(os.environ, {"ISAACLAB_CXR_SKIP_AUTOLAUNCH": " 1 "}):
-            lifecycle._ensure_cloudxr_runtime()
-
-        assert lifecycle._cloudxr_launcher is None
-
-    def test_no_skip_when_env_var_zero(self):
-        """ISAACLAB_CXR_SKIP_AUTOLAUNCH=0 does NOT skip the launch."""
-        mock_cls = MagicMock()
-        fake_module = MagicMock()
-        fake_module.CloudXRLauncher = mock_cls
-
-        lifecycle = _make_lifecycle(cloudxr_env_file="/tmp/test.env")
-
-        with (
-            patch.dict(os.environ, {"ISAACLAB_CXR_SKIP_AUTOLAUNCH": "0"}),
-            patch.dict(sys.modules, {"isaacteleop.cloudxr": fake_module}),
-        ):
-            lifecycle._ensure_cloudxr_runtime()
-
-        assert lifecycle._cloudxr_launcher is not None
-
     def test_skip_when_auto_launch_false(self):
         """auto_launch_cloudxr=False skips the launch."""
         lifecycle = _make_lifecycle(
@@ -265,9 +338,7 @@ class TestEnsureCloudXRRuntime:
             auto_launch_cloudxr=False,
         )
 
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ISAACLAB_CXR_SKIP_AUTOLAUNCH", None)
-            lifecycle._ensure_cloudxr_runtime()
+        lifecycle._ensure_cloudxr_runtime()
 
         assert lifecycle._cloudxr_launcher is None
 
@@ -289,11 +360,7 @@ class TestEnsureCloudXRRuntime:
         fake_module = MagicMock()
         fake_module.CloudXRLauncher = mock_cls
 
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch.dict(sys.modules, {"isaacteleop.cloudxr": fake_module}),
-        ):
-            os.environ.pop("ISAACLAB_CXR_SKIP_AUTOLAUNCH", None)
+        with patch.dict(sys.modules, {"isaacteleop.cloudxr": fake_module}):
             lifecycle._ensure_cloudxr_runtime()
 
         mock_cls.assert_called_once_with(
@@ -302,18 +369,6 @@ class TestEnsureCloudXRRuntime:
             accept_eula=False,
         )
         assert lifecycle._cloudxr_launcher is mock_cls.return_value
-
-    def test_env_var_takes_precedence_over_auto_launch(self):
-        """ISAACLAB_CXR_SKIP_AUTOLAUNCH=1 overrides auto_launch_cloudxr=True."""
-        lifecycle = _make_lifecycle(
-            cloudxr_env_file="/tmp/test.env",
-            auto_launch_cloudxr=True,
-        )
-
-        with patch.dict(os.environ, {"ISAACLAB_CXR_SKIP_AUTOLAUNCH": "1"}):
-            lifecycle._ensure_cloudxr_runtime()
-
-        assert lifecycle._cloudxr_launcher is None
 
 
 # ============================================================================
@@ -338,11 +393,7 @@ class TestLifecycleCloudXRIntegration:
             "isaacteleop.retargeting_engine.interface": MagicMock(),
         }
 
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch.dict(sys.modules, fake_teleop_modules),
-        ):
-            os.environ.pop("ISAACLAB_CXR_SKIP_AUTOLAUNCH", None)
+        with patch.dict(sys.modules, fake_teleop_modules):
             lifecycle.start()
 
         return lifecycle, mock_cls.return_value
@@ -399,11 +450,7 @@ class TestLifecycleCloudXRIntegration:
             "isaacteleop.retargeting_engine.interface": MagicMock(),
         }
 
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch.dict(sys.modules, fake_teleop_modules),
-        ):
-            os.environ.pop("ISAACLAB_CXR_SKIP_AUTOLAUNCH", None)
+        with patch.dict(sys.modules, fake_teleop_modules):
             lifecycle.start()
 
         assert lifecycle._cloudxr_launcher is None
