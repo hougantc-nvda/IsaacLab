@@ -74,8 +74,6 @@ import torch
 from isaaclab_teleop.openxr_runtime import KitlessTeleopLauncher
 from isaaclab_teleop.xr_cfg import remove_camera_configs
 
-from isaaclab.devices import Se3Gamepad, Se3GamepadCfg, Se3Keyboard, Se3KeyboardCfg, Se3SpaceMouse, Se3SpaceMouseCfg
-from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 
@@ -87,10 +85,16 @@ def _create_builtin_device(device_name: str, sensitivity: float) -> object | Non
     """Create a built-in teleop device by name, or return None if unrecognized."""
     name = device_name.lower()
     if name == "keyboard":
+        from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
+
         return Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.05 * sensitivity))
     elif name == "spacemouse":
+        from isaaclab.devices import Se3SpaceMouse, Se3SpaceMouseCfg
+
         return Se3SpaceMouse(Se3SpaceMouseCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.05 * sensitivity))
     elif name == "gamepad":
+        from isaaclab.devices import Se3Gamepad, Se3GamepadCfg
+
         return Se3Gamepad(Se3GamepadCfg(pos_sensitivity=0.1 * sensitivity, rot_sensitivity=0.1 * sensitivity))
     return None
 
@@ -255,6 +259,8 @@ def _run_teleoperation(  # noqa: C901
         elif teleop_device_explicitly_set:
             device_name = args_cli.teleop_device
             if hasattr(env_cfg, "teleop_devices") and device_name in env_cfg.teleop_devices.devices:
+                from isaaclab.devices.teleop_device_factory import create_teleop_device
+
                 teleop_interface = create_teleop_device(
                     device_name, env_cfg.teleop_devices.devices, teleoperation_callbacks
                 )
@@ -278,6 +284,8 @@ def _run_teleoperation(  # noqa: C901
         else:
             # No --teleop_device and no isaac_teleop: fall back to keyboard
             sensitivity = args_cli.sensitivity
+            from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
+
             teleop_interface = Se3Keyboard(
                 Se3KeyboardCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.05 * sensitivity)
             )
