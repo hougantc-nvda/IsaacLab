@@ -145,11 +145,7 @@ def main() -> None:
 
     launcher_args = _KITLESS_TELEOP_LAUNCHER.simulation_launcher_args()
     cloudxr_env_path = _KITLESS_TELEOP_LAUNCHER.resolve_cloudxr_env(args_cli.cloudxr_env)
-    cloudxr_launcher = _KITLESS_TELEOP_LAUNCHER.launch_cloudxr(
-        use_isaac_teleop=use_isaac_teleop,
-        cloudxr_env_path=cloudxr_env_path,
-        auto_launch=args_cli.auto_launch_cloudxr,
-    )
+    cloudxr_launcher = None
     try:
         with launch_simulation(env_cfg, launcher_args):
             try:
@@ -165,6 +161,11 @@ def main() -> None:
                 return
 
             try:
+                cloudxr_launcher = _KITLESS_TELEOP_LAUNCHER.launch_cloudxr(
+                    use_isaac_teleop=use_isaac_teleop,
+                    cloudxr_env_path=cloudxr_env_path,
+                    auto_launch=args_cli.auto_launch_cloudxr,
+                )
                 renderer_openxr_session = _KITLESS_TELEOP_LAUNCHER.configure_openxr_teleop(
                     env,
                     env_cfg,
