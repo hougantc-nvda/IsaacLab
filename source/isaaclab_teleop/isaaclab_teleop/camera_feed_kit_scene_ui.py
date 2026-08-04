@@ -22,6 +22,8 @@ from omni.kit.scene_view.xr_utils import SpatialSource, UiContainer, UpdatePolic
 from omni.kit.xr.core import XRCore, XRCoreEventType, XRPoseValidityFlags
 from pxr import Gf
 
+from isaaclab.utils.array import convert_to_torch
+
 logger = logging.getLogger(__name__)
 
 
@@ -341,6 +343,92 @@ class KitSceneUiCameraFeedPanel:
                 container.root.clear()
 
 
+class _ReplicatorCameraFeedSource:
+    """Feed-owned CUDA view of an existing RTX camera render product."""
+
+    def __init__(self, camera_name: str, annotator: Any, render_product_path: Any):
+        self._camera_name = camera_name
+        self._annotator = annotator
+        self._render_product_path = render_product_path
+        self._read_error_reported = False
+
+    @classmethod
+    def try_create(cls, camera_name: str, camera: Any) -> _ReplicatorCameraFeedSource | None:
+        """Attach to a camera's existing RTX render product when one is available."""
+        # Keep renderer-private discovery contained in this optional presentation adapter.
+        # Backends without this RTX render-product shape use the Camera buffer fallback.
+        render_data = getattr(camera, "_render_data", None)
+        render_product = getattr(render_data, "render_product", None)
+        render_product_path = getattr(render_product, "path", None)
+        if not render_product_path:
+            return None
+
+        annotator = None
+        try:
+            import omni.replicator.core as rep
+
+            annotator = rep.AnnotatorRegistry.get_annotator(
+                "rgb",
+                device="cuda:0",
+                do_array_copy=False,
+            )
+            annotator.attach([render_product_path])
+        except Exception as exc:
+            if annotator is not None:
+                with suppress(Exception):
+                    annotator.detach([render_product_path])
+            logger.warning(
+                "XR camera feed %r could not attach a CUDA annotator to render product %r "
+                "(%s: %s). Falling back to the Camera RGBA buffer.",
+                camera_name,
+                render_product_path,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        return cls(camera_name, annotator, render_product_path)
+
+    def get_image(self, fallback_image: torch.Tensor) -> torch.Tensor:
+        """Return a current zero-copy CUDA frame, or the Camera-owned fallback."""
+        if self._annotator is None:
+            return fallback_image
+        try:
+            output = self._annotator.get_data()
+            if isinstance(output, dict):
+                output = output.get("data")
+            if output is None:
+                return fallback_image
+            image = convert_to_torch(output)
+        except Exception as exc:
+            if not self._read_error_reported:
+                logger.warning(
+                    "XR camera feed %r could not read its CUDA annotator (%s: %s). "
+                    "Falling back to the Camera RGBA buffer.",
+                    self._camera_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                self._read_error_reported = True
+            return fallback_image
+
+        if (
+            tuple(image.shape) != tuple(fallback_image.shape)
+            or image.dtype != torch.uint8
+            or image.device != torch.device("cuda:0")
+            or not image.is_contiguous()
+        ):
+            return fallback_image
+        self._read_error_reported = False
+        return image
+
+    def close(self) -> None:
+        """Detach the feed annotator without destroying the camera-owned render product."""
+        annotator = self._annotator
+        self._annotator = None
+        if annotator is not None:
+            annotator.detach([self._render_product_path])
+
+
 class _KitSceneUiCameraFeedPresenter:
     """Private adapter from camera buffers to Kit SceneUI panels."""
 
@@ -355,6 +443,11 @@ class _KitSceneUiCameraFeedPresenter:
             raise ValueError(f"Camera {camera_name!r} RGBA image must reside on cuda:0, got {image.device}.")
         if not image.is_contiguous():
             raise ValueError(f"Camera {camera_name!r} RGBA image must be contiguous.")
+
+    @staticmethod
+    def create_image_source(camera_name: str, camera: Any) -> _ReplicatorCameraFeedSource | None:
+        """Create an opportunistic CUDA source from the camera's existing render product."""
+        return _ReplicatorCameraFeedSource.try_create(camera_name, camera)
 
     def prepare_upload_image(
         self,

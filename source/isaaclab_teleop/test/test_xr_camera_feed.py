@@ -56,6 +56,20 @@ class _FakeCamera:
             self.output["rgba"].torch = _FakeBatch(self.image_on_update)
 
 
+class _FakeImageSource:
+    def __init__(self, image=None):
+        self.image = image
+        self.fallbacks = []
+        self.closed = False
+
+    def get_image(self, fallback):
+        self.fallbacks.append(fallback)
+        return fallback if self.image is None else self.image
+
+    def close(self):
+        self.closed = True
+
+
 class _FakePanel:
     def __init__(self, descriptor, width, height):
         self.descriptor = descriptor
@@ -85,10 +99,17 @@ class _FakeSubscription:
 
 
 class _FakePresenter:
-    def __init__(self):
+    def __init__(self, source_images=None):
         self.panels = []
         self.subscription = None
         self.staged = []
+        self.source_images = source_images or {}
+        self.sources = []
+
+    def create_image_source(self, name, _camera):
+        source = _FakeImageSource(self.source_images.get(name))
+        self.sources.append(source)
+        return source
 
     def prepare_upload_image(self, _name, image, previous_source=None, previous_upload=None):
         del previous_source, previous_upload
@@ -136,10 +157,10 @@ def _teleop_env_cfg(
     )
 
 
-def _manager(monkeypatch, cfgs, images, layout=None):
+def _manager(monkeypatch, cfgs, images, layout=None, source_images=None):
     cameras = {name: _FakeCamera(image) for name, image in images.items()}
     monkeypatch.setattr(camera_feed, "_camera_type", lambda: _FakeCamera)
-    presenter = _FakePresenter()
+    presenter = _FakePresenter(source_images)
     env = SimpleNamespace(scene=SimpleNamespace(sensors=cameras))
     manager = camera_feed._XrCameraFeedManager(env, cfgs, layout or XrCameraFeedLayoutCfg(), presenter)
     return manager, presenter, cameras
@@ -323,8 +344,45 @@ def test_manager_publishes_on_kit_frame_and_closes(monkeypatch):
     manager.close()
 
     assert presenter.panels[0].uploads == [image]
+    assert presenter.sources[0].fallbacks == [image, image]
+    assert presenter.sources[0].closed
     assert presenter.subscription.closed
     assert presenter.panels[0].closed
+
+
+def test_manager_uses_camera_buffer_when_image_source_is_unavailable(monkeypatch):
+    cfg = XrCameraFeedCfg(camera_name="robot_pov_cam", max_update_hz=0.0)
+    image = _FakeImage(device="cpu")
+    camera = _FakeCamera(image)
+    monkeypatch.setattr(camera_feed, "_camera_type", lambda: _FakeCamera)
+    presenter = _FakePresenter()
+    presenter.create_image_source = Mock(return_value=None)
+    env = SimpleNamespace(scene=SimpleNamespace(sensors={"robot_pov_cam": camera}))
+    manager = camera_feed._XrCameraFeedManager(env, [cfg], XrCameraFeedLayoutCfg(), presenter)
+
+    presenter.subscription.publish()
+    manager.close()
+
+    assert presenter.panels[0].uploads == [image]
+    assert presenter.staged == [(image, image)]
+
+
+def test_manager_prefers_feed_owned_gpu_frame(monkeypatch):
+    cfg = XrCameraFeedCfg(camera_name="robot_pov_cam", max_update_hz=0.0)
+    fallback = _FakeImage(device="cpu", data_ptr=100)
+    direct = _FakeImage(device="cuda:0", data_ptr=200)
+    manager, presenter, _ = _manager(
+        monkeypatch,
+        [cfg],
+        {"robot_pov_cam": fallback},
+        source_images={"robot_pov_cam": direct},
+    )
+
+    presenter.subscription.publish()
+    manager.close()
+
+    assert presenter.panels[0].uploads == [direct]
+    assert presenter.staged == [(direct, direct)]
 
 
 def test_manager_refresh_rebinds_reset_camera_output(monkeypatch):
@@ -338,6 +396,23 @@ def test_manager_refresh_rebinds_reset_camera_output(monkeypatch):
 
     assert cameras["robot_pov_cam"].update_calls == [(0.0, True)]
     assert presenter.panels[0].uploads == [after]
+
+
+def test_manager_rebinds_source_when_camera_instance_changes(monkeypatch):
+    cfg = XrCameraFeedCfg(camera_name="robot_pov_cam", max_update_hz=0.0)
+    before = _FakeImage(data_ptr=100)
+    after = _FakeImage(data_ptr=200)
+    manager, presenter, cameras = _manager(monkeypatch, [cfg], {"robot_pov_cam": before})
+    old_source = presenter.sources[0]
+    cameras["robot_pov_cam"] = _FakeCamera(after)
+
+    manager.refresh()
+
+    assert old_source.closed
+    assert len(presenter.sources) == 2
+    assert presenter.sources[1].fallbacks == [after]
+    assert presenter.panels[0].uploads == [after]
+    manager.close()
 
 
 def test_manager_can_refresh_reset_camera_without_publishing(monkeypatch):

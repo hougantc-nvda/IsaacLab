@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import torch
 
 from pxr import Gf
 
@@ -252,6 +253,18 @@ def scene_ui_module(monkeypatch):
     monkeypatch.setitem(sys.modules, module_name, loaded_module)
     spec.loader.exec_module(loaded_module)
     return loaded_module
+
+
+def _install_replicator(monkeypatch, annotator):
+    replicator = _module("omni.replicator")
+    replicator_core = _module("omni.replicator.core")
+    get_annotator = Mock(return_value=annotator)
+    replicator_core.AnnotatorRegistry = SimpleNamespace(get_annotator=get_annotator)
+    replicator.core = replicator_core
+    sys.modules["omni"].replicator = replicator
+    monkeypatch.setitem(sys.modules, "omni.replicator", replicator)
+    monkeypatch.setitem(sys.modules, "omni.replicator.core", replicator_core)
+    return get_annotator
 
 
 @pytest.mark.parametrize(
@@ -568,3 +581,88 @@ def test_panel_converts_metric_geometry_in_selected_coordinate_system(
     elif placement == "world":
         assert _translation(panel._container.space_stack[0].source) == pytest.approx((2.2, 3.6, 6.0))
     panel.close()
+
+
+def test_image_source_is_absent_without_existing_render_product(scene_ui_module):
+    presenter = scene_ui_module._KitSceneUiCameraFeedPresenter()
+
+    source = presenter.create_image_source("robot_pov_cam", SimpleNamespace())
+
+    assert source is None
+
+
+def test_image_source_attaches_rgb_cuda_annotator_and_detaches(scene_ui_module, monkeypatch):
+    annotator = Mock()
+    raw_frame = object()
+    annotator.get_data.return_value = raw_frame
+    get_annotator = _install_replicator(monkeypatch, annotator)
+    camera = SimpleNamespace(
+        _render_data=SimpleNamespace(render_product=SimpleNamespace(path="/Render/ExistingCamera"))
+    )
+    fallback = torch.empty((8, 12, 4), dtype=torch.uint8)
+    direct = SimpleNamespace(
+        shape=fallback.shape,
+        dtype=torch.uint8,
+        device=torch.device("cuda:0"),
+        is_contiguous=lambda: True,
+    )
+    convert = Mock(return_value=direct)
+    monkeypatch.setattr(scene_ui_module, "convert_to_torch", convert)
+    presenter = scene_ui_module._KitSceneUiCameraFeedPresenter()
+
+    source = presenter.create_image_source("robot_pov_cam", camera)
+    assert source is not None
+    image = source.get_image(fallback)
+    source.close()
+
+    get_annotator.assert_called_once_with("rgb", device="cuda:0", do_array_copy=False)
+    annotator.attach.assert_called_once_with(["/Render/ExistingCamera"])
+    convert.assert_called_once_with(raw_frame)
+    assert image is direct
+    annotator.detach.assert_called_once_with(["/Render/ExistingCamera"])
+
+
+def test_image_source_falls_back_when_annotator_has_no_frame(scene_ui_module, monkeypatch):
+    annotator = Mock()
+    annotator.get_data.return_value = None
+    _install_replicator(monkeypatch, annotator)
+    camera = SimpleNamespace(_render_data=SimpleNamespace(render_product=SimpleNamespace(path="/Render/Camera")))
+    fallback = torch.empty((8, 12, 4), dtype=torch.uint8)
+    presenter = scene_ui_module._KitSceneUiCameraFeedPresenter()
+
+    source = presenter.create_image_source("robot_pov_cam", camera)
+    assert source is not None
+
+    assert source.get_image(fallback) is fallback
+    source.close()
+
+
+def test_image_source_falls_back_when_replicator_attach_fails(scene_ui_module, monkeypatch, caplog):
+    annotator = Mock()
+    annotator.attach.side_effect = RuntimeError("attach failed")
+    _install_replicator(monkeypatch, annotator)
+    camera = SimpleNamespace(_render_data=SimpleNamespace(render_product=SimpleNamespace(path="/Render/Camera")))
+    presenter = scene_ui_module._KitSceneUiCameraFeedPresenter()
+
+    source = presenter.create_image_source("robot_pov_cam", camera)
+
+    assert source is None
+    annotator.detach.assert_called_once_with(["/Render/Camera"])
+    assert "Falling back to the Camera RGBA buffer" in caplog.text
+
+
+def test_image_source_falls_back_when_replicator_read_fails(scene_ui_module, monkeypatch, caplog):
+    annotator = Mock()
+    annotator.get_data.side_effect = RuntimeError("read failed")
+    _install_replicator(monkeypatch, annotator)
+    camera = SimpleNamespace(_render_data=SimpleNamespace(render_product=SimpleNamespace(path="/Render/Camera")))
+    fallback = torch.empty((8, 12, 4), dtype=torch.uint8)
+    presenter = scene_ui_module._KitSceneUiCameraFeedPresenter()
+
+    source = presenter.create_image_source("robot_pov_cam", camera)
+    assert source is not None
+
+    assert source.get_image(fallback) is fallback
+    assert source.get_image(fallback) is fallback
+    assert caplog.text.count("could not read its CUDA annotator") == 1
+    source.close()
