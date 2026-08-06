@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from isaaclab.utils.renderers import isaac_rtx_per_env_scene_partition_enabled
 from isaaclab.utils.version import get_isaac_sim_version
 
 from .isaac_teleop_cfg import XrCameraFeedCfg, XrCameraFeedLayoutCfg
@@ -165,6 +166,11 @@ class XrCameraFeedSession:
         presenter = _load_kit_scene_ui_presenter()
         if presenter is None:
             return cls([], teleop_cfg.xr_camera_feed_layout, None, requires_responsive_denoising=False)
+        if isaac_rtx_per_env_scene_partition_enabled():
+            raise ValueError(
+                "XR camera PiP does not support ISAAC_LAB_ENABLE_ISAAC_RTX_PER_ENV_SCENE_PARTITION=1 because "
+                "RTX cameras select only one scene partition. Disable per-environment scene partitioning to use PiP."
+            )
         if int(env_cfg.scene.num_envs) != 1:
             raise ValueError("XR camera PiP supports exactly one environment; set --num_envs 1 or disable PiP feeds.")
         cfgs = _prepare_camera_feed_cfgs(env_cfg, requested)

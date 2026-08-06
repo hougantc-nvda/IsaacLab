@@ -20,12 +20,178 @@ import omni.ui as ui
 from omni.kit.scene_view.xr import XRSceneView
 from omni.kit.scene_view.xr_utils import SpatialSource, UiContainer, UpdatePolicy, WidgetComponent
 from omni.kit.xr.core import XRCore, XRCoreEventType, XRPoseValidityFlags
-from pxr import Gf, Usd
+from pxr import Gf, Sdf, Usd
 
 from isaaclab.sim.utils.stage import get_current_stage
 from isaaclab.utils.array import convert_to_torch
 
 logger = logging.getLogger(__name__)
+
+_XR_CAMERA_PATH = "/_xr/stage/xrCamera"
+_SCENE_UI_ROOT_PATH = "/ui"
+_XR_CAMERA_PIP_PARTITION = "isaaclab_teleop_xr_camera_pip"
+_MISSING_SESSION_DEFAULT = object()
+
+
+def _subscribe_to_kit_frame_updates(callback: Callable[[Any], None], observer_name: str) -> _KitFrameSubscription:
+    """Subscribe to Kit post-update events through one resettable wrapper."""
+    import carb.eventdispatcher
+    import omni.kit.app
+
+    observer = carb.eventdispatcher.get_eventdispatcher().observe_event(
+        order=omni.kit.app.POST_UPDATE_ORDER_PYTHON_EXEC,
+        event_name=omni.kit.app.GLOBAL_EVENT_POST_UPDATE,
+        on_event=callback,
+        observer_name=observer_name,
+    )
+    return _KitFrameSubscription(observer)
+
+
+class _KitSceneUiScenePartition:
+    """Keep SceneUI visible to XR eyes while excluding it from robot cameras."""
+
+    _TARGETS = (
+        (_XR_CAMERA_PATH, "omni:scenePartition"),
+        (_SCENE_UI_ROOT_PATH, "primvars:omni:scenePartition"),
+    )
+
+    def __init__(
+        self,
+        *,
+        stage_getter: Callable[[], Any] | None = None,
+    ):
+        self._stage_getter = stage_getter or get_current_stage
+        self._registrations: set[int] = set()
+        self._next_registration = 0
+        self._current_stage = None
+        self._authored: dict[Any, tuple[str, str, bool, Any]] = {}
+
+    def acquire(self) -> int:
+        """Acquire one panel reference and start maintaining its scene partition."""
+        token = self._next_registration
+        self._next_registration += 1
+        self._registrations.add(token)
+        if len(self._registrations) > 1:
+            return token
+        try:
+            self.refresh()
+        except Exception:
+            self.release(token)
+            raise
+        return token
+
+    def release(self, token: int) -> None:
+        """Release one panel reference and restore state after the final panel."""
+        self._registrations.discard(token)
+        if self._registrations:
+            return
+        self._restore_stage()
+
+    def refresh(self) -> None:
+        """Apply the partition to currently materialized XR presentation prims."""
+        if not self._registrations:
+            return
+        stage = self._stage_getter()
+        if stage is not self._current_stage:
+            self._restore_stage()
+            self._current_stage = stage
+        if stage is None:
+            return
+        for prim_path, attribute_name in self._TARGETS:
+            self._author_target(stage, prim_path, attribute_name)
+
+    def _author_target(self, stage: Any, prim_path: str, attribute_name: str) -> None:
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            return
+        attribute = prim.GetAttribute(attribute_name)
+        if attribute.IsValid():
+            current_value = attribute.Get()
+            if current_value == _XR_CAMERA_PIP_PARTITION:
+                return
+            if current_value not in (None, ""):
+                raise RuntimeError(
+                    f"XR camera PiP cannot replace existing scene partition {current_value!r} "
+                    f"on {prim_path!r} ({attribute_name!r})."
+                )
+
+        session_layer = stage.GetSessionLayer()
+        attribute_path = Sdf.Path(prim_path).AppendProperty(attribute_name)
+        key = attribute_path
+        if key not in self._authored:
+            attribute_spec = session_layer.GetAttributeAtPath(attribute_path)
+            had_session_property = attribute_spec is not None
+            previous_default = _MISSING_SESSION_DEFAULT
+            if attribute_spec is not None and attribute_spec.HasDefaultValue():
+                previous_default = attribute_spec.default
+            self._authored[key] = (prim_path, attribute_name, had_session_property, previous_default)
+
+        with Usd.EditContext(stage, session_layer):
+            if not attribute.IsValid():
+                attribute = prim.CreateAttribute(attribute_name, Sdf.ValueTypeNames.Token)
+            if not attribute.Set(_XR_CAMERA_PIP_PARTITION):
+                raise RuntimeError(f"Failed to author {attribute_name!r} on {prim_path!r}.")
+
+    def _restore_stage(self) -> None:
+        stage = self._current_stage
+        if stage is None:
+            self._authored.clear()
+            return
+        session_layer = stage.GetSessionLayer()
+        first_error = None
+        try:
+            for attribute_path, state in tuple(self._authored.items()):
+                try:
+                    self._restore_target(stage, session_layer, attribute_path, state)
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
+        finally:
+            self._authored.clear()
+            self._current_stage = None
+        if first_error is not None:
+            raise first_error
+
+    @staticmethod
+    def _restore_target(
+        stage: Any,
+        session_layer: Any,
+        attribute_path: Any,
+        state: tuple[str, str, bool, Any],
+    ) -> None:
+        prim_path, attribute_name, had_session_property, previous_default = state
+        attribute_spec = session_layer.GetAttributeAtPath(attribute_path)
+        if (
+            attribute_spec is None
+            or not attribute_spec.HasDefaultValue()
+            or attribute_spec.default != _XR_CAMERA_PIP_PARTITION
+        ):
+            return
+        if had_session_property:
+            if previous_default is _MISSING_SESSION_DEFAULT:
+                attribute_spec.ClearDefaultValue()
+            else:
+                attribute_spec.default = previous_default
+            return
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim.IsValid():
+            with Usd.EditContext(stage, session_layer):
+                prim.RemoveProperty(attribute_name)
+            return
+        prim_spec = session_layer.GetPrimAtPath(Sdf.Path(prim_path))
+        if prim_spec is not None:
+            prim_spec.RemoveProperty(attribute_spec)
+
+
+_shared_scene_partition: _KitSceneUiScenePartition | None = None
+
+
+def _get_shared_scene_partition() -> _KitSceneUiScenePartition:
+    """Return the module-wide SceneUI partition owner used by all presenters."""
+    global _shared_scene_partition
+    if _shared_scene_partition is None:
+        _shared_scene_partition = _KitSceneUiScenePartition()
+    return _shared_scene_partition
 
 
 def _replicator_output_to_torch(output: Any) -> torch.Tensor:
@@ -303,6 +469,7 @@ class KitSceneUiCameraFeedPanel:
         image_width: int,
         image_height: int,
         viewer_start_anchor: KitSceneUiViewerStartAnchor | None = None,
+        scene_partition: _KitSceneUiScenePartition | None = None,
     ):
         """Create the image provider and attach its panel to the XR scene."""
         self._closed = False
@@ -311,6 +478,8 @@ class KitSceneUiCameraFeedPanel:
         self._container = None
         self._viewer_start_anchor = viewer_start_anchor
         self._viewer_start_registration = None
+        self._scene_partition = scene_partition
+        self._scene_partition_registration = None
 
         if descriptor.placement == "viewer_start":
             if viewer_start_anchor is None:
@@ -358,6 +527,8 @@ class KitSceneUiCameraFeedPanel:
         else:
             raise ValueError(f"Unknown XR camera-feed placement {descriptor.placement!r}.")
         try:
+            if self._scene_partition is not None:
+                self._scene_partition_registration = self._scene_partition.acquire()
             self._provider = ui.ByteImageProvider()
             self._component = WidgetComponent(
                 _CameraImageWidget,
@@ -381,6 +552,8 @@ class KitSceneUiCameraFeedPanel:
                     descriptor.distance_m,
                     self._on_viewer_start_readiness_changed,
                 )
+            if self._scene_partition is not None:
+                self._scene_partition.refresh()
         except Exception:
             with suppress(Exception):
                 self.close()
@@ -425,11 +598,17 @@ class KitSceneUiCameraFeedPanel:
         self._component = None
         self._container = None
         self._provider = None
-        if container is not None:
-            try:
-                container.hide()
-            finally:
-                container.root.clear()
+        try:
+            if container is not None:
+                try:
+                    container.hide()
+                finally:
+                    container.root.clear()
+        finally:
+            if self._scene_partition is not None and self._scene_partition_registration is not None:
+                self._scene_partition.release(self._scene_partition_registration)
+            self._scene_partition_registration = None
+            self._scene_partition = None
 
 
 class _ReplicatorCameraFeedSource:
@@ -547,9 +726,11 @@ class _ReplicatorCameraFeedSource:
 class _KitSceneUiCameraFeedPresenter:
     """Private adapter from camera buffers to Kit SceneUI panels."""
 
-    def __init__(self):
+    def __init__(self, scene_partition: _KitSceneUiScenePartition | None = None):
         self._viewer_start_anchor = None
         self._cpu_upload_warnings: set[str] = set()
+        self._scene_partition = scene_partition
+        self._scene_partition_update_error_reported = False
 
     @staticmethod
     def _validate_image(camera_name: str, image: torch.Tensor) -> None:
@@ -603,6 +784,8 @@ class _KitSceneUiCameraFeedPresenter:
         return torch.empty_like(image, device=previous_source.device, memory_format=torch.contiguous_format)
 
     def create_panel(self, descriptor: Any, width: int, height: int) -> KitSceneUiCameraFeedPanel:
+        if self._scene_partition is None:
+            self._scene_partition = _get_shared_scene_partition()
         viewer_start_anchor = None
         if descriptor.placement == "viewer_start":
             if self._viewer_start_anchor is None:
@@ -613,6 +796,7 @@ class _KitSceneUiCameraFeedPresenter:
             image_width=width,
             image_height=height,
             viewer_start_anchor=viewer_start_anchor,
+            scene_partition=self._scene_partition,
         )
 
     @staticmethod
@@ -620,18 +804,27 @@ class _KitSceneUiCameraFeedPresenter:
         if upload_image is not image:
             upload_image.copy_(image, non_blocking=False)
 
-    @staticmethod
-    def subscribe_to_frame_updates(callback: Callable[[Any], None]) -> _KitFrameSubscription:
-        import carb.eventdispatcher
-        import omni.kit.app
+    def subscribe_to_frame_updates(self, callback: Callable[[Any], None]) -> _KitFrameSubscription:
+        def on_frame(event: Any) -> None:
+            try:
+                if self._scene_partition is not None:
+                    self._scene_partition.refresh()
+                self._scene_partition_update_error_reported = False
+            except Exception as exc:
+                if not self._scene_partition_update_error_reported:
+                    logger.warning(
+                        "XR camera PiP could not update its SceneUI scene partition (%s: %s).",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    self._scene_partition_update_error_reported = True
+            finally:
+                callback(event)
 
-        observer = carb.eventdispatcher.get_eventdispatcher().observe_event(
-            order=omni.kit.app.POST_UPDATE_ORDER_PYTHON_EXEC,
-            event_name=omni.kit.app.GLOBAL_EVENT_POST_UPDATE,
-            on_event=callback,
-            observer_name="Isaac Lab XR camera PiP frame update",
+        return _subscribe_to_kit_frame_updates(
+            on_frame,
+            "Isaac Lab XR camera PiP frame update",
         )
-        return _KitFrameSubscription(observer)
 
 
 class _KitFrameSubscription:

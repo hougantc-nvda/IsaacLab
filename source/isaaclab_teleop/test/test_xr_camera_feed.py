@@ -182,6 +182,18 @@ def test_pip_rejects_multiple_environments_before_camera_creation(monkeypatch):
     load_presenter.assert_called_once_with()
 
 
+def test_pip_rejects_per_environment_scene_partitioning(monkeypatch):
+    env_cfg = _teleop_env_cfg([XrCameraFeedCfg(camera_name="robot_pov_cam")], camera=_camera_cfg())
+    load_presenter = Mock(return_value=_FakePresenter())
+    monkeypatch.setattr(camera_feed, "_load_kit_scene_ui_presenter", load_presenter)
+    monkeypatch.setattr(camera_feed, "isaac_rtx_per_env_scene_partition_enabled", lambda: True)
+
+    with pytest.raises(ValueError, match="select only one scene partition"):
+        XrCameraFeedSession.prepare(env_cfg, enabled=True, camera_rendering_enabled=True)
+
+    load_presenter.assert_called_once_with()
+
+
 def test_xr_without_pip_preserves_multiple_environments(monkeypatch):
     env_cfg = _teleop_env_cfg([], num_envs=2)
     load_presenter = Mock()
