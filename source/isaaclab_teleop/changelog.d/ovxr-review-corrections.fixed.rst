@@ -1,2 +1,6 @@
-* Fixed OVXR reset publication, failed-generation retirement and cleanup ownership.
-* Preserved optional teleop imports and immutable preparation settings.
+* Fixed OVXR reset publication, failed-generation retirement, Capture reset notifications and cleanup ownership.
+* Preserved simulation clocks and optional teleop imports.
+
+Replay retains failed Capture input owners on Kit as well as OVXR, preserves the original failure, and services independent CloudXR cleanup after other cleanup failures.
+
+Live OVXR honors shutdown signals during input startup and keeps repeated signals from interrupting cleanup.
