@@ -4,8 +4,8 @@ Use Python 3.12 on Linux x86-64. The checked-in `ovxr` extra and lockfile select
 Isaac Capture 1.7.93a1 with the OVXR session owner, camera panels and desktop mirror,
 and the compatible OVRTX, OVStage and OVPhysX packages. No local metadata edits are needed.
 
-Complete the CloudXR workstation, client, network and license prerequisites before
-starting a session. From the Isaac Lab root:
+Complete the [CloudXR, client, network and license prerequisites](kitless_xr.md#prerequisites)
+before starting a session. From the Isaac Lab root:
 
 ```bash
 uv sync --python 3.12 --locked --extra ovxr
@@ -19,6 +19,11 @@ changing selections. Keep the repository's dependency overrides: in particular,
 current main reconciles OVPhysX's older packaging cap with the rest of the stack.
 Do not downgrade packaging independently or modify the lockfile during installation.
 
+The desktop mirror is optional at runtime. Enable it with `--ovxr_desktop_mirror`
+on a host with a usable GPU-backed desktop display. Without that option, no local
+window is opened; headset rendering still requires the GPU. Camera panels are
+independent of the mirror.
+
 For adapter regression tests, include the test tools:
 
 ```bash
@@ -30,3 +35,5 @@ uv run --no-sync python -m pytest source/isaaclab_teleop/test/test_ovxr_session.
 The dedicated OVXR CI job checks the Capture owner import and rejects skipped
 adapter tests. The ordinary Kit dependency selection cannot qualify these tests.
 Native GPU, desktop and headset qualification are separate from these contract tests.
+
+Continue with [live teleoperation](kitless_xr.md#live-teleoperation).

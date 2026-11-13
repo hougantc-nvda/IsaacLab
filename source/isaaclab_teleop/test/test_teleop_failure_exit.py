@@ -95,12 +95,12 @@ def test_live_entry_failure_closes_resources_and_reports_cause(
         cfg = SimpleNamespace()  # Native inputs must not read Capture-only action policy.
     if stage == "haptics":
         with pytest.raises(RuntimeError) as caught:
-            entry_namespace["run_teleoperation"](cfg, False, use_capture)
+            entry_namespace["run_teleoperation"](cfg, False, use_capture, ())
         assert caught.value is failure
     else:
         # Environment, device and loop failures keep the upstream log-and-return exit.
         with caplog.at_level(logging.ERROR):
-            entry_namespace["run_teleoperation"](cfg, False, use_capture)
+            entry_namespace["run_teleoperation"](cfg, False, use_capture, ())
         assert f"{stage} failed" in caplog.text
     camera.close.assert_called_once_with()
     assert env.close.call_count == int(stage != "environment")
@@ -130,7 +130,7 @@ def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entr
         state["context"] = current
         entry_namespace["_close_teleop_resources"](env, camera, presentation, {}, interface)
 
-    monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True))
+    monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True, ()))
     monkeypatch.setattr(agent, "args_cli", SimpleNamespace(using_ovxr=ovxr), raising=False)
     monkeypatch.setattr(agent, "run_teleoperation", run)
     monkeypatch.setattr(
