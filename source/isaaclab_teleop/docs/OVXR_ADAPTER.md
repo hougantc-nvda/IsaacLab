@@ -27,10 +27,11 @@ after the environment exists. Publish simulation updates through the session;
 the worker owns rendering. Stop input consumers before closing the XR session,
 and retire the lease before destroying the simulation's renderer or stage.
 Pass `environment_owner="host"` to `prepare()` when Lab owns environment or
-window destruction. Stop input, close the session, require `session.retirement_complete`,
-then close the environment on the host. The default `"render_worker"` policy
-preserves worker-owned environment cleanup after lease retirement. Both policies
-retain the environment when retirement cannot be proved.
+window destruction. After stopping input, close the session, require
+`session.retirement_complete`, and only then close the environment on the host.
+The default `"render_worker"` policy preserves existing callers: the worker
+closes the environment after retiring the lease. Both policies retain the
+environment when retirement cannot be proved.
 
 If startup fails before the worker takes ownership, the caller closes the
 environment after releasing the lease. If input retirement fails, request
@@ -69,8 +70,11 @@ The adapter retains the environment if lease retirement cannot establish complet
   renderer defers its Stage until the XR worker claims ownership. A camera that
   resolves to the leased renderer itself (for example an OVRTX camera with the
   default `OVRTXRendererCfg()`) is rejected while the lease is active.
-- Eager scene updates (`lazy_sensor_update=False`) skip the leased renderer; its
-  scene publisher writes the same physics state at the reserved ordinal.
+- Eager scene updates (`lazy_sensor_update=False`) skip ordinary updates of the
+  leased renderer. Retained camera sensors can still attempt their own capture,
+  so camera panels require `lazy_sensor_update=True`; the adapter rejects eager
+  retained cameras before starting the worker. The scene publisher refreshes
+  their world poses without triggering camera capture before publication.
 - CPU simulation devices publish scene transforms, but visual-material
   publication requires CUDA material buffers, as it does for ordinary OVRTX
   cameras. With `--device cpu`, an environment that has `VisualMaterial` assets
