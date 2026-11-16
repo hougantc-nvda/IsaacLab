@@ -62,22 +62,15 @@ class OVRTXVisualMaterialWriter:
                 start = end
         self._device = str(device)
         self._event = wp.Event(device=self._device)
-        with contextlib.ExitStack() as resources:
-            for channel, attribute_name, shader_paths, rows, dtype, shape in groups:
-                if renderer._use_ovstage:
-                    address = resources.enter_context(renderer.scene.query(shader_paths))
-                else:
-                    address = renderer.backend.renderer.bind_attribute(
-                        prim_paths=shader_paths,
-                        attribute_name=attribute_name,
-                        dtype=dtype,
-                        shape=shape,
-                        prim_mode=PrimMode.EXISTING_ONLY,
-                        flags=BindingFlag.OPTIMIZE,
-                    )
-                    resources.callback(address.unbind)
-                self._addresses.append((channel, address, attribute_name, rows))
-            self._resources = resources.pop_all()
+        self._pending_groups = groups
+        self._resources = contextlib.ExitStack()
+        if renderer._initialized_scene:
+            self._compile_addresses(renderer)
+
+    @property
+    def has_pending_updates(self) -> bool:
+        """Whether material changes require a scene publication even without a physics step."""
+        return bool(self._dirty_channels)
 
     def __call__(self, material_offsets: dict[str, Any] | None = None, env_ids: Any | None = None) -> None:
         """Mark channels dirty; OVRTX currently copies each dirty channel's full device buffer."""
@@ -92,6 +85,8 @@ class OVRTXVisualMaterialWriter:
         if not channels:
             return
         renderer = self._renderer_ref()
+        if self._pending_groups:
+            self._compile_addresses(renderer)
         operations = []
         try:
             for channel, address, attribute_name, rows in self._addresses:
@@ -152,5 +147,30 @@ class OVRTXVisualMaterialWriter:
                             logger.warning("Error draining in-flight render before material release: %s", error)
         finally:
             self._addresses.clear()
+            self._pending_groups.clear()
             self._dirty_channels.clear()
             self._buffers.clear()
+
+    def _compile_addresses(self, renderer: OVRTXRenderer) -> None:
+        """Bind addresses only after the leased or ordinary scene has been populated."""
+        if not renderer._initialized_scene:
+            raise RuntimeError("Visual materials require a populated renderer scene before publication.")
+        addresses = []
+        with contextlib.ExitStack() as resources:
+            for channel, attribute_name, shader_paths, rows, dtype, shape in self._pending_groups:
+                if renderer._use_ovstage:
+                    address = resources.enter_context(renderer.scene.query(shader_paths))
+                else:
+                    address = renderer.backend.renderer.bind_attribute(
+                        prim_paths=shader_paths,
+                        attribute_name=attribute_name,
+                        dtype=dtype,
+                        shape=shape,
+                        prim_mode=PrimMode.EXISTING_ONLY,
+                        flags=BindingFlag.OPTIMIZE,
+                    )
+                    resources.callback(address.unbind)
+                addresses.append((channel, address, attribute_name, rows))
+            self._resources = resources.pop_all()
+        self._addresses = addresses
+        self._pending_groups = []

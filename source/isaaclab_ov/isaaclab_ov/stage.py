@@ -187,6 +187,7 @@ class OvstageBackend:
         self.clone_positions: np.ndarray | None = None
         self._deferred_render_copies: list[tuple[str, list[str]]] | None = None
         self._render_copy_error: Exception | None = None
+        self._render_lease_owner = None
         self.resources = contextlib.ExitStack()
         """Release borrowers before paths and stage, in reverse registration order."""
         self.reset()
@@ -221,7 +222,7 @@ class OvstageBackend:
             self.stage, self.paths, self.clone_copies, self.clone_env_paths, self.clone_positions, ordinal=1
         )
         self.ordinal = 1
-        self.commit()
+        self._commit()
 
     def complete_render_copies(self) -> None:
         """Seal render copies at ordinal 2 after physics cloning and binding acquisition.
@@ -272,20 +273,36 @@ class OvstageBackend:
 
     def commit(self) -> int:
         """Seal pending writes and return their ordinal; all consumers share the next write ordinal."""
+        if self._render_lease_owner is not None:
+            raise RuntimeError("Cannot commit a stage with an active render lease")
+        return self._commit()
+
+    def _commit(self) -> int:
+        """Seal stage initialization or an ordinary, authorized publication."""
         ordinal = self.ordinal
         self.stage.advance_write_floor(ordinal=ordinal).wait()
         self.ordinal += 1
         return ordinal
 
     def close(self) -> None:
-        """Release borrowers, then the path dictionary and stage."""
+        """Release borrowers, then the path dictionary and stage.
+
+        Raises:
+            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+        """
+        if self._render_lease_owner is not None:
+            raise RuntimeError("Cannot destroy or reset a stage with an active render lease")
         self._deferred_render_copies = None
         self._render_copy_error = None
         self.resources.close()
         self.stage = self.paths = None
 
     def reset(self) -> None:
-        """Recreate the native stage after all consumers detach, retaining the prepared clone operations."""
+        """Recreate the native stage after all consumers detach, retaining the prepared clone operations.
+
+        Raises:
+            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+        """
         self.close()
         self.ordinal = self.next_camera_id = 0
         with contextlib.ExitStack() as resources:

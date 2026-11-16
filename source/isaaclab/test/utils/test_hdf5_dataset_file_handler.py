@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 import json
+import select
 import subprocess
 import sys
 
@@ -63,7 +64,16 @@ def test_child_process_does_not_keep_closed_file_locked(tmp_path):
         for open_file in (dataset_file_handler.create, lambda path: dataset_file_handler.open(path, mode="r+")):
             open_file(dataset_file_path)
             # close_fds=False passes on every inheritable descriptor, as native process launchers do
-            children.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], close_fds=False))
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+                close_fds=False,
+                stdout=subprocess.PIPE,
+            )
+            children.append(child)
+            # Wait for exec to close non-inheritable descriptors before checking the lock.
+            assert select.select([child.stdout], [], [], 10)[0], "child did not become ready"
+            assert child.stdout.readline() == b"ready\n"
+            child.stdout.close()
             dataset_file_handler.close()
             # reopening for writing needs the exclusive lock the child would still hold
             with h5py.File(dataset_file_path, "r+"):
@@ -72,6 +82,8 @@ def test_child_process_does_not_keep_closed_file_locked(tmp_path):
         for child in children:
             child.kill()
             child.wait()
+            child.stdout.close()
+        dataset_file_handler.close()
 
 
 def test_convert_dataset_to_xyzw_updates_format_version(tmp_path):
