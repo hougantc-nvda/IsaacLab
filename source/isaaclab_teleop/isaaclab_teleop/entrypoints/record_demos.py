@@ -315,6 +315,11 @@ def create_environment_config(
     )
     if isinstance(teleop_cfg, IsaacTeleopCfg):
         env_cfg.isaac_teleop = teleop_cfg
+        from isaaclab.app import validate_launch
+
+        validate_launch(env_cfg, vars(args_cli).copy())
+        if teleop_cfg.prepare_environment is not None:
+            teleop_cfg.prepare_environment(env_cfg)
 
     # Extract the success condition for manual evaluation in the main loop. Keep
     # an inert term registered under the same name so rewards and other manager

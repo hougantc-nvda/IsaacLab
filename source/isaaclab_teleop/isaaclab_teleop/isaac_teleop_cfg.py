@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from isaacteleop.retargeting_engine.interface import BaseRetargeter, OutputCombiner
     from isaacteleop.teleop_session_manager import PluginConfig, RetargetingExecutionConfig
 
+    from isaaclab.envs import ManagerBasedRLEnvCfg
+
 
 @configclass
 class XrCameraFeedCfg:
@@ -306,3 +308,13 @@ class IsaacTeleopCfg:
 
     app_name: str = "IsaacLabTeleop"
     """Application name for the Isaac Capture session."""
+
+    prepare_environment: Callable[[ManagerBasedRLEnvCfg], None] | None = None
+    """Optional task-owned preparation of the resolved environment configuration.
+
+    Live and replay launchers call this before creating any simulation resources,
+    including the OVXR bootstrap. Preparation must tolerate repeated calls from
+    the task constructor. Keep this callable's imports safe before simulator startup.
+    It runs after launcher validation, so it must not change the runtime selections,
+    such as the physics or renderer backend.
+    """
