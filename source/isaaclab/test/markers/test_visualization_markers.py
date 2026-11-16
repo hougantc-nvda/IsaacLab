@@ -484,6 +484,7 @@ def test_newton_marker_mesh_registration_is_per_viewer(monkeypatch: pytest.Monke
             self.meshes.append((name, vertices, indices, kwargs))
 
     monkeypatch.setattr(newton_markers, "_create_mesh", lambda cfg: _FakeMesh())
+    monkeypatch.setattr(newton_markers, "wp", SimpleNamespace(**vars(wp)))
     monkeypatch.setattr(newton_markers.wp, "array", lambda value, dtype=None, device=None: value)
 
     spec = newton_markers._NewtonMarkerSpec(renderer="mesh", mesh_type="box", mesh_params={"size": (1.0, 1.0, 1.0)})
@@ -587,6 +588,7 @@ def _patch_newton_marker_render_deps(
     warp_world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=world_offsets_device)
 
     monkeypatch.setattr(newton_markers, "_create_mesh", lambda cfg: _FakeNewtonMarkerMesh())
+    monkeypatch.setattr(newton_markers, "wp", SimpleNamespace(**vars(wp)))
     monkeypatch.setattr(newton_markers.wp, "array", lambda value, dtype=None, device=None: value)
     return warp_world_offsets
 
