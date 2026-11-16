@@ -1556,3 +1556,62 @@ def test_scene_preparation_respects_physics_population_and_camera_transform_mode
     assert events.count("disable-camera-reads") == (needs_fallback and stage_mode != "legacy")
     if stage_mode != "legacy":
         assert events[-2:] == ["commit", "attach"]
+
+
+@pytest.mark.parametrize("use_ovstage, asynchronous", [(True, False), (False, False), (False, True)])
+def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(use_ovstage, asynchronous):
+    renderer = _make_ovrtx_renderer_without_backend()
+    renderer._use_ovstage = use_ovstage
+    renderer.cfg = OVRTXRendererCfg(async_rendering=asynchronous)
+    renderer._warp_device = wp.get_device("cpu")
+    renderer._device = "cpu"
+    renderer._object_xform_binding = MagicMock()
+    renderer._geometry_points_binding = MagicMock()
+    renderer._transforms_timestamp = renderer._geometry_timestamp = None
+    renderer._object_scales = None
+    renderer._geometry_paths = ["/World/Object"]
+    from isaaclab.scene_data import SceneDataFormat, SceneDataProvider
+
+    transforms = SceneDataFormat.Vec3_Quat()
+    transforms.positions = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3f, device="cpu")
+    transforms.orientations = wp.array([[0.0, 0.0, 2**-0.5, 2**-0.5]], dtype=wp.quatf, device="cpu")
+    output = SceneDataFormat.TransposedMatrix44d()
+    output.matrices = wp.empty(1, dtype=wp.mat44d, device="cpu")
+    geometry = SceneDataFormat.Points()
+    points = geometry.points = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3f, device="cpu")
+    renderer._transform_writes = _AsyncWriteBuffers([output])
+    renderer._geometry_writes = _AsyncWriteBuffers([wp.empty_like(points)])
+    renderer._geometry_offsets = {"/World/Object": 0}
+    renderer._sdp = SceneDataProvider(
+        types.SimpleNamespace(
+            transforms_timestamp=1,
+            geometry_timestamp=1,
+            get_transforms=lambda _format: transforms,
+            get_geometry_batches=lambda _format: [(geometry, {"/World/Object": (0, 1)})],
+        )
+    )
+    stage = MagicMock()
+    renderer.scene = types.SimpleNamespace(stage=stage, ordinal=11)
+    renderer.update_transforms()
+    renderer.update_geometries()
+    bindings = (renderer._object_xform_binding, renderer._geometry_points_binding)
+    writes = [getattr(binding, "write_async" if asynchronous else "write") for binding in bindings]
+    calls = stage.write_attribute.call_args_list if use_ovstage else [write.call_args for write in writes]
+    assert len(calls) == 2 and all(c.kwargs["cuda_stream"] is None for c in calls)
+    if use_ovstage:
+        assert [c.args[1] for c in calls] == ["omni:xform", "points"]
+        assert all(c.kwargs["ordinal"] == 11 for c in calls)
+    else:
+        np.testing.assert_allclose(
+            calls[0].args[0].numpy(),
+            [[[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [1, 2, 3, 1]]],
+            atol=1e-6,
+        )
+        np.testing.assert_array_equal(calls[1].args[0][0].numpy(), points.numpy())
+    # A repeated publication of unchanged state must not duplicate either write.
+    renderer.update_transforms()
+    renderer.update_geometries()
+    assert stage.write_attribute.call_count == 2 if use_ovstage else all(write.call_count == 1 for write in writes)
+    # Draining the retained buffers waits for previous writes without a CUDA stream.
+    renderer._transform_writes.close()
+    renderer._geometry_writes.close()

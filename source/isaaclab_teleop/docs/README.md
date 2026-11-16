@@ -156,12 +156,19 @@ contend for the GIL at the start of the step.
 |---|---|---|---|
 | `anchor_pos` | `tuple[float, float, float]` | `(0, 0, 0)` | XR anchor position in world frame |
 | `anchor_rot` | `tuple[float, float, float, float]` | `(0, 0, 0, 1)` | XR anchor rotation (quaternion xyzw) |
-| `anchor_prim_path` | `str \| None` | `None` | Prim to attach anchor to for dynamic positioning |
+| `anchor_prim_path` | `str \| None` | `None` | Prim to attach anchor to for dynamic positioning; OVXR reads committed physics poses and shares the same anchor policy |
 | `anchor_rotation_mode` | `XrAnchorRotationMode` | `FIXED` | How anchor rotation tracks the reference prim |
 | `anchor_rotation_smoothing_time` | `float` | `1.0` | Slerp time constant (seconds) for `FOLLOW_PRIM_SMOOTHED` mode |
 | `anchor_rotation_custom_func` | `Callable` | identity | Custom rotation function for `CUSTOM` mode |
 | `near_plane` | `float` | `0.15` | Near clipping plane distance for the XR device |
 | `fixed_anchor_height` | `bool` | `True` | Fix anchor height to initial value of the reference prim |
+
+## Capture and replay boundaries
+
+MCAP records DeviceIO tracker/control input, not historical simulation scenes.
+Environment/control reset does not rewind MCAP input. HDF5
+demonstration scripts use the Kit/Isaac Sim application path; these OVXR
+commands do not qualify HDF5 recording/replay.
 
 ## Utilities
 
@@ -184,6 +191,8 @@ In the Isaac Sim UI, set the AR panel to **System OpenXR Runtime** and click **S
 
 For a fully headless experience, omit `--visualizer kit` when running Docker, and the XR teleop session will
 run automatically.
+
+For OVXR, use the separate [kitless XR installation and runtime guide](kitless_xr.md).
 
 ## Dependencies
 
