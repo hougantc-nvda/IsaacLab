@@ -1477,6 +1477,20 @@ def test_replay_waits_for_initial_and_recorded_reset_publication(monkeypatch, cl
         assert admissions == [(1, 1), (1, 2), (2, 1), (2, 2)]
 
 
+@pytest.mark.parametrize("done,expected", [((False, True), False), ((True, False), True)])
+@pytest.mark.parametrize("termination", ["terminated", "truncated"])
+def test_auto_reset_follows_the_teleoperated_environment(termination, done, expected):
+    """Only environment 0, which owns the anchor and target frame, re-seeds teleop input."""
+    from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
+
+    flags = torch.tensor(done)
+    step = (None, None, flags, torch.zeros(2, dtype=torch.bool), {})
+    if termination == "truncated":
+        step = (None, None, torch.zeros(2, dtype=torch.bool), flags, {})
+    env = SimpleNamespace(num_envs=2, step=lambda _actions: step)
+    assert agent._apply_teleop_frame(env, torch.zeros(3), None, None) == (True, expected)
+
+
 @pytest.mark.parametrize("termination", ["terminated", "truncated"])
 def test_live_auto_reset_rebases_dynamic_anchor_before_next_input(monkeypatch, run_live_workflow, termination):
     """Auto-reset changes the anchor epoch without resetting the environment twice."""
