@@ -298,9 +298,18 @@ class OvLibrariesXrSession:
         validate_ovxr_session_preparation()
         import ovxr
 
-        # Stock settings are applied before Renderer construction. Preserve explicit caller choices.
-        ovxr.apply_renderer_settings(cfg.renderer_settings.strip())
         bootstrap = OvxrSessionBootstrap(sim_cfg, renderer_cfg)
+        try:
+            # Process-global settings change only after preparation succeeds. The native
+            # renderer is created later with the environment, so they still precede it.
+            ovxr.apply_renderer_settings(cfg.renderer_settings.strip())
+        except BaseException as preparation_error:
+            try:
+                bootstrap.abort()
+            except BaseException as abort_error:
+                # Cleanup follows the failure; retain its original cause.
+                preparation_error.add_note(f"Cleanup after failed XR preparation also failed: {abort_error!r}")
+            raise
         return cls(bootstrap, cfg, environment_owner=environment_owner)
 
     def _require_open(self) -> None:
@@ -534,7 +543,7 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
         snapshot = None
         seed = False
         if self._external_anchor is not None:
-            epoch, seed = anchor_epoch
+            epoch, _ = anchor_epoch
             seed = seed_pending
             reference = self._bootstrap.get_world_transform(self._external_anchor.external_reference_path)
             snapshot = (epoch, reference)

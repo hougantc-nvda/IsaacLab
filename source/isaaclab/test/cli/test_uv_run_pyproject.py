@@ -219,16 +219,12 @@ def test_public_ov_packages_use_public_pypi_index(source_checkout_root: Path):
         assert sources[package] == {"index": "pypi-public"}
 
 
-def test_uv_run_conflicts_are_limited_to_standalone_ovxr(source_checkout_root: Path) -> None:
-    """Only standalone OVXR isolates its Capture and presentation dependencies.
-
-    Kit teleop, Isaac Sim, importers, and the ordinary OV extras remain combinable.
-    Dependency overrides reconcile their older pins without adding extra conflicts.
-    """
+def test_uv_run_declares_no_extra_conflicts(source_checkout_root: Path) -> None:
+    """Kit and OVXR share Capture and remain combinable with the other extras."""
     tool_uv = _root_pyproject(source_checkout_root)["tool"]["uv"]
 
-    conflicts = {frozenset(item["extra"] for item in group) for group in tool_uv["conflicts"]}
-    assert conflicts == {frozenset(("ovxr", extra)) for extra in ("teleop", "isaacsim", "viser", "all")}
+    assert not tool_uv.get("conflicts")
+    assert "websockets>=17.3" in tool_uv["override-dependencies"]
     assert "fsspec>=2026.6.0" in tool_uv["override-dependencies"]
     assert "packaging>=20,<27" in tool_uv["override-dependencies"]
     assert "urllib3>=2.8.0" in tool_uv["override-dependencies"]

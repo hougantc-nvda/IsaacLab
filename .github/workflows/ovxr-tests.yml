@@ -43,7 +43,6 @@ jobs:
           import ovstage
           from isaaccapture.ovxr_session_manager import OvxrSession, StageOrdinalLedger
 
-          assert metadata.version("isaaccapture") == "1.7.93a1"
           print("Capture", metadata.version("isaaccapture"), "OVXR", metadata.version("ovxr"))
           PY
       - name: Run adapter contracts in separate processes

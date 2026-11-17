@@ -34,7 +34,7 @@ def validate_ovxr_session_preparation() -> None:
         raise RuntimeError("OVXR bootstrap cannot reuse a context in extension mode")
 
 
-def resolve_cuda_device(device: str) -> str:
+def _resolve_cuda_device(device: str) -> str:
     """Resolve a bare ``"cuda"`` device to the GPU that the simulation selects for it.
 
     :class:`~isaaclab.sim.SimulationContext` and :func:`~isaaclab.app.launch_simulation` read
@@ -147,7 +147,7 @@ class OvxrSessionBootstrap:
             )
         env_sim_cfg = unwrapped.cfg.sim
         for field, env_value, prepared_value in (
-            ("device", resolve_cuda_device(env_sim_cfg.device), self._prepared_device),
+            ("device", _resolve_cuda_device(env_sim_cfg.device), self._prepared_device),
             ("dt", env_sim_cfg.dt, self._prepared_dt),
         ):
             if env_value != prepared_value:

@@ -138,8 +138,7 @@ def xr_module(monkeypatch, real_lease_type):
     The stub-bound adapter is removed from ``sys.modules`` and its package on teardown so
     later tests import the real module.
     """
-    # The adapter needs a Capture release with OVXR session support. The Kit ``teleop`` extra
-    # selects an older release without it; skip rather than error in that environment.
+    # These adapter tests require the optional Capture OVXR session module.
     pytest.importorskip("isaaccapture.ovxr_session_manager")
     import isaaclab_teleop
 
@@ -661,21 +660,46 @@ def test_bootstrap_construction_failure_restores_terminal_mode(bootstrap_context
         assert any("context cleanup failed" in note for note in error.__notes__)
 
 
-def test_caller_renderer_settings_precede_renderer_creation(xr_module, monkeypatch):
+def test_caller_renderer_settings_follow_successful_preparation(xr_module, monkeypatch):
+    """Settings apply after the lease is reserved; the native renderer is created later with the env."""
     settings = "  --/rtx/rendermode=MinimalRendering  "
     events = []
     bootstrap = _FakeBootstrap()
     monkeypatch.setitem(
-        sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=lambda value: events.append(value))
+        sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=lambda value: events.append(("settings", value)))
     )
 
     def create_bootstrap(*_args):
-        assert len(events) == 1
-        assert events[0] == settings.strip()
+        events.append("bootstrap")
         return bootstrap
 
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", create_bootstrap)
     xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(renderer_settings=settings))
+    assert events == ["bootstrap", ("settings", settings.strip())]
+
+
+@pytest.mark.parametrize("failure", ["bootstrap", "settings"])
+def test_failed_preparation_leaves_no_partial_renderer_settings(xr_module, monkeypatch, failure):
+    """A failed bootstrap applies no global settings; a rejected setting aborts the bootstrap."""
+    bootstrap = _FakeBootstrap()
+    applied = []
+
+    def apply(value):
+        if failure == "settings":
+            raise RuntimeError("settings rejected")
+        applied.append(value)
+
+    def create_bootstrap(*_args):
+        if failure == "bootstrap":
+            raise RuntimeError("bootstrap failed")
+        return bootstrap
+
+    monkeypatch.setitem(sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=apply))
+    monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", create_bootstrap)
+    with pytest.raises(RuntimeError, match=f"{failure} (failed|rejected)"):
+        xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg())
+    assert applied == []
+    assert bootstrap.aborted is (failure == "settings")
 
 
 def test_prepare_rejects_existing_context_before_global_settings(xr_module, monkeypatch):
