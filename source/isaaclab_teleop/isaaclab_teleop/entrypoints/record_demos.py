@@ -364,22 +364,24 @@ def create_environment_config(
     if args_cli.using_ovxr:
         env_cfg = prepare_ovxr_launch(env_cfg, args_cli.task, env_cfg.scene.num_envs)
 
-    # Resolve automatic backend choices before deciding which task policies recording can run.
-    configs, kit_sources = validate_launch(env_cfg, vars(args_cli).copy())
-    if args_cli.using_ovxr:
-        reject_ovxr_runtime_conflicts(configs, kit_sources)
     if isinstance(teleop_cfg, IsaacTeleopCfg):
-        if teleop_cfg.prepare_environment is not None:
-            teleop_cfg.prepare_environment(env_cfg)
-        if (
-            env_cfg.sim.physics is not None
-            and not isinstance(env_cfg.sim.physics, PhysxCfg)
-            and (
+
+        def has_action_policy() -> bool:
+            return (
                 teleop_cfg.action_conditioner is not None
                 or teleop_cfg.action_validator is not None
                 or teleop_cfg.require_initial_bimanual_hand_tracking
             )
-        ):
+
+        if args_cli.using_ovxr or teleop_cfg.prepare_environment is not None or has_action_policy():
+            # Resolve automatic backend choices that preparation and the policy check depend on.
+            configs, kit_sources = validate_launch(env_cfg, vars(args_cli).copy())
+            if args_cli.using_ovxr:
+                reject_ovxr_runtime_conflicts(configs, kit_sources)
+        if teleop_cfg.prepare_environment is not None:
+            teleop_cfg.prepare_environment(env_cfg)
+        # Preparation may select the task's action policy.
+        if has_action_policy() and env_cfg.sim.physics is not None and not isinstance(env_cfg.sim.physics, PhysxCfg):
             raise ValueError(
                 "HDF5 recording does not run this task's kitless action policy; select physics=isaacsim_physx."
             )

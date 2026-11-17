@@ -282,7 +282,9 @@ def _apply_teleop_frame(env, action, issue: str | None, haptic_driver, *, render
     actions = action.repeat(env.num_envs, 1)
     # apply actions
     _, _, terminated, truncated, _ = env.step(actions)
-    auto_reset = bool(torch.any(terminated) or torch.any(truncated))
+    # The teleop anchor and target frame follow environment 0; other environments' resets
+    # must not re-seed its input state.
+    auto_reset = bool(terminated[0] or truncated[0])
     # render controller haptics from post-step contact forces
     if haptic_driver is not None:
         haptic_driver.update()
