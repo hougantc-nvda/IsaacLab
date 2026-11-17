@@ -98,6 +98,51 @@ def test_gr1t2_kitless_kinematics_urdf_matches_the_spawned_asset():
         assert urdf_limits[name] == pytest.approx((lower, upper), abs=1.0e-4), name
 
 
+def test_gr1t2_kitless_mimic_conversion_matches_the_kinematics_urdf():
+    """Kitless hands follow the asset's PhysX mimic relations with the URDF's sign and reference."""
+    from isaaclab_tasks.contrib.pick_place.gr1t2_kitless_action import physx_mimic_to_linear_relation
+    from isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg import PickPlaceGR1T2EnvCfg
+
+    stage = _open_asset(PickPlaceGR1T2EnvCfg().scene.robot.spawn.usd_path)
+    usd_relations = {}
+    for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()):
+        gearing = prim.GetAttribute("physxMimicJoint:rotZ:gearing")
+        reference = prim.GetRelationship("physxMimicJoint:rotZ:referenceJoint")
+        if not (gearing and gearing.HasValue() and reference and reference.GetTargets()):
+            continue
+        offset = prim.GetAttribute("physxMimicJoint:rotZ:offset")
+        usd_relations[prim.GetName()] = (
+            reference.GetTargets()[0].name,
+            float(gearing.Get()),
+            float(offset.Get()) if offset and offset.HasValue() else 0.0,
+        )
+
+    urdf_path = (
+        Path(__import__("isaaclab_tasks").__file__).parent
+        / "contrib/pick_place/assets/GR1T2_fourier_hand_6dof_kinematics.urdf"
+    )
+    urdf_relations = {
+        joint.get("name"): (
+            joint.find("mimic").get("joint"),
+            float(joint.find("mimic").get("multiplier", 1.0)),
+            float(joint.find("mimic").get("offset", 0.0)),
+        )
+        for joint in ET.parse(urdf_path).getroot().findall("joint")
+        if joint.find("mimic") is not None
+    }
+
+    assert set(usd_relations) == set(urdf_relations)
+    for name, (reference, gearing, offset) in usd_relations.items():
+        # The relation offsets are zero, so their PhysX units do not affect the conversion.
+        assert offset == 0.0 and urdf_relations[name][2] == 0.0, name
+        factor, bias = physx_mimic_to_linear_relation(gearing, offset)
+        assert (reference, factor, bias) == (
+            urdf_relations[name][0],
+            pytest.approx(urdf_relations[name][1], rel=1.0e-6),
+            0.0,
+        ), name
+
+
 def test_gr1t2_kitless_kinematics_urdf_reproduces_the_asset_forward_kinematics():
     """Every URDF link must sit where the spawned USD's joint frames place it at an asymmetric pose [m, rad].
 

@@ -49,6 +49,21 @@ def bound_ik_joint_targets(
     return torch.where(finite_rows, bounded, current)
 
 
+def physx_mimic_to_linear_relation(gearing: float, offset: float) -> tuple[float, float]:
+    """Convert a PhysX mimic relation to ``q_mimic = factor * q_reference + bias``.
+
+    PhysX authors ``q_mimic + gearing * q_reference + offset = 0``.
+
+    Args:
+        gearing: ``physxMimicJoint`` gearing.
+        offset: ``physxMimicJoint`` offset, in the mimic joint's position units.
+
+    Returns:
+        The ``(factor, bias)`` pair of the linear relation.
+    """
+    return -gearing, -offset
+
+
 def constrain_hand_joint_targets(
     targets: torch.Tensor,
     mimic_pairs: tuple[tuple[int, int, float, float], ...],
@@ -124,8 +139,8 @@ class GR1T2KitlessPinkInverseKinematicsAction(PinkInverseKinematicsAction):
                 )
             if not all(math.isfinite(value) for value in (gearing, offset)):
                 raise ValueError(f"Mimic relation for {mimic_name!r} must be finite.")
-            # PhysX authors q_mimic + gearing * q_reference + offset = 0.
-            pairs.append((hand_indices[mimic_name], hand_indices[reference_name], -gearing, -offset))
+            factor, bias = physx_mimic_to_linear_relation(gearing, offset)
+            pairs.append((hand_indices[mimic_name], hand_indices[reference_name], factor, bias))
         self._mimic_pairs = tuple(pairs)
 
         lower = []
