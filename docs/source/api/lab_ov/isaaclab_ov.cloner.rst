@@ -23,9 +23,8 @@ both OVPhysX and Newton. OVPhysX also retains native physics cloning.
 ``0`` selects native OVRTX cloning. Set the flag before creating the simulation. Reset retains the
 selected route. This flag alone never enables physics/rendering stage sharing.
 
-An active :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` makes OVStage rendering the
-unset default for the leased OVRTX renderer, and rejects
-``ISAAC_LAB_OVRTX_USE_OVSTAGE=0`` and ``ISAAC_LAB_SHARE_OVSTAGE=1``.
+A renderer that lends its native pair to another owner gets a private OVStage: OVStage rendering is
+its unset default, and ``ISAAC_LAB_OVRTX_USE_OVSTAGE=0`` and ``ISAAC_LAB_SHARE_OVSTAGE=1`` are rejected.
 
 To share one OVStage with OVPhysX and OVRTX, set ``ISAAC_LAB_SHARE_OVSTAGE=1``. Sharing requires
 OVPhysX and selects OVStage rendering regardless of ``ISAAC_LAB_OVRTX_USE_OVSTAGE``.

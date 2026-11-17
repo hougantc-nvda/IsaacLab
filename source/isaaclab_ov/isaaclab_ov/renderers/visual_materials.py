@@ -152,7 +152,7 @@ class OVRTXVisualMaterialWriter:
             self._buffers.clear()
 
     def _compile_addresses(self, renderer: OVRTXRenderer) -> None:
-        """Bind addresses only after the leased or ordinary scene has been populated."""
+        """Bind addresses only after the scene has been populated."""
         if not renderer._initialized_scene:
             raise RuntimeError("Visual materials require a populated renderer scene before publication.")
         addresses = []

@@ -96,7 +96,7 @@ def _make_ovrtx_renderer_without_backend() -> OVRTXRenderer:
         clone_positions=None,
         render_products=set(),
         cfg=SimpleNamespace(read_gpu_transforms=False),
-        _render_lease_owner=None,
+        _retained_by=None,
     )
     renderer.scene = renderer.backend
     renderer.backend.renderer = SimpleNamespace(
@@ -649,10 +649,8 @@ def test_clone_context_omits_covered_children_and_honors_routing(child_source, r
 
 
 @pytest.mark.parametrize("initialized, explicit_stage", [(False, None), (True, None), (False, "1")])
-def test_lease_selects_only_its_renderer_stage_and_preserves_both_clone_routes(
-    monkeypatch, initialized, explicit_stage
-):
-    """An ordinary renderer retains its chosen scene when another renderer borrows a private Stage."""
+def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkeypatch, initialized, explicit_stage):
+    """An ordinary renderer retains its chosen scene when another renderer requires a private Stage."""
     from isaaclab_ov.renderers.ovrtx_renderer_cfg import OVRTXBackendCfg
     from isaaclab_ov.stage import OvstageBackendCfg
 
@@ -660,11 +658,12 @@ def test_lease_selects_only_its_renderer_stage_and_preserves_both_clone_routes(
     monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     if explicit_stage is not None:
         monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", explicit_stage)
-    ordinary = SimpleNamespace(cfg=OVRTXRendererCfg(), backend=None, _render_lease=SimpleNamespace(active=None))
+    ordinary = SimpleNamespace(cfg=OVRTXRendererCfg(), backend=None, _requires_private_ovstage=lambda: False)
     borrower = SimpleNamespace(
         cfg=OVRTXRendererCfg(log_file_path="borrower.log"),
         backend=None,
-        _render_lease=SimpleNamespace(active=object(), reserve_pair=Mock()),
+        _requires_private_ovstage=lambda: True,
+        _reserve_native_pair=Mock(),
     )
     native = SimpleNamespace(cfg=OVRTXBackendCfg(scene_key=ordinary.cfg, use_ovstage=False))
     if initialized:
@@ -699,4 +698,4 @@ def test_lease_selects_only_its_renderer_stage_and_preserves_both_clone_routes(
         assert ordinary.scene is ordinary.backend
     else:
         assert OvrtxReplicateContext not in routing
-    borrower._render_lease.reserve_pair.assert_called_once_with()
+    borrower._reserve_native_pair.assert_called_once_with()

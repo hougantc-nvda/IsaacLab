@@ -15,7 +15,7 @@ pytestmark = pytest.mark.ov
 from isaaclab.sim import SimulationCfg
 
 pytest.importorskip("ovrtx")
-from isaaclab_ov.renderers import OVRTXRenderer, OVRTXRendererCfg
+from isaaclab_teleop.ovxr_renderer import OvxrRenderer, OvxrRendererCfg
 
 
 @pytest.mark.parametrize("operation", ["close", "abort"])
@@ -59,9 +59,7 @@ def bootstrap(monkeypatch):
     monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
     monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
-    renderer = OVRTXRenderer(
-        OVRTXRendererCfg(), sim=SimpleNamespace(device="cpu", get_scene_data_provider=lambda: None)
-    )
+    renderer = OvxrRenderer(OvxrRendererCfg(), sim=SimpleNamespace(device="cpu", get_scene_data_provider=lambda: None))
 
     class Context:
         current = None
@@ -136,3 +134,33 @@ def test_binding_requires_the_claimed_owner_transfer(bootstrap):
     """Binding before the claim names the missing claim, even when no camera deferred the Stage yet."""
     with pytest.raises(RuntimeError, match="requires a claimed owner transfer"):
         bootstrap.bind_environment(_environment(bootstrap))
+
+
+def test_bootstrap_rejects_an_ordinary_renderer_configuration(monkeypatch):
+    """An ordinary OVRTX configuration selects Isaac Lab's renderer, which the session cannot borrow."""
+    from isaaclab_ov.renderers import OVRTXRendererCfg
+    from isaaclab_teleop import ovxr_session
+
+    monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
+    monkeypatch.setattr(ovxr_session, "SimulationContext", _UnusedContext)
+    with pytest.raises(TypeError, match="OvxrRendererCfg"):
+        ovxr_session.OvxrSessionBootstrap(SimulationCfg(device="cpu", dt=0.01), OVRTXRendererCfg())
+    assert _UnusedContext.current is None
+
+
+class _UnusedContext:
+    current = None
+
+    def __init__(self, _cfg):
+        type(self).current = self
+
+    @classmethod
+    def instance(cls):
+        return cls.current
+
+    @classmethod
+    def clear_instance(cls):
+        cls.current = None
+
+    def get_or_create_backend(self, _cfg):
+        pytest.fail("created a renderer")

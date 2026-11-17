@@ -177,28 +177,28 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
         renderers = sim.get_backends(OVRTXRendererCfg)
         if not renderers:
             return
-        leased = [renderer for renderer in renderers if renderer._render_lease.active is not None]
-        ordinary = next((r for r in renderers if r.backend is not None and r not in leased), None)
+        private_stage = [renderer for renderer in renderers if renderer._requires_private_ovstage()]
+        ordinary = next((r for r in renderers if r.backend is not None and r not in private_stage), None)
         settings = []
         for renderer in renderers:
             route_owner = renderer
             if renderer.backend is None:
-                route_owner = None if renderer in leased else ordinary
+                route_owner = None if renderer in private_stage else ordinary
             if route_owner is not None:
                 # Late ordinary cameras retain the route selected before native construction.
                 use_ovstage = route_owner._use_ovstage
                 share_ovstage = route_owner.backend.cfg.scene_key is None
             else:
-                # Borrowing selects this renderer's private Stage. Other renderers keep their ordinary route.
-                value = os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1" if renderer in leased else "0").strip()
+                # A renderer that lends its native pair gets a private Stage. Other renderers keep their ordinary route.
+                value = os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1" if renderer in private_stage else "0").strip()
                 if value not in {"0", "1"}:
                     raise ValueError(f"Invalid ISAAC_LAB_OVRTX_USE_OVSTAGE: {value!r}. Expected 0 or 1.")
                 share_ovstage = os.environ.get("ISAAC_LAB_SHARE_OVSTAGE") == "1"
                 use_ovstage = share_ovstage or value == "1"
             if share_ovstage and sim.backend_manager.clone_context_type is not OvPhysxReplicateContext:
                 raise ValueError("Shared OVStage cloning requires OVPhysX.")
-            if renderer in leased and (not use_ovstage or share_ovstage):
-                raise RuntimeError("The render lease requires a private rendering OVStage")
+            if renderer in private_stage and (not use_ovstage or share_ovstage):
+                raise RuntimeError("This renderer requires a private rendering OVStage")
             if share_ovstage and sim.backend_manager.backend is not None and sim.backend_manager.backend.owns_scene:
                 raise RuntimeError("Configure OVRTX cameras before the first OVPhysX reset to share its OVStage.")
             settings.append((renderer, use_ovstage, share_ovstage))
@@ -245,8 +245,8 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
             renderer.backend = sim.get_or_create_backend(backend_cfg)
             renderer.scene = scene if use_ovstage else renderer.backend
             renderer._use_ovstage = use_ovstage
-            if renderer in leased:
-                renderer._render_lease.reserve_pair()
+            if renderer in private_stage:
+                renderer._reserve_native_pair()
             if renderer.cfg.async_rendering and use_ovstage:
                 logger.warning("Asynchronous OVRTX rendering is unsupported with ovstage; rendering synchronously.")
 

@@ -12,18 +12,19 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
-from isaaclab_ov.renderers import OvLibrariesRenderLease, OVRTXRenderer, OVRTXRendererCfg
 
 from isaaclab.app import get_settings_manager
 from isaaclab.scene_data import SceneDataFormat
 from isaaclab.sim import SimulationContext
 
+from .ovxr_renderer import OvxrRenderer, OvxrRendererCfg, OvxrRenderLease
+
 _TERMINAL_MODE_SENTINEL = "ISAAC_LAUNCHED_FROM_TERMINAL"
 
 if TYPE_CHECKING:
-    from isaaclab_ov.renderers import OvLibrariesScenePublisher
-
     from isaaclab.sim import SimulationCfg
+
+    from .ovxr_renderer import OvxrScenePublisher
 
 
 def validate_ovxr_session_preparation() -> None:
@@ -62,11 +63,11 @@ class OvxrSessionBootstrap:
     rejects a simulation device or time step that disagrees with the prepared context.
     """
 
-    def __init__(self, sim_cfg: SimulationCfg, renderer_cfg: OVRTXRendererCfg | None = None) -> None:
+    def __init__(self, sim_cfg: SimulationCfg, renderer_cfg: OvxrRendererCfg | None = None) -> None:
         validate_ovxr_session_preparation()
 
         self._sim: SimulationContext | None = None
-        self._lease: OvLibrariesRenderLease | None = None
+        self._lease: OvxrRenderLease | None = None
         self._owner_transfer_capability: object | None = None
         self._bound = False
         self._closed = False
@@ -81,10 +82,14 @@ class OvxrSessionBootstrap:
             sim = SimulationContext(sim_cfg)
             # The simulation registry owns the renderer, including cloning and
             # cleanup; the XR session only borrows its exact native pair.
-            renderer = sim.get_or_create_backend(renderer_cfg or OVRTXRendererCfg())
-            if not isinstance(renderer, OVRTXRenderer):
-                raise TypeError(f"OVRTXRendererCfg resolved to unexpected renderer {type(renderer).__name__}")
-            lease = renderer.acquire_ov_libraries_render_lease()
+            if renderer_cfg is not None and not isinstance(renderer_cfg, OvxrRendererCfg):
+                raise TypeError(
+                    "OVXR renders with OvxrRendererCfg; give the session and its camera panels the same configuration"
+                )
+            renderer = sim.get_or_create_backend(renderer_cfg or OvxrRendererCfg())
+            if not isinstance(renderer, OvxrRenderer):
+                raise TypeError(f"OvxrRendererCfg resolved to unexpected renderer {type(renderer).__name__}")
+            lease = renderer.acquire_render_lease()
             # Camera sensors prepare every registered renderer on the application thread
             # during environment construction. Only the claimed render owner materializes
             # this pair, so that call is recorded and completed in bind_environment().
@@ -117,7 +122,7 @@ class OvxrSessionBootstrap:
         """Whether the lease and its retained publication resources retired successfully."""
         return self._closed
 
-    def capture_scene_publisher(self) -> OvLibrariesScenePublisher:
+    def capture_scene_publisher(self) -> OvxrScenePublisher:
         """Capture the application scene publisher before render ownership transfers."""
         self._require_open()
         if self._bound or self._lease is None:
@@ -157,7 +162,7 @@ class OvxrSessionBootstrap:
                     " session with the environment's sim configuration"
                 )
 
-    def bind_environment(self, env: Any) -> OvLibrariesRenderLease:
+    def bind_environment(self, env: Any) -> OvxrRenderLease:
         """Prepare and bind the completed environment Stage to the reserved pair.
 
         The bootstrap defers Stage materialization to the render owner, so call this on the
@@ -199,7 +204,7 @@ class OvxrSessionBootstrap:
         self._owner_transfer_capability = capability
         return capability
 
-    def claim_render_owner_transfer(self, capability: object) -> OvLibrariesRenderLease:
+    def claim_render_owner_transfer(self, capability: object) -> OvxrRenderLease:
         """Claim the offered lease on the worker that will bind, use, and close it."""
         self._require_open()
         assert self._lease is not None

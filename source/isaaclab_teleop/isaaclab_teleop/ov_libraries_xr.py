@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from isaaccapture.ovxr_session_manager import OvxrApplicationInterface, StageOrdinalLedger
-from isaaclab_ov.renderers import OVRTXRendererCfg
 
 from .ovxr_cfg import OvLibrariesXrCfg
 from .ovxr_session import OvxrSessionBootstrap, validate_ovxr_session_preparation
@@ -27,6 +26,8 @@ if TYPE_CHECKING:
     from isaacteleop.oxr import OpenXRSessionHandles
 
     from isaaclab.sim import SimulationCfg
+
+    from .ovxr_renderer import OvxrRendererCfg
 
 __all__ = ["OvLibrariesXrCfg", "OvLibrariesXrSession"]
 
@@ -266,7 +267,7 @@ class OvLibrariesXrSession:
         cls,
         sim_cfg: SimulationCfg,
         cfg: OvLibrariesXrCfg,
-        renderer_cfg: OVRTXRendererCfg | None = None,
+        renderer_cfg: OvxrRendererCfg | None = None,
         *,
         environment_owner: Literal["render_worker", "host"] = "render_worker",
     ) -> OvLibrariesXrSession:
@@ -280,8 +281,8 @@ class OvLibrariesXrSession:
             sim_cfg: Simulation configuration used to construct the context immediately
                 before the environment. The environment must reuse that exact context.
             cfg: XR session configuration, snapshotted before native preparation.
-            renderer_cfg: Renderer registered in that context to lease. ``None`` selects
-                the default :class:`~isaaclab_ov.renderers.OVRTXRendererCfg`.
+            renderer_cfg: OVXR renderer registered in that context. Camera panels must use the same
+                configuration. ``None`` selects the default :class:`~isaaclab_teleop.OvxrRendererCfg`.
             environment_owner: ``"render_worker"`` closes the environment on Capture's
                 worker. ``"host"`` leaves it for the caller after XR retirement.
 

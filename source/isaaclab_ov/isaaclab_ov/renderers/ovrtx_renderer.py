@@ -14,8 +14,6 @@ How it fits together
   its own pending ``step_async`` render operation and publishes it at the next ``read_output``.
   The ovrtx binding write operations retain their input buffers until ovrtx has consumed them.
 
-- **render_lease.py**: External borrowing, ownership transfer and scene publication ordering.
-
 - **ovrtx_renderer_kernels.py**: Warp GPU kernels for OVRTX rendering pipeline.
 
 - **ovrtx_usd.py**: USD helpers for OVRTX: render var config, camera injection, etc.
@@ -109,8 +107,6 @@ from isaaclab_ov.stage import (
     xform_tensor_from_numpy,
     xform_tensor_from_warp,
 )
-
-from .render_lease import OvLibrariesRenderLease, _RenderLeaseController
 
 if TYPE_CHECKING:
     from isaaclab_ppisp import PpispPipeline
@@ -263,7 +259,8 @@ class OVRTXBackend:
     def __init__(self, cfg: OVRTXBackendCfg):
         self.cfg = cfg
         self.attached = False
-        self._render_lease_owner: OVRTXRenderer | None = None
+        self._retained_by: object | None = None
+        """Renderer whose native pair is borrowed by another owner; teardown is refused while set."""
         self.render_products: set[str] = set()
         # Resolve the wheel's native dependency here, including callers without a viewer.
         dependency = Path(ovstage.__file__).parent / "bin/plugins/libosdCPU.so.3.6.0"
@@ -296,10 +293,10 @@ class OVRTXBackend:
         """Release the borrowed stage before it is rebuilt or destroyed.
 
         Raises:
-            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+            RuntimeError: If another owner still borrows this engine.
         """
-        if self._render_lease_owner is not None:
-            raise RuntimeError("Cannot detach a backend with an active render lease")
+        if self._retained_by is not None:
+            raise RuntimeError("Cannot detach a backend while another owner borrows it")
         if self.attached:
             self.renderer.detach_ovstage()
             self.attached = False
@@ -308,10 +305,10 @@ class OVRTXBackend:
         """Destroy the engine; the simulation's backend registry releases any borrowed stage afterward.
 
         Raises:
-            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+            RuntimeError: If another owner still borrows this engine.
         """
-        if self._render_lease_owner is not None:
-            raise RuntimeError("Cannot destroy a backend with an active render lease")
+        if self._retained_by is not None:
+            raise RuntimeError("Cannot destroy a backend while another owner borrows it")
         if self.renderer is not None:
             # The SDK destroys bindings and detaches only if attached, including partial initialization.
             self.renderer.destroy()
@@ -398,7 +395,6 @@ class OVRTXRenderer(BaseRenderer):
     def __init__(self, cfg: OVRTXRendererCfg, *, sim: SimulationContext):
         super().__init__(cfg, sim=sim)
         self._closed = False
-        self._render_lease = _RenderLeaseController(self)
         self._warp_device = wp.get_device(self._sim.device)
         self._device = str(self._warp_device)
         self._camera_render_data: list[OVRTXCameraRenderData] = []
@@ -431,17 +427,8 @@ class OVRTXRenderer(BaseRenderer):
 
     @property
     def visual_material_writer(self):
-        """Return a writer factory once this renderer has a scene consumer.
-
-        A leased pair registers its writer before the borrower binds the Stage, because
-        environment reset finalizes material consumers first; addresses compile on the
-        first publication after population.
-        """
-        return (
-            self._create_visual_material_writer
-            if self._initialized_scene or self._render_lease.active is not None
-            else None
-        )
+        """Return a writer factory once this renderer has a scene consumer."""
+        return self._create_visual_material_writer if self._initialized_scene else None
 
     def _create_visual_material_writer(self, batches: tuple[VisualMaterialBatch, ...]) -> OVRTXVisualMaterialWriter:
         """Retain material buffers; deferred scenes compile addresses after population."""
@@ -471,8 +458,6 @@ class OVRTXRenderer(BaseRenderer):
 
     def prepare_stage(self, stage: Usd.Stage, num_envs: int) -> None:
         """Load, clone, and bind the shared scene before any camera products are registered."""
-        if not self._render_lease.prepare_stage(num_envs):
-            return
         logger.info("Preparing stage (%d envs)...", num_envs)
         env_paths = self.scene.clone_env_paths
         light_partitions = _resolve_env_light_partitions(stage, env_paths, copies=self.scene.clone_copies)
@@ -549,11 +534,18 @@ class OVRTXRenderer(BaseRenderer):
             self.scene.resources.callback(self.close)
         self._initialized_scene = True
         self._needs_transform_initialization = not self._use_ovstage and self.backend.cfg.read_gpu_transforms
-        self._render_lease.bind_stage()
 
-    def acquire_ov_libraries_render_lease(self) -> OvLibrariesRenderLease:
-        """Reserve the native renderer/scene pair before stage preparation."""
-        return self._render_lease.acquire()
+    # Extension points for a subclass that lends the native pair to another owner, such as the OVXR
+    # renderer in isaaclab_teleop. The defaults describe ordinary rendering. That subclass also
+    # writes through the unguarded _update_transforms, _update_geometries, _update_camera and
+    # _register_camera helpers; its tests (isaaclab_teleop/test/test_ovxr_renderer.py) cover them.
+
+    def _requires_private_ovstage(self) -> bool:
+        """Whether clone preparation must give this renderer its own OVStage."""
+        return False
+
+    def _reserve_native_pair(self) -> None:
+        """Run once clone preparation has created this renderer's engine and OVStage."""
 
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""
@@ -663,7 +655,6 @@ class OVRTXRenderer(BaseRenderer):
 
     def create_render_data(self, spec: CameraRenderSpec) -> OVRTXCameraRenderData:
         """Register a camera's product and bindings in the prepared scene."""
-        self._render_lease.reject_ordinary_operation("create ordinary camera render data")
         if str(wp.get_device(spec.device)) != self._device:
             raise ValueError("Cameras sharing an OVRTX renderer must use the simulation device.")
         camera_paths = list(spec.camera_prim_paths)
@@ -1095,14 +1086,7 @@ class OVRTXRenderer(BaseRenderer):
                 )
 
     def update_transforms(self) -> None:
-        """Publish ordinary scene data when the native pair is not leased.
-
-        While a lease is active its scene publisher owns these writes, so eager scene
-        updates (for example ``lazy_sensor_update=False``) return without writing.
-        """
-        if self._render_lease.active is not None:
-            return
-        self._render_lease.reject_ordinary_operation("update ordinary transforms")
+        """Publish changed scene transforms."""
         self._update_transforms()
 
     def _update_transforms(self) -> None:
@@ -1138,13 +1122,7 @@ class OVRTXRenderer(BaseRenderer):
         self._transforms_timestamp = timestamp
 
     def update_geometries(self) -> None:
-        """Publish ordinary scene data when the native pair is not leased.
-
-        While a lease is active its scene publisher owns these writes.
-        """
-        if self._render_lease.active is not None:
-            return
-        self._render_lease.reject_ordinary_operation("update ordinary geometries")
+        """Publish changed scene geometry."""
         self._update_geometries()
 
     def _update_geometries(self) -> None:
@@ -1203,7 +1181,6 @@ class OVRTXRenderer(BaseRenderer):
         intrinsics: ProxyArray,
     ) -> None:
         """Update camera poses using the camera's reusable conversion buffers."""
-        self._render_lease.reject_ordinary_operation("update ordinary cameras")
         binding = render_data.camera_xform_binding
         if binding is None:
             return
@@ -1231,7 +1208,6 @@ class OVRTXRenderer(BaseRenderer):
         """Publish calibration columns from GPU memory into the renderer-owned scene."""
         # A runtime calibration change is a scene write for this camera's bindings, so its
         # in-flight renders must finish first. Other cameras keep their pipelines.
-        self._render_lease.reject_ordinary_operation("update ordinary camera intrinsics")
         errors = self.drain_pending_renders((render_data,))
         if errors:
             raise ExceptionGroup("OVRTX renders failed before calibration update", errors)
@@ -1262,7 +1238,6 @@ class OVRTXRenderer(BaseRenderer):
 
     def log_mesh(self, name: str, *args, **kwargs) -> None:
         """Publish a runtime mesh through the same scene used by every camera."""
-        self._render_lease.reject_ordinary_operation("log runtime meshes")
         if name not in self.meshes:
             self.meshes[name] = OVRTXMesh(self, f"/IsaacLabMeshes/{name.lstrip('/')}")
         self.meshes[name].update(*args, **kwargs)
@@ -1284,7 +1259,6 @@ class OVRTXRenderer(BaseRenderer):
         """
         if not render_data:
             return
-        self._render_lease.reject_ordinary_operation("render an ordinary camera batch")
         if not self._initialized_scene:
             raise RuntimeError("Scene not initialized. Call initialize() first.")
         if self.backend.renderer is None or not self._camera_render_data:
@@ -1343,12 +1317,7 @@ class OVRTXRenderer(BaseRenderer):
         ovstage.population.apply_usd_changes(self.scene.stage, ordinal=self.scene.ordinal)
 
     def close(self) -> None:
-        """Complete borrowed-buffer reads and release bindings; the registry owns the native engine.
-
-        Raises:
-            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
-        """
-        self._render_lease.reject_ordinary_operation("close the renderer", retiring=True)
+        """Complete borrowed-buffer reads and release bindings; the registry owns the native engine."""
         try:
             with contextlib.ExitStack() as resources:
                 resources.callback(self._bindings.close)

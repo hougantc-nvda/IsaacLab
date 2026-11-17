@@ -44,7 +44,7 @@ class _CaseResult:
 def _make_env_and_bootstrap(task: str):
     import gymnasium as gym
     from isaaclab_ov.physics import OvPhysxCfg
-    from isaaclab_ov.renderers import OVRTXRendererCfg
+    from isaaclab_teleop.ovxr_renderer import OvxrRendererCfg
     from isaaclab_teleop.ovxr_session import OvxrSessionBootstrap
 
     import isaaclab.sim as sim_utils
@@ -68,7 +68,7 @@ def _make_env_and_bootstrap(task: str):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 3.0)),
     )
-    bootstrap = OvxrSessionBootstrap(cfg.sim, OVRTXRendererCfg())
+    bootstrap = OvxrSessionBootstrap(cfg.sim, OvxrRendererCfg())
     try:
         return bootstrap, gym.make(task, cfg=cfg).unwrapped
     except BaseException:

@@ -24,6 +24,7 @@ isaaclab_teleop
     XrAnchorSynchronizer
     OvLibrariesXrCfg
     OvLibrariesXrSession
+    OvxrRendererCfg
 
   .. rubric:: Functions
 
@@ -71,6 +72,10 @@ Kitless OVXR Session
 
 .. autoclass:: OvLibrariesXrSession
     :members:
+
+.. autoclass:: OvxrRendererCfg
+    :members:
+    :show-inheritance:
 
 Device
 ------

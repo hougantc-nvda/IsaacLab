@@ -3,27 +3,38 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""OVRTX renderer whose native OVRTX/OVStage pair is borrowed by the OVXR session.
 
-"""Exclusive borrowing, thread handoff and publication ordering for OVRTX/OVStage."""
+:class:`OvxrRenderer` is the simulation's OVRTX renderer for an OVXR session: the same engine and
+OVStage render the simulation's scene, but the session's render worker owns them. Its lease handles
+the render-thread handoff, deferred Stage preparation and scene publication ordering. Isaac Lab's
+ordinary OVRTX renderer is unchanged and stays available to other cameras.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import os
 import threading
-from collections.abc import Hashable, Iterator
+from collections.abc import Hashable, Iterator, Sequence
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
+from isaaclab_ov.renderers import OVRTXRenderer, OVRTXRendererCfg
+
+from isaaclab.renderers.camera_render_spec import CameraRenderSpec
+from isaaclab.utils import configclass
+
 if TYPE_CHECKING:
+    from isaaclab_ov.renderers.ovrtx_renderer import OVRTXCameraRenderData
     from ovrtx import Renderer
     from ovstage import Stage as OvStage
 
-    from .ovrtx_renderer import OVRTXRenderer
+    from pxr import Usd
 _NO_PHYSICS_STEP_ID = object()
 
 
-class _OvLibrariesRenderLeaseState(Enum):
+class _OvxrLeaseState(Enum):
     """Internal lifecycle state for a renderer/scene pair lease."""
 
     UNBOUND = auto()
@@ -31,7 +42,7 @@ class _OvLibrariesRenderLeaseState(Enum):
     RELEASED = auto()
 
 
-class OvLibrariesRenderLease:
+class OvxrRenderLease:
     """Exclusive non-owning lease over one exact attached OVRTX/OVStage pair.
 
     The lease is acquired before stage preparation. Stage preparation then
@@ -41,13 +52,13 @@ class OvLibrariesRenderLease:
     closed; they must never detach or destroy either borrowed object.
     """
 
-    _controller: _RenderLeaseController
+    _controller: _OvxrLeaseController
     """Renderer-owned controller that created this lease."""
 
     def __init__(self) -> None:
-        raise RuntimeError("OvLibrariesRenderLease must be acquired from OVRTXRenderer")
+        raise RuntimeError("OvxrRenderLease must be acquired from OvxrRenderer")
 
-    def __enter__(self) -> OvLibrariesRenderLease:
+    def __enter__(self) -> OvxrRenderLease:
         self._validate_active()
         return self
 
@@ -101,7 +112,7 @@ class OvLibrariesRenderLease:
         render owner completes it with :meth:`materialize_deferred_stage`.
         """
         self._validate_active()
-        if self._state is not _OvLibrariesRenderLeaseState.UNBOUND:
+        if self._state is not _OvxrLeaseState.UNBOUND:
             raise RuntimeError("Stage deferral must be selected before Stage materialization")
         self._controller.defer_until_transfer = True
 
@@ -121,12 +132,12 @@ class OvLibrariesRenderLease:
         """
         return self._controller.materialize_deferred_stage(self, stage, num_envs)
 
-    def capture_scene_publisher(self) -> OvLibrariesScenePublisher:
+    def capture_scene_publisher(self) -> OvxrScenePublisher:
         """Capture the application-thread scene publisher before render ownership transfers.
 
         Call this on the owner thread while the lease is unbound and before
         :meth:`offer_owner_transfer`. The publisher stays bound to the calling thread; see
-        :class:`~isaaclab_ov.renderers.OvLibrariesScenePublisher` for the publication
+        :class:`OvxrScenePublisher` for the publication
         protocol.
 
         Returns:
@@ -154,13 +165,13 @@ class OvLibrariesRenderLease:
 
     def release(self) -> None:
         """Release the borrowing intent without destroying either pair member."""
-        if self._state is _OvLibrariesRenderLeaseState.RELEASED:
+        if self._state is _OvxrLeaseState.RELEASED:
             return
         owner = self._controller
         owner.release(self)
         self._renderer = None
         self._stage = None
-        self._state = _OvLibrariesRenderLeaseState.RELEASED
+        self._state = _OvxrLeaseState.RELEASED
 
     def validate_live(self) -> None:
         """Verify that this lease still refers to its live, unpoisoned renderer and stage."""
@@ -168,8 +179,8 @@ class OvLibrariesRenderLease:
 
     def _validate_live(self, *, allow_poisoned: bool) -> None:
         self._validate_active()
-        if self._state is not _OvLibrariesRenderLeaseState.BOUND:
-            raise RuntimeError("OvLibrariesRenderLease is not bound to a prepared Stage")
+        if self._state is not _OvxrLeaseState.BOUND:
+            raise RuntimeError("OvxrRenderLease is not bound to a prepared Stage")
         owner = self._controller
         owner.validate_live(
             self,
@@ -180,34 +191,34 @@ class OvLibrariesRenderLease:
         )
 
     @classmethod
-    def _create_unbound(cls, owner: _RenderLeaseController) -> OvLibrariesRenderLease:
+    def _create_unbound(cls, owner: _OvxrLeaseController) -> OvxrRenderLease:
         lease = object.__new__(cls)
         lease._controller = owner
-        lease._state = _OvLibrariesRenderLeaseState.UNBOUND
+        lease._state = _OvxrLeaseState.UNBOUND
         lease._renderer = None
         lease._stage = None
         lease._generation = 0
         return lease
 
     def _bind(self, renderer: Renderer, stage: OvStage, generation: int) -> None:
-        if self._state is not _OvLibrariesRenderLeaseState.UNBOUND:
-            raise RuntimeError("OvLibrariesRenderLease can only bind once")
+        if self._state is not _OvxrLeaseState.UNBOUND:
+            raise RuntimeError("OvxrRenderLease can only bind once")
         self._renderer = renderer
         self._stage = stage
         self._generation = generation
-        self._state = _OvLibrariesRenderLeaseState.BOUND
+        self._state = _OvxrLeaseState.BOUND
 
     def _validate_active(self) -> None:
-        if self._state is _OvLibrariesRenderLeaseState.RELEASED:
-            raise RuntimeError("OvLibrariesRenderLease is released")
+        if self._state is _OvxrLeaseState.RELEASED:
+            raise RuntimeError("OvxrRenderLease is released")
         owner = self._controller
         owner.validate_active(self)
 
 
-class OvLibrariesScenePublisher:
+class OvxrScenePublisher:
     """Application-thread writer for complete provider-derived OVStage batches.
 
-    Obtain it with :meth:`~isaaclab_ov.renderers.OvLibrariesRenderLease.capture_scene_publisher`.
+    Obtain it with :meth:`OvxrRenderLease.capture_scene_publisher`.
     While the lease is active, the renderer skips its own eager transform, geometry and material
     writes, and the borrower publishes each complete physics state through this object instead:
 
@@ -217,7 +228,7 @@ class OvLibrariesScenePublisher:
        :meth:`write_complete_scene` with it. The write does not advance the Stage write floor:
        the borrower seals that ordinal afterwards, or abandons it if the write fails.
     3. Hold one application publication guard around both calls and around every operation the
-       render owner performs in :meth:`~isaaclab_ov.renderers.OvLibrariesRenderLease.ovstage_owner_lane`, so that scene
+       render owner performs in :meth:`OvxrRenderLease.ovstage_owner_lane`, so that scene
        writes and native frame operations never interleave.
 
     A failed write poisons the pair: later publication and ordinary renderer use are rejected,
@@ -226,7 +237,7 @@ class OvLibrariesScenePublisher:
     The OVXR teleoperation adapter, ``isaaclab_teleop.OvLibrariesXrSession``, follows this protocol.
     """
 
-    def __init__(self, owner: _RenderLeaseController, lease: OvLibrariesRenderLease) -> None:
+    def __init__(self, owner: _OvxrLeaseController, lease: OvxrRenderLease) -> None:
         self._controller = owner
         self._lease = lease
         self._application_thread = threading.current_thread()
@@ -296,7 +307,7 @@ class OvLibrariesScenePublisher:
             raise RuntimeError("OVStage scene publisher must run on its captured application thread")
 
 
-class _RenderLeaseController:
+class _OvxrLeaseController:
     """Coordinate external borrowing without owning the renderer's native resources.
 
     Lease state, thread transfer and publication ordering live here. The renderer
@@ -309,8 +320,8 @@ class _RenderLeaseController:
         self._transfer_lock = threading.Lock()
         self._transfer_capability: object | None = None
         self._transfer_claimed = False
-        self.active: OvLibrariesRenderLease | None = None
-        self._publisher: OvLibrariesScenePublisher | None = None
+        self.active: OvxrRenderLease | None = None
+        self._publisher: OvxrScenePublisher | None = None
         self._generation = 0
         self._lane_operation: str | None = None
         self._last_step_id: Hashable = _NO_PHYSICS_STEP_ID
@@ -318,20 +329,20 @@ class _RenderLeaseController:
         self.defer_until_transfer = False
         self.stage_deferred = False
 
-    def acquire(self) -> OvLibrariesRenderLease:
+    def acquire(self) -> OvxrRenderLease:
         """Reserve the exact OVRTX/OVStage pair before stage preparation."""
         self.require_owner_thread("acquire a render lease")
         if os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1").strip() != "1":
-            raise RuntimeError("OvLibrariesRenderLease requires ISAAC_LAB_OVRTX_USE_OVSTAGE=1")
+            raise RuntimeError("OvxrRenderLease requires ISAAC_LAB_OVRTX_USE_OVSTAGE=1")
         if os.environ.get("ISAAC_LAB_SHARE_OVSTAGE") == "1":
             raise RuntimeError("The render lease requires a private rendering OVStage")
         if self._renderer._closed:
-            raise RuntimeError("Cannot acquire OvLibrariesRenderLease from a closed renderer")
+            raise RuntimeError("Cannot acquire OvxrRenderLease from a closed renderer")
         if self.active is not None:
-            raise RuntimeError("An OvLibrariesRenderLease is already active")
+            raise RuntimeError("An OvxrRenderLease is already active")
         if self._renderer.backend is not None or self._renderer._initialized_scene or self._generation != 0:
-            raise RuntimeError("OvLibrariesRenderLease must be acquired before clone preparation")
-        lease = OvLibrariesRenderLease._create_unbound(self)
+            raise RuntimeError("OvxrRenderLease must be acquired before clone preparation")
+        lease = OvxrRenderLease._create_unbound(self)
         self.active = lease
         return lease
 
@@ -342,12 +353,12 @@ class _RenderLeaseController:
         if threading.current_thread() is not self._owner_thread:
             raise RuntimeError(f"OVRTXRenderer owner thread must {operation}")
 
-    def offer_owner_transfer(self, lease: OvLibrariesRenderLease) -> object:
+    def offer_owner_transfer(self, lease: OvxrRenderLease) -> object:
         self.require_owner_thread("offer an owner transfer")
         with self._transfer_lock:
             if (
                 self.active is not lease
-                or lease._state is not _OvLibrariesRenderLeaseState.UNBOUND
+                or lease._state is not _OvxrLeaseState.UNBOUND
                 or self._renderer._initialized_scene
                 or (self._renderer.backend is not None and self._renderer.backend.attached)
                 or self._generation != 0
@@ -360,14 +371,14 @@ class _RenderLeaseController:
             self._transfer_capability = capability
             return capability
 
-    def claim_owner_transfer(self, lease: OvLibrariesRenderLease, capability: object) -> None:
+    def claim_owner_transfer(self, lease: OvxrRenderLease, capability: object) -> None:
         with self._transfer_lock:
             if (
                 capability is None
                 or capability is not self._transfer_capability
                 or self._transfer_claimed
                 or self.active is not lease
-                or lease._state is not _OvLibrariesRenderLeaseState.UNBOUND
+                or lease._state is not _OvxrLeaseState.UNBOUND
                 or self._renderer._initialized_scene
                 or (self._renderer.backend is not None and self._renderer.backend.attached)
                 or self._generation != 0
@@ -378,7 +389,7 @@ class _RenderLeaseController:
             self._transfer_claimed = True
             self._transfer_capability = None
 
-    def cancel_owner_transfer(self, lease: OvLibrariesRenderLease, capability: object) -> None:
+    def cancel_owner_transfer(self, lease: OvxrRenderLease, capability: object) -> None:
         with self._transfer_lock:
             # Cancellation is the one original-owner operation allowed while an offer is pending.
             if threading.current_thread() is not self._owner_thread:
@@ -387,16 +398,12 @@ class _RenderLeaseController:
                 raise RuntimeError("OVRTXRenderer owner transfer capability is invalid")
             self._transfer_capability = None
 
-    def capture_scene_publisher(self, lease: OvLibrariesRenderLease) -> OvLibrariesScenePublisher:
+    def capture_scene_publisher(self, lease: OvxrRenderLease) -> OvxrScenePublisher:
         """Create the scene publisher before render ownership transfers."""
         self.require_owner_thread("capture an OVStage scene publisher")
-        if (
-            self.active is not lease
-            or lease._state is not _OvLibrariesRenderLeaseState.UNBOUND
-            or self._publisher is not None
-        ):
+        if self.active is not lease or lease._state is not _OvxrLeaseState.UNBOUND or self._publisher is not None:
             raise RuntimeError("OVRTXRenderer is not eligible to capture an OVStage scene publisher")
-        publisher = OvLibrariesScenePublisher(self, lease)
+        publisher = OvxrScenePublisher(self, lease)
         self._publisher = publisher
         return publisher
 
@@ -418,16 +425,16 @@ class _RenderLeaseController:
         finally:
             self._lane_operation = None
 
-    def validate_active(self, lease: OvLibrariesRenderLease) -> None:
+    def validate_active(self, lease: OvxrRenderLease) -> None:
         self.require_owner_thread("access a render lease")
         if self.active is not lease:
-            raise RuntimeError("OvLibrariesRenderLease is not active for this renderer")
+            raise RuntimeError("OvxrRenderLease is not active for this renderer")
         if self._renderer._closed:
-            raise RuntimeError("OvLibrariesRenderLease owner is closed or no longer uses OVStage")
+            raise RuntimeError("OvxrRenderLease owner is closed or no longer uses OVStage")
 
     def validate_live(
         self,
-        lease: OvLibrariesRenderLease,
+        lease: OvxrRenderLease,
         ovrtx_renderer: Renderer,
         ovstage_instance: OvStage,
         generation: int,
@@ -440,22 +447,22 @@ class _RenderLeaseController:
         """
         self.validate_active(lease)
         if self._poisoned and not allow_poisoned:
-            raise RuntimeError("OvLibrariesRenderLease owner pair is poisoned")
+            raise RuntimeError("OvxrRenderLease owner pair is poisoned")
         if generation != self._generation:
-            raise RuntimeError("OvLibrariesRenderLease has a stale Stage generation")
+            raise RuntimeError("OvxrRenderLease has a stale Stage generation")
         if ovrtx_renderer is not self._renderer.backend.renderer or ovstage_instance is not self._renderer.scene.stage:
-            raise RuntimeError("OvLibrariesRenderLease no longer matches its exact renderer-owned pair")
+            raise RuntimeError("OvxrRenderLease no longer matches its exact renderer-owned pair")
         if not self._renderer._initialized_scene or not self._renderer.backend.attached:
-            raise RuntimeError("OvLibrariesRenderLease pair is no longer initialized and attached")
+            raise RuntimeError("OvxrRenderLease pair is no longer initialized and attached")
 
-    def release(self, lease: OvLibrariesRenderLease) -> None:
+    def release(self, lease: OvxrRenderLease) -> None:
         """Retire the lease after borrower destruction and rebase the dormant ordinal."""
         self.validate_active(lease)
         if self._lane_operation is not None:
-            raise RuntimeError("Cannot release OvLibrariesRenderLease while the owner lane is active")
+            raise RuntimeError("Cannot release OvxrRenderLease while the owner lane is active")
         if self._publisher is not None:
             self._publisher.close()
-        if lease._state is _OvLibrariesRenderLeaseState.BOUND and (not self._poisoned):
+        if lease._state is _OvxrLeaseState.BOUND and (not self._poisoned):
             with self.owner_lane("lease-release ordinal rebase"):
                 self._renderer.scene.ordinal = self._next_ordinal()
         self._last_step_id = _NO_PHYSICS_STEP_ID
@@ -465,9 +472,9 @@ class _RenderLeaseController:
         self.stage_deferred = False
         self.active = None
         if self._renderer.backend is not None:
-            self._renderer.backend._render_lease_owner = None
+            self._renderer.backend._retained_by = None
         if self._renderer.scene is not None:
-            self._renderer.scene._render_lease_owner = None
+            self._renderer.scene._retained_by = None
 
     def reject_ordinary_operation(self, operation: str, *, retiring: bool = False) -> None:
         """Reject ordinary OVRTX operations while an external lease is active.
@@ -477,19 +484,19 @@ class _RenderLeaseController:
         (closing the renderer) are admitted so the pair can be recreated.
         """
         if self.active is not None or (
-            self._renderer.backend is not None and self._renderer.backend._render_lease_owner is not None
+            self._renderer.backend is not None and self._renderer.backend._retained_by is not None
         ):
-            raise RuntimeError(f"Cannot {operation} while an OvLibrariesRenderLease is active")
+            raise RuntimeError(f"Cannot {operation} while an OvxrRenderLease is active")
         if self._poisoned and not retiring:
             raise RuntimeError(
                 f"Cannot {operation}: a failed leased publication poisoned this OVRTX/OVStage pair; recreate it"
             )
 
-    def producer_publication_required(self, lease: OvLibrariesRenderLease, physics_step_id: Hashable) -> bool:
+    def producer_publication_required(self, lease: OvxrRenderLease, physics_step_id: Hashable) -> bool:
         """Check publication on the application thread without entering the render thread."""
         if self.active is not lease or self._publisher is None:
             raise RuntimeError("OVStage scene publisher is not active for this lease")
-        if self._poisoned or lease._state is not _OvLibrariesRenderLeaseState.BOUND:
+        if self._poisoned or lease._state is not _OvxrLeaseState.BOUND:
             raise RuntimeError("OVStage scene publisher pair is unavailable")
         try:
             hash(physics_step_id)
@@ -505,7 +512,7 @@ class _RenderLeaseController:
         )
 
     def write_producer_scene(
-        self, lease: OvLibrariesRenderLease, ordinal: int, physics_step_id: Hashable, *, force: bool = False
+        self, lease: OvxrRenderLease, ordinal: int, physics_step_id: Hashable, *, force: bool = False
     ) -> None:
         """Write a complete scene batch without advancing its reserved ordinal."""
         if ordinal <= 0:
@@ -531,20 +538,20 @@ class _RenderLeaseController:
         lease = self.active
         if lease is not None:
             if self.defer_until_transfer and not self._transfer_claimed:
-                if lease._state is not _OvLibrariesRenderLeaseState.UNBOUND:
+                if lease._state is not _OvxrLeaseState.UNBOUND:
                     raise RuntimeError("Cannot replace the Stage of a bound renderer/scene pair")
                 self.stage_deferred = True
                 return False
             self.require_owner_thread("prepare the leased Stage")
-            if lease._state is not _OvLibrariesRenderLeaseState.UNBOUND:
+            if lease._state is not _OvxrLeaseState.UNBOUND:
                 raise RuntimeError("Cannot replace the Stage of a bound renderer/scene pair")
             if num_envs != 1:
                 raise RuntimeError("The render lease requires exactly one environment")
-            if not self._renderer._use_ovstage or self._renderer.backend._render_lease_owner is not self._renderer:
+            if not self._renderer._use_ovstage or self._renderer.backend._retained_by is not self._renderer:
                 raise RuntimeError("The render lease requires its reserved private OVStage renderer")
         return True
 
-    def materialize_deferred_stage(self, lease: OvLibrariesRenderLease, stage: Any, num_envs: int) -> bool:
+    def materialize_deferred_stage(self, lease: OvxrRenderLease, stage: Any, num_envs: int) -> bool:
         """Materialize a deferred Stage after render-thread ownership transfer."""
         self.require_owner_thread("materialize a deferred Stage")
         # Unclaimed, a fallback prepare_stage would only defer again; reject even if nothing is deferred yet.
@@ -552,7 +559,7 @@ class _RenderLeaseController:
             raise RuntimeError("Deferred Stage materialization requires a claimed owner transfer")
         if not self.stage_deferred:
             return False
-        if self.active is not lease or lease._state is not _OvLibrariesRenderLeaseState.UNBOUND:
+        if self.active is not lease or lease._state is not _OvxrLeaseState.UNBOUND:
             raise RuntimeError("Deferred Stage is not eligible for materialization")
         self._renderer.prepare_stage(stage, num_envs)
         return True
@@ -568,14 +575,14 @@ class _RenderLeaseController:
     def reserve_pair(self) -> None:
         """Reserve a newly acquired private native pair during clone preparation."""
         renderer = self._renderer
-        if renderer.backend._render_lease_owner is not None or renderer.scene._render_lease_owner is not None:
+        if renderer.backend._retained_by is not None or renderer.scene._retained_by is not None:
             raise RuntimeError("The native pair already has a render lease")
         with renderer.scene.stage.get_attribute_write_floor() as floor:
             floor.wait()
             if int(floor.fetch()) != 0:
                 raise RuntimeError("The render lease requires an unused private OVStage")
-        renderer.backend._render_lease_owner = renderer
-        renderer.scene._render_lease_owner = renderer
+        renderer.backend._retained_by = renderer
+        renderer.scene._retained_by = renderer
 
     def _next_ordinal(self) -> int:
         """Return ``floor + 1`` from the exact renderer-owned Stage."""
@@ -587,3 +594,100 @@ class _RenderLeaseController:
         if floor >= (1 << 64) - 1:
             raise RuntimeError("OVStage ordinal range is exhausted")
         return floor + 1
+
+
+@configclass
+class OvxrRendererCfg(OVRTXRendererCfg):
+    """OVRTX renderer configuration for an OVXR session.
+
+    The session's :class:`OvxrRenderer` lends its native renderer and OVStage to the session's
+    render worker. Cameras with an ordinary :class:`~isaaclab_ov.renderers.OVRTXRendererCfg` keep
+    Isaac Lab's ordinary renderer.
+    """
+
+    class_type: type[OvxrRenderer] | str = "{DIR}.ovxr_renderer:OvxrRenderer"
+
+
+class OvxrRenderer(OVRTXRenderer):
+    """OVRTX renderer whose native renderer and OVStage the OVXR session borrows.
+
+    The session acquires the lease before stage preparation. While it is active, the session's
+    render worker owns the native pair, and ordinary camera rendering, scene writes and renderer
+    destruction on this renderer are rejected.
+    """
+
+    def __init__(self, cfg: OvxrRendererCfg, *, sim: Any):
+        super().__init__(cfg, sim=sim)
+        self._render_lease = _OvxrLeaseController(self)
+
+    def acquire_render_lease(self) -> OvxrRenderLease:
+        """Reserve the native renderer/scene pair before stage preparation."""
+        return self._render_lease.acquire()
+
+    def prepare_stage(self, stage: Usd.Stage, num_envs: int) -> None:
+        """Prepare the stage now, or defer it until the session's render worker claims the pair."""
+        if not self._render_lease.prepare_stage(num_envs):
+            return
+        super().prepare_stage(stage, num_envs)
+        self._render_lease.bind_stage()
+
+    @property
+    def visual_material_writer(self):
+        """Return a writer factory once the scene exists, or from acquisition while leased.
+
+        A leased pair registers its writer before the render worker prepares the deferred Stage,
+        because environment reset finalizes material consumers first; addresses compile on the
+        first publication after population.
+        """
+        if self._render_lease.active is not None:
+            return self._create_visual_material_writer
+        return super().visual_material_writer
+
+    # Extension points of OVRTXRenderer.
+
+    def _requires_private_ovstage(self) -> bool:
+        return self._render_lease.active is not None
+
+    def _reserve_native_pair(self) -> None:
+        self._render_lease.reserve_pair()
+
+    # Ordinary operations, rejected while the session holds the lease.
+
+    def create_render_data(self, spec: CameraRenderSpec) -> OVRTXCameraRenderData:
+        self._render_lease.reject_ordinary_operation("create ordinary camera render data")
+        return super().create_render_data(spec)
+
+    def update_transforms(self) -> None:
+        # While leased, the session's scene publisher owns these writes.
+        if self._render_lease.active is not None:
+            return
+        self._render_lease.reject_ordinary_operation("update ordinary transforms")
+        super().update_transforms()
+
+    def update_geometries(self) -> None:
+        if self._render_lease.active is not None:
+            return
+        self._render_lease.reject_ordinary_operation("update ordinary geometries")
+        super().update_geometries()
+
+    def update_camera(self, render_data, positions, orientations, intrinsics) -> None:
+        self._render_lease.reject_ordinary_operation("update ordinary cameras")
+        super().update_camera(render_data, positions, orientations, intrinsics)
+
+    def update_camera_intrinsics(self, render_data, intrinsics, parameters):
+        self._render_lease.reject_ordinary_operation("update ordinary camera intrinsics")
+        return super().update_camera_intrinsics(render_data, intrinsics, parameters)
+
+    def log_mesh(self, name: str, *args, **kwargs) -> None:
+        self._render_lease.reject_ordinary_operation("log runtime meshes")
+        super().log_mesh(name, *args, **kwargs)
+
+    def render_batch(self, render_data: Sequence[OVRTXCameraRenderData]) -> None:
+        if render_data:
+            self._render_lease.reject_ordinary_operation("render an ordinary camera batch")
+        super().render_batch(render_data)
+
+    def close(self) -> None:
+        """Release bindings once the lease is released; the registry owns the native engine."""
+        self._render_lease.reject_ordinary_operation("close the renderer", retiring=True)
+        super().close()

@@ -1,13 +1,14 @@
 # OVXR application adapter
 
 `isaaclab_teleop.OvLibrariesXrSession` connects an Isaac Lab environment to
-Isaac Capture's OVXR session owner. It uses the simulation's existing OVRTX
-renderer and OVStage through `isaaclab_ov.renderers.OvLibrariesRenderLease`.
+Isaac Capture's OVXR session owner. The simulation renders with
+`isaaclab_teleop.ovxr_renderer.OvxrRenderer` (selected by `OvxrRendererCfg`), an OVRTX renderer whose
+native renderer and OVStage the session borrows through its lease.
 
 ## Ownership
 
-- `isaaclab_ov` owns the renderer, stage, scene publication and their lifetime.
-  Its lease validates access and enforces render-thread ownership. The adapter's
+- The simulation owns the renderer and stage and their lifetime. `OvxrRenderer`'s lease
+  validates access, enforces render-thread ownership and orders scene publication. The adapter's
   publication guard serializes application writes with Capture's frame operations.
   It does not create an XR session or select teleoperation behavior.
 - `isaaclab_teleop.ovxr_session.OvxrSessionBootstrap` creates the simulation
@@ -65,10 +66,10 @@ The adapter retains the environment if lease retirement cannot establish complet
   supported. Manager-based environments do; `DirectRLEnv` always creates its own
   context and fails with "Simulation context already exists".
 - Camera sensors on other renderers are supported: their initialization
-  prepares every registered renderer on the application thread, and the leased
+  prepares every registered renderer on the application thread, and the XR
   renderer defers its Stage until the XR worker claims ownership. A camera that
-  resolves to the leased renderer itself (for example an OVRTX camera with the
-  default `OVRTXRendererCfg()`) is rejected while the lease is active.
+  resolves to the XR renderer itself (a non-panel camera configured with the
+  session's `OvxrRendererCfg`) is rejected while the lease is active.
 - Eager scene updates (`lazy_sensor_update=False`) skip the leased renderer; its
   scene publisher writes the same physics state at the reserved ordinal.
 - Dynamic anchoring takes any object implementing
@@ -77,19 +78,21 @@ The adapter retains the environment if lease retirement cannot establish complet
 
 ## Backend implementation
 
-The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer`.
-`render_lease._RenderLeaseController` owns the lease state, thread-transfer
-capability and per-owner operation guards; it borrows the renderer's native resources
-and delegates component writes back to that renderer. Public renderer and lease
-imports remain available from `isaaclab_ov.renderers`.
+The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
+knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
+preparation and the ordinary camera and scene operations, and uses the protected extension
+points for private-OVStage reservation. Its `_OvxrLeaseController` owns the lease state,
+thread-transfer capability and per-owner operation guards; it borrows the renderer's native
+resources and delegates component writes back to that renderer. The lease classes are
+internal to `isaaclab_teleop`.
 
 Acquiring a lease selects a private rendering OVStage without changing process
 environment variables. An explicit OVStage disable or shared-stage selection is
 rejected. Without an active lease, the controller permits
 ordinary renderer operations and does not start an XR session. While a consumer
 holds the lease, ordinary camera rendering, scene writes and renderer destruction
-are rejected to prevent concurrent access to the borrowed resources. The same
-generic borrowing interface is available to applications outside teleoperation.
+are rejected to prevent concurrent access to the borrowed resources. Cameras with an
+ordinary `OVRTXRendererCfg` use Isaac Lab's ordinary renderer, which the lease does not affect.
 
 ## Native validation
 

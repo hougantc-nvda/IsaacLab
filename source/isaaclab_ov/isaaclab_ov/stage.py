@@ -187,7 +187,9 @@ class OvstageBackend:
         self.clone_positions: np.ndarray | None = None
         self._deferred_render_copies: list[tuple[str, list[str]]] | None = None
         self._render_copy_error: Exception | None = None
-        self._render_lease_owner = None
+        self._retained_by: object | None = None
+        """Owner that borrows this stage. While set, :meth:`commit`, :meth:`close` and :meth:`reset` are
+        refused; the owner publishes through :meth:`_commit`."""
         self.resources = contextlib.ExitStack()
         """Release borrowers before paths and stage, in reverse registration order."""
         self.reset()
@@ -273,8 +275,8 @@ class OvstageBackend:
 
     def commit(self) -> int:
         """Seal pending writes and return their ordinal; all consumers share the next write ordinal."""
-        if self._render_lease_owner is not None:
-            raise RuntimeError("Cannot commit a stage with an active render lease")
+        if self._retained_by is not None:
+            raise RuntimeError("Cannot commit a stage while another owner borrows it")
         return self._commit()
 
     def _commit(self) -> int:
@@ -288,10 +290,10 @@ class OvstageBackend:
         """Release borrowers, then the path dictionary and stage.
 
         Raises:
-            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+            RuntimeError: If another owner still borrows the stage.
         """
-        if self._render_lease_owner is not None:
-            raise RuntimeError("Cannot destroy or reset a stage with an active render lease")
+        if self._retained_by is not None:
+            raise RuntimeError("Cannot destroy or reset a stage while another owner borrows it")
         self._deferred_render_copies = None
         self._render_copy_error = None
         self.resources.close()
@@ -301,7 +303,7 @@ class OvstageBackend:
         """Recreate the native stage after all consumers detach, retaining the prepared clone operations.
 
         Raises:
-            RuntimeError: If an :class:`~isaaclab_ov.renderers.OvLibrariesRenderLease` is active.
+            RuntimeError: If another owner still borrows the stage.
         """
         self.close()
         self.ordinal = self.next_camera_id = 0

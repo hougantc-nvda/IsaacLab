@@ -34,10 +34,10 @@ XR anchor synchronization, retargeting pipelines, and action-tensor generation.
 
 The [OVXR application adapter](OVXR_ADAPTER.md) connects a simulation-owned renderer
 and Stage to Isaac Capture. `isaaclab_teleop` owns session preparation, tracking anchors,
-presentation policy. It borrows the native resources through
-`isaaclab_ov`'s `OvLibrariesRenderLease`; the renderer retains resource and synchronization
-ownership. The application thread publishes CPU or GPU scene data through the lease's
-scene publisher before Capture consumes each completed publication. Robot-specific action
+presentation policy. It borrows the native resources through the lease of
+`OvxrRenderer`, its OVRTX renderer subclass; the simulation retains resource ownership. The
+application thread publishes CPU or GPU scene data through the lease's scene publisher before
+Capture consumes each completed publication. Robot-specific action
 conditioning and physics preparation remain in the task package.
 
 ## Usage

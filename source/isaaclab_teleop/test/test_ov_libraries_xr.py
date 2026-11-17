@@ -126,9 +126,11 @@ class _FakeBootstrap:
 
 @pytest.fixture
 def real_lease_type():
-    from isaaclab_ov.renderers.render_lease import OvLibrariesRenderLease
+    """The real lease class, imported before ``xr_module`` stubs the renderer module."""
+    pytest.importorskip("ovrtx")
+    from isaaclab_teleop.ovxr_renderer import OvxrRenderLease
 
-    return OvLibrariesRenderLease
+    return OvxrRenderLease
 
 
 @pytest.fixture
@@ -147,9 +149,11 @@ def xr_module(monkeypatch, real_lease_type):
     renderers = ModuleType("isaaclab_ov.renderers")
     renderers.OVRTXRendererCfg = object
     renderers.OVRTXRenderer = object
-    renderers.OvLibrariesRenderLease = object
     monkeypatch.setitem(sys.modules, "isaaclab_ov", isaaclab_ov)
     monkeypatch.setitem(sys.modules, "isaaclab_ov.renderers", renderers)
+    ovxr_renderer = ModuleType("isaaclab_teleop.ovxr_renderer")
+    ovxr_renderer.OvxrRenderer = ovxr_renderer.OvxrRendererCfg = ovxr_renderer.OvxrRenderLease = object
+    monkeypatch.setitem(sys.modules, "isaaclab_teleop.ovxr_renderer", ovxr_renderer)
     source = Path(__file__).parents[1] / "isaaclab_teleop/ovxr_session.py"
     spec = importlib.util.spec_from_file_location("isaaclab_teleop.ovxr_session", source)
     ovxr_session = importlib.util.module_from_spec(spec)
@@ -370,7 +374,7 @@ def test_host_reconciles_failed_publication_without_reusing_generation(xr_module
     )
     # Use the real publication identity owner; a permanently-dirty fake cannot
     # detect a retry returning the older ordinal after a failed seal.
-    controller_type = sys.modules[real_lease_type.__module__]._RenderLeaseController
+    controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     renderer = SimpleNamespace(
         _closed=False,
         _initialized_scene=False,
@@ -617,7 +621,7 @@ def bootstrap_context(xr_module, monkeypatch):
             lease = SimpleNamespace(
                 release=lambda: events.append("lease-release"), defer_stage_until_owner_transfer=lambda: None
             )
-            return SimpleNamespace(acquire_ov_libraries_render_lease=lambda: lease)
+            return SimpleNamespace(acquire_render_lease=lambda: lease)
 
     monkeypatch.setattr(module, "SimulationContext", Context)
     monkeypatch.delattr(builtins, module._TERMINAL_MODE_SENTINEL, raising=False)
@@ -776,7 +780,7 @@ def test_public_xr_exports_resolve_to_implemented_types(xr_module):
 def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypatch, real_lease_type):
     """After a failed scene write, Capture's OvxrFramePump.close must still retire the pair and the env."""
     host, bootstrap, env = _make_host(xr_module, monkeypatch)
-    controller_type = sys.modules[real_lease_type.__module__]._RenderLeaseController
+    controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     stage = SimpleNamespace(floor=10)
     stage.get_attribute_write_floor = lambda: contextlib.nullcontext(
         SimpleNamespace(wait=lambda: None, fetch=lambda: stage.floor)
@@ -804,8 +808,8 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
     lease = controller.acquire()
     bootstrap.publisher = lease.capture_scene_publisher()
     # Stand in for clone preparation and Stage binding of the reserved pair.
-    renderer.backend = SimpleNamespace(renderer=native, attached=True, _render_lease_owner=renderer)
-    renderer.scene = SimpleNamespace(stage=stage, ordinal=10, _render_lease_owner=renderer)
+    renderer.backend = SimpleNamespace(renderer=native, attached=True, _retained_by=renderer)
+    renderer.scene = SimpleNamespace(stage=stage, ordinal=10, _retained_by=renderer)
     renderer._initialized_scene = True
     controller._generation = 1
     lease._bind(native, stage, 1)
@@ -971,12 +975,12 @@ def test_capture_worker_retires_post_claim_attachment_failure(
 
     module, context, events = bootstrap_context
     monkeypatch.setattr(builtins, module._TERMINAL_MODE_SENTINEL, True, raising=False)
-    controller_type = sys.modules[real_lease_type.__module__]._RenderLeaseController
+    controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     renderer = SimpleNamespace(
         _closed=False, _initialized_scene=False, backend=None, scene=None, _geometry_publication=None
     )
     controller = controller_type(renderer)
-    renderer.acquire_ov_libraries_render_lease = controller.acquire
+    renderer.acquire_render_lease = controller.acquire
     monkeypatch.setattr(context, "get_or_create_backend", lambda _self, _cfg: renderer)
     monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
     monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
