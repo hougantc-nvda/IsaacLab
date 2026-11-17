@@ -312,9 +312,10 @@ class IsaacTeleopCfg:
     prepare_environment: Callable[[ManagerBasedRLEnvCfg], None] | None = None
     """Optional task-owned preparation of the resolved environment configuration.
 
-    Live and replay launchers call this before creating any simulation resources,
-    including the OVXR bootstrap. Preparation must tolerate repeated calls from
-    the task constructor. Keep this callable's imports safe before simulator startup.
-    It runs after launcher validation, so it must not change the runtime selections,
-    such as the physics or renderer backend.
+    The teleoperation launchers (live, replay and recording) call this once, after launcher
+    validation and before creating any simulation resources, including the OVXR bootstrap. The hook may rely
+    on resolved presets and on the validated runtime selections, such as the physics
+    and renderer backends, and must not change them. A task's environment entry point
+    may apply the same preparation again, so it must be idempotent. Keep this
+    callable's imports safe before simulator startup.
     """
