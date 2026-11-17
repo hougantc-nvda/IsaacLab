@@ -81,7 +81,7 @@ physics kernels. First runtime preparation and the first physics step can take
 longer than subsequent runs. Retain startup logs and distinguish stage/render
 preparation from client connection and active simulation.
 
-Use `--step_hz 20` to cap live control at 20 updates per second while XR rendering
+Use `--ovxr_step_hz 20` to cap live control at 20 updates per second while XR rendering
 runs independently. Time spent reading input, stepping physics and publishing
 the scene counts toward that interval. Slow steps do not cause catch-up steps.
 Omit the option or use zero for unthrottled control. Paused polling uses the

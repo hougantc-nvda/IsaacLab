@@ -56,3 +56,27 @@ def test_recording_reset_notifies_teleop_after_environment_reset(monkeypatch):
 
     assert record_demos.handle_reset(env, 3, SimpleNamespace(show_demo=lambda _text: None), "label", device) == 0
     assert calls == ["recorder-reset", "env-reset", "device-reset", "device-notify-reset"]
+
+
+@pytest.mark.parametrize(
+    ("terminated", "truncated", "notified"),
+    [
+        ((True, False), (False, False), True),
+        ((False, False), (False, True), False),
+        ((False, False), (True, False), True),
+    ],
+)
+def test_recording_notifies_teleop_when_environment_zero_resets_itself(terminated, truncated, notified):
+    """A termination inside ``env.step`` restarts teleop input only for the teleoperated environment."""
+    from types import SimpleNamespace
+
+    import torch
+    from isaaclab_teleop.entrypoints import record_demos
+
+    calls = []
+    device = SimpleNamespace(notify_reset=lambda: calls.append("notify"))
+    step_result = (None, None, torch.tensor(terminated), torch.tensor(truncated), {})
+    assert record_demos.notify_teleop_of_auto_reset(step_result, device) is notified
+    assert calls == (["notify"] if notified else [])
+    # Devices without the notification keep their state, as before.
+    assert record_demos.notify_teleop_of_auto_reset(step_result, SimpleNamespace()) is False
