@@ -315,12 +315,31 @@ def create_environment_config(
     )
     if isinstance(teleop_cfg, IsaacTeleopCfg):
         env_cfg.isaac_teleop = teleop_cfg
-        if teleop_cfg.prepare_environment is not None:
-            from isaaclab.app import validate_launch
 
-            # Resolve automatic backend choices that the preparation hook depends on.
-            validate_launch(env_cfg, vars(args_cli).copy())
+    from isaaclab_physx.physics import PhysxCfg
+
+    from isaaclab.app import validate_launch
+
+    if args_cli.xr and args_cli.disable_external_cameras:
+        env_cfg = remove_camera_configs(env_cfg)
+
+    # Resolve automatic backend choices before deciding which task policies recording can run.
+    validate_launch(env_cfg, vars(args_cli).copy())
+    if isinstance(teleop_cfg, IsaacTeleopCfg):
+        if teleop_cfg.prepare_environment is not None:
             teleop_cfg.prepare_environment(env_cfg)
+        if (
+            env_cfg.sim.physics is not None
+            and not isinstance(env_cfg.sim.physics, PhysxCfg)
+            and (
+                teleop_cfg.action_conditioner is not None
+                or teleop_cfg.action_validator is not None
+                or teleop_cfg.require_initial_bimanual_hand_tracking
+            )
+        ):
+            raise ValueError(
+                "HDF5 recording does not run this task's kitless action policy; select physics=isaacsim_physx."
+            )
 
     # Extract the success condition for manual evaluation in the main loop. Keep
     # an inert term registered under the same name so rewards and other manager
@@ -331,14 +350,6 @@ def create_environment_config(
             "No success termination term was found in the environment."
             " Will not be able to mark recorded demos as successful."
         )
-
-    # XR-rendering setup is only needed for the Kit XR path. Without --xr,
-    # Isaac Capture runs standalone (I/O only) and renders normally.
-    if args_cli.xr:
-        # Strip camera configs only when external cameras are explicitly disabled; otherwise keep
-        # them (defaulted on) so cameras render alongside the XR view.
-        if args_cli.disable_external_cameras:
-            env_cfg = remove_camera_configs(env_cfg)
 
     # modify configuration such that the environment runs indefinitely until
     # the goal is reached or other termination conditions are met
