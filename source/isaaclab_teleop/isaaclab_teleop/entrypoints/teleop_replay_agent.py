@@ -1698,7 +1698,13 @@ def _run_replay_batch(env_cfg: ManagerBasedRLEnvCfg, success_term: object | None
                 shutting_down = True
                 presentation.session.request_shutdown()
 
-            previous_handlers = {sig: signal.signal(sig, request_shutdown) for sig in (signal.SIGINT, signal.SIGTERM)}
+            def install_shutdown_handlers() -> None:
+                # Restore the dispositions that preceded the batch, not ones installed during startup.
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    previous_handlers.setdefault(sig, signal.signal(sig, request_shutdown))
+
+            # Install before construction so a signal there also unwinds through cleanup.
+            install_shutdown_handlers()
         else:
             cloudxr_launcher = _maybe_launch_cloudxr(args_cli.cloudxr_env, args_cli.auto_launch_cloudxr)
 
@@ -1723,6 +1729,10 @@ def _run_replay_batch(env_cfg: ManagerBasedRLEnvCfg, success_term: object | None
                 enable_debug_visualization=args_cli.enable_debug_visualization,
                 ovxr_session=presentation is not None,
             )
+            if presentation is not None:
+                # As in the live agent: embedded native libraries may replace inherited
+                # signal dispositions while the environment and each device initialize.
+                install_shutdown_handlers()
             run_stats = _run_single_replay(
                 env=env,
                 isaac_teleop_cfg=env_cfg.isaac_teleop,

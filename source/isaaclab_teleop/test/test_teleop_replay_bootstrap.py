@@ -132,6 +132,7 @@ def test_replay_bootstrap_waits_only_for_an_active_kit_application(
         ("construction-previous", 2),
         ("after-first", 2),
         ("after-first", 1),
+        ("native-replaced", 1),
     ],
 )
 def test_presented_replay_preserves_startup_ownership_and_batch_completion(monkeypatch, stop_at, requested):
@@ -176,6 +177,9 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
         return
 
     def make_env(*args, **kwargs):
+        if stop_at == "native-replaced":
+            # An embedded native library replaces both dispositions during initialization.
+            handlers.update({1: "native", 2: "native"})
         if stop_at.startswith("startup"):
             handlers[1](1, None)
         if stop_at.startswith("construction"):
@@ -185,7 +189,11 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
         return SimpleNamespace(unwrapped=env)
 
     def replay(**kwargs):
-        calls.append("replay")
+        calls.append(
+            ("replay", handlers[1] != "native" and handlers[2] != "native")
+            if stop_at == "native-replaced"
+            else "replay"
+        )
         session.shutdown_requested = True
         return SimpleNamespace(outcome="success", to_dict=lambda index: {"outcome": "success"})
 
@@ -231,7 +239,9 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
         assert reports[0]["num_replays"] == 1
         assert reports[0]["requested_num_replays"] == requested
         assert reports[0]["batch_complete"] is (requested == 1)
-        assert calls == ["replay", "presentation-close"]
+        # The shutdown handlers are active again before input starts.
+        assert calls == [("replay", True) if stop_at == "native-replaced" else "replay", "presentation-close"]
+    # Restoration returns the dispositions that preceded the batch.
     assert handlers == {1: None, 2: None}
 
 

@@ -187,9 +187,7 @@ class IsaacTeleopDevice:
         self._ovxr_session = ovxr_session or external_oxr_handles_provider is not None
 
         # Borrowed OVXR handles imply external anchor ownership.
-        self._anchor_manager = XrAnchorManager(
-            cfg.xr_cfg, ovxr_session=ovxr_session or external_oxr_handles_provider is not None
-        )
+        self._anchor_manager = XrAnchorManager(cfg.xr_cfg, ovxr_session=self._ovxr_session)
         self._command_handler = CommandHandler()
         self._session_lifecycle = TeleopSessionLifecycle(
             cfg,
