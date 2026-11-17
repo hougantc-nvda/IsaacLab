@@ -6,5 +6,6 @@
 * Added public OvPhysX and Newton selection while retaining Kit defaults and supporting
   standalone backend preparation without optional teleoperation configuration.
   Registered construction prepares the selected backend and preserves prepared configuration copies
-  and serialized spawn callbacks.
+  and serialized spawn callbacks. Newton preparation keeps the PhysX joint and body order, so
+  observations and actions match Kit-recorded data.
 * Prepared packing-table mesh collisions for standalone physics.

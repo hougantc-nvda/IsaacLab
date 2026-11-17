@@ -98,6 +98,7 @@ def test_newton_contract_is_backend_scoped_and_complete(config_type):
     assert newton_cfg.scene.robot.actuators["right-hand"].joint_names_expr == ["R_.*"]
     assert newton_cfg.sim.physics.solver_cfg.nconmax == 4096
     assert newton_cfg.sim.physics.solver_cfg.njmax == 1536
+    assert (newton_cfg.scene.robot.joint_ordering, newton_cfg.scene.robot.body_ordering) == ("physx", "physx")
     assert newton_cfg.isaac_teleop.require_initial_bimanual_hand_tracking is True
     assert isinstance(newton_cfg.actions.upper_body_ik, GR1T2KitlessPinkInverseKinematicsActionCfg)
     assert type(default_cfg.actions.upper_body_ik) is PinkInverseKinematicsActionCfg

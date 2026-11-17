@@ -16,12 +16,12 @@ from isaaclab_tasks.contrib.locomanip_pick_place.fixed_base_upper_body_ik_g1_env
     FixedBaseUpperBodyIKG1EnvCfg,
     prepare_fixed_base_g1_for_kitless_newton_mjwarp,
 )
+from isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_action import G1NewtonBoundedPinkInverseKinematicsAction
 from isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_newton import (
     JOINT_LIMIT_MARGIN_RAD,
     JOINT_TARGET_MAX_STEP_RAD,
     POSITION_MAX_STEP_M,
     ROTATION_MAX_STEP_RAD,
-    G1NewtonBoundedPinkInverseKinematicsAction,
     bound_pink_joint_targets,
     condition_kitless_newton_g1_action,
     teleop_action_target_issue,
@@ -96,7 +96,8 @@ def test_g1_newton_contract_is_backend_scoped_and_complete() -> None:
     ):
         actuator = newton_cfg.scene.robot.actuators[name]
         assert (actuator.stiffness, actuator.damping, actuator.armature, actuator.joint_effort_limit) == expected
-    assert newton_cfg.actions.upper_body_ik.class_type is G1NewtonBoundedPinkInverseKinematicsAction
+    assert newton_cfg.actions.upper_body_ik.class_type._resolve() is G1NewtonBoundedPinkInverseKinematicsAction
+    assert (newton_cfg.scene.robot.joint_ordering, newton_cfg.scene.robot.body_ordering) == ("physx", "physx")
     assert newton_cfg.isaac_teleop.action_conditioner is condition_kitless_newton_g1_action
     assert newton_cfg.isaac_teleop.action_validator is teleop_action_target_issue
     assert isinstance(newton_cfg.scene.packing_table.spawn, PackingTableUsdFileCfg)
