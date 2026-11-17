@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import torch
 
-from isaaclab.envs.mdp.actions.pink_task_space_actions import PinkInverseKinematicsAction
+from isaaclab.utils.string import ResolvableString
 
 if TYPE_CHECKING:
     from isaaclab.assets import ArticulationCfg
@@ -42,6 +41,11 @@ HAND_TARGET_MAX_MAGNITUDE_RAD = 6.5
 """Reject hand joint targets outside the task's accepted angular input range [rad]."""
 
 _WRIST_RAMP_KEYS = ("left_pos", "left_quat", "right_pos", "right_quat")
+
+G1_BOUNDED_PINK_ACTION = (
+    "isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_action:G1NewtonBoundedPinkInverseKinematicsAction"
+)
+"""Action term that :func:`configure_g1_for_kitless_newton` selects for the upper body."""
 
 ACTUATOR_PROFILE = {
     "waist": {"stiffness": 500.0, "damping": 50.0, "armature": 0.10, "joint_effort_limit": 250.0},
@@ -130,42 +134,6 @@ def bound_pink_joint_targets(
 
     stepped = torch.clamp(proposed, min=current - JOINT_TARGET_MAX_STEP_RAD, max=current + JOINT_TARGET_MAX_STEP_RAD)
     return torch.maximum(torch.minimum(stepped, safe_upper), safe_lower)
-
-
-class G1NewtonBoundedPinkInverseKinematicsAction(PinkInverseKinematicsAction):
-    """Bound Pink outputs without changing G1's public 28-D action layout."""
-
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        self._pink_joint_limits = None
-
-    def _compute_ik_solutions(self) -> torch.Tensor:
-        proposed = super()._compute_ik_solutions()
-        current = self._asset.data.joint_pos.torch[:, self._isaaclab_controlled_joint_ids]
-        articulation_limits = self._asset.data.joint_pos_limits.torch[:, self._isaaclab_controlled_joint_ids, :]
-
-        # Pink's controlled model/order are immutable for this action's lifetime.
-        # Keep articulation limits live: users may update them during a run.
-        if self._pink_joint_limits is None:
-            self._pink_joint_limits = tuple(
-                torch.as_tensor(
-                    np.stack(
-                        [
-                            np.asarray(getattr(controller.pink_configuration.controlled_model, limit_name))[
-                                controller.pink_to_isaac_lab_controlled_ordering
-                            ]
-                            for controller in self._ik_controllers
-                        ]
-                    ),
-                    device=self.device,
-                    dtype=proposed.dtype,
-                )
-                for limit_name in ("lowerPositionLimit", "upperPositionLimit")
-            )
-        pink_lower, pink_upper = self._pink_joint_limits
-        lower = torch.maximum(pink_lower, articulation_limits[..., 0])
-        upper = torch.minimum(pink_upper, articulation_limits[..., 1])
-        return bound_pink_joint_targets(current, proposed, lower, upper)
 
 
 def _wrist_poses(env, state: dict[str, Any]):
@@ -314,8 +282,13 @@ def configure_g1_for_kitless_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> No
     solver_cfg.njmax = 1536
 
     apply_g1_newton_actuator_profile(env_cfg.scene.robot)
+    # Newton orders joints and bodies differently; keep the PhysX order of Kit-recorded data.
+    env_cfg.scene.robot.joint_ordering = "physx"
+    env_cfg.scene.robot.body_ordering = "physx"
     env_cfg.actions.upper_body_ik.controller.fail_on_joint_limit_violation = False
-    env_cfg.actions.upper_body_ik.class_type = G1NewtonBoundedPinkInverseKinematicsAction
+    # A string reference keeps Pink, Pinocchio and SciPy out of preparation, which runs before
+    # simulator startup; the action manager imports the class when it builds the term.
+    env_cfg.actions.upper_body_ik.class_type = ResolvableString(G1_BOUNDED_PINK_ACTION)
     if env_cfg.isaac_teleop is not None:
         env_cfg.isaac_teleop.action_conditioner = condition_kitless_newton_g1_action
         env_cfg.isaac_teleop.action_validator = teleop_action_target_issue

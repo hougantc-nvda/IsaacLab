@@ -319,6 +319,10 @@ def test_humanoid_standalone_preparation_without_teleop():
             validate(cfg)
             assert cfg.isaac_teleop is None
             assert cfg._prepared_kitless_backend == physics
+        # Launchers prepare before simulator startup, where these imports are unsafe.
+        import sys
+        loaded = sorted({name.split(".")[0] for name in sys.modules} & {"scipy", "pinocchio", "pink", "qpsolvers"})
+        assert not loaded, f"preparation imported {loaded}"
     """)
     result = subprocess.run(
         [sys.executable, "-c", script],

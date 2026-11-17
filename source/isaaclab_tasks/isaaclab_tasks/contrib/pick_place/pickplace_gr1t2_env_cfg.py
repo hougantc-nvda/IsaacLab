@@ -779,6 +779,9 @@ def prepare_gr1t2_for_kitless_newton_mjwarp(env_cfg: ManagerBasedRLEnvCfg) -> No
     if env_cfg.isaac_teleop is not None:
         env_cfg.isaac_teleop.require_initial_bimanual_hand_tracking = True
     _stabilize_gr1t2_for_kitless_newton_mjwarp(env_cfg)
+    # Newton orders joints and bodies differently; keep the PhysX order of Kit-recorded data.
+    env_cfg.scene.robot.joint_ordering = "physx"
+    env_cfg.scene.robot.body_ordering = "physx"
     condition_kitless_gr1t2_stage(env_cfg.scene.robot, action_cfg, widen_hand_limits=False)
     configure_packing_table_collisions(env_cfg.scene.packing_table)
     env_cfg._prepared_kitless_backend = "newton_mjwarp"
