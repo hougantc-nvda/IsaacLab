@@ -493,6 +493,9 @@ def test_recorded_environment_reset_preserves_backend_policy_and_hand_cursor(mon
         def reset(self):
             calls.append("device-reset")
 
+        def notify_reset(self):
+            calls.append("device-notify-reset")
+
         def request_start(self):
             calls.append("start")
 
@@ -544,7 +547,9 @@ def test_recorded_environment_reset_preserves_backend_policy_and_hand_cursor(mon
     if viewer:
         initial.append("publish-reset")
     recorded = ["sim-reset"] if hard_reset else []
-    recorded += ["recorder-reset", "env-reset", "device-reset", "start"]
+    # The recorded RESET was already consumed by the control channel, so only the
+    # notification resets retargeters and withholds pre-reset actions.
+    recorded += ["recorder-reset", "env-reset", "device-reset", "device-notify-reset", "start"]
     if viewer:
         recorded.append("publish-reset")
     assert calls == initial + recorded
@@ -770,6 +775,9 @@ def test_replay_waits_for_initial_and_recorded_reset_publication(monkeypatch, cl
         def reset(self):
             nonlocal ready
             ready = False
+
+        def notify_reset(self):
+            pass
 
         def request_start(self):
             pass

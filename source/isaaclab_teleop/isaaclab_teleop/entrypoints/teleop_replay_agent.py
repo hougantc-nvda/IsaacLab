@@ -1163,10 +1163,15 @@ def _handle_reset(env: gym.Env, teleop_interface: IsaacTeleopDevice, *, hard_sim
     re-derive the call sequence.
     With ``hard_sim_reset=False`` (Newton or OvPhysX), the hard reinit is skipped
     so the solver and any stage leased to the XR worker stay alive.
+    A recorded RESET has already been processed by the control channel, so
+    :meth:`~isaaclab_teleop.IsaacTeleopDevice.reset` cannot reset retargeters here.
+    :meth:`~isaaclab_teleop.IsaacTeleopDevice.notify_reset` does, and withholds
+    actions computed before the environment reset, as in the live agent.
     """
     print("Resetting environment...")
     _reset_replay_environment(env, hard_sim_reset=hard_sim_reset, reset_recorder=True)
     teleop_interface.reset()
+    teleop_interface.notify_reset()
 
 
 def _process_success_condition(
