@@ -474,6 +474,26 @@ def handle_reset(
     return success_step_count
 
 
+def notify_teleop_of_auto_reset(step_result: tuple, teleop_interface: object) -> bool:
+    """Report a reset that environment 0 performed inside ``env.step`` to the teleop input.
+
+    The teleop anchor and target frame follow environment 0, so only its termination or truncation
+    restarts the input pipeline. The environment is not reset again.
+
+    Args:
+        step_result: The ``(obs, reward, terminated, truncated, extras)`` tuple from ``env.step``.
+        teleop_interface: The teleop device. Devices without ``notify_reset`` are left unchanged.
+
+    Returns:
+        Whether the device was notified.
+    """
+    _, _, terminated, truncated, _ = step_result
+    if not hasattr(teleop_interface, "notify_reset") or not bool(terminated[0] or truncated[0]):
+        return False
+    teleop_interface.notify_reset()
+    return True
+
+
 def run_simulation_loop(  # noqa: C901
     env: gym.Env,
     success_term: object | None,
@@ -626,6 +646,8 @@ def run_simulation_loop(  # noqa: C901
                 if running_recording_instance:
                     # Compute actions based on environment
                     obv = env.step(actions)
+                    if notify_teleop_of_auto_reset(obv, teleop_interface):
+                        camera_feed_session.refresh()
                     # render controller haptics from post-step contact forces
                     if haptic_driver is not None:
                         haptic_driver.update()

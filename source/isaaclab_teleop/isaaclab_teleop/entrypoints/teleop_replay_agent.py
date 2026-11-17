@@ -273,7 +273,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import gymnasium as gym
 import torch
@@ -293,9 +293,6 @@ from .. import (
     CLOUDXR_AVP_ENV,
     CLOUDXR_JS_ENV,
     CLOUDXR_STANDALONE_ENV,
-    IsaacTeleopDevice,
-    create_isaac_teleop_device,
-    poll_control_events,
 )
 from ._ovxr_launch import prepare_ovxr_launch, reject_ovxr_runtime_conflicts
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
@@ -305,6 +302,28 @@ logger = logging.getLogger(__name__)
 args_cli: argparse.Namespace
 """Parsed command line, set by :func:`_parse_args`."""
 hydra_overrides: list[str]
+
+
+if TYPE_CHECKING:
+    from .. import IsaacTeleopDevice
+
+
+def create_isaac_teleop_device(*args, **kwargs) -> "IsaacTeleopDevice":
+    """Create the replay's Isaac Capture device.
+
+    The device modules are imported on first use, as in the live agent, so that importing this
+    entrypoint does not load ``omni`` packages before the launcher bootstraps Kit.
+    """
+    from .. import create_isaac_teleop_device as create
+
+    return create(*args, **kwargs)
+
+
+def poll_control_events(device: "IsaacTeleopDevice"):
+    """Poll the device's control events; imported on first use like :func:`create_isaac_teleop_device`."""
+    from .. import poll_control_events as poll
+
+    return poll(device)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1150,7 +1169,7 @@ def _reset_replay_environment(env: gym.Env, *, hard_sim_reset: bool, reset_recor
     env.reset()
 
 
-def _handle_reset(env: gym.Env, teleop_interface: IsaacTeleopDevice, *, hard_sim_reset: bool) -> None:
+def _handle_reset(env: gym.Env, teleop_interface: "IsaacTeleopDevice", *, hard_sim_reset: bool) -> None:
     """Run the full env+teleop reset cycle used by ``record_demos.py``.
 
     Mirrors :func:`isaaclab_teleop.entrypoints.record_demos.handle_reset` (sans the
@@ -1255,7 +1274,7 @@ def _start_replay_presentation(env: gym.Env, presentation: OvxrPresentation) -> 
     presentation.publish(env, reset=True)
 
 
-def _advance_replay_input(device: IsaacTeleopDevice, presentation: OvxrPresentation | None) -> torch.Tensor | None:
+def _advance_replay_input(device: "IsaacTeleopDevice", presentation: OvxrPresentation | None) -> torch.Tensor | None:
     """Read recorded input using the viewer owner's target transform when needed."""
     target_path = device.target_frame_prim_path if presentation is not None else None
     if target_path is None:
@@ -1276,7 +1295,7 @@ def _run_single_replay(
     success_term: object | None,
     run_index: int,
     total_runs: int,
-    teleop_interface: IsaacTeleopDevice,
+    teleop_interface: "IsaacTeleopDevice",
     presentation: OvxrPresentation | None = None,
 ) -> _RunStats:
     """Run a single replay pass against ``env`` and return the per-run stats.

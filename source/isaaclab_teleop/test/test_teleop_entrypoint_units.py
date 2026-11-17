@@ -156,7 +156,7 @@ def run_live_workflow(monkeypatch):
         monkeypatch.setattr(
             agent,
             "args_cli",
-            agent._build_parser().parse_args(["--task", "Test", "--ovxr", "--step_hz", str(step_hz)]),
+            agent._build_parser().parse_args(["--task", "Test", "--ovxr", "--ovxr_step_hz", str(step_hz)]),
             raising=False,
         )
         monkeypatch.setattr(agent, "has_kit", lambda: False)

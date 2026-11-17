@@ -80,7 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     parser.add_argument("--sensitivity", type=float, default=1.0, help="Sensitivity factor.")
     parser.add_argument(
-        "--step_hz",
+        "--ovxr_step_hz",
         type=float,
         default=0.0,
         help="Maximum host-control rate with --ovxr; 0 leaves active control unthrottled. XR rendering is independent.",
@@ -155,10 +155,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args_cli.enable_cameras = not args_cli.disable_external_cameras
     if args_cli.xr and args_cli.using_ovxr:
         parser.error("--xr and --ovxr are mutually exclusive OpenXR frame-loop owners")
-    if not math.isfinite(args_cli.step_hz) or args_cli.step_hz < 0.0:
-        parser.error("--step_hz must be finite and non-negative; 0 disables active-control pacing")
-    if args_cli.step_hz > 0.0 and not args_cli.using_ovxr:
-        parser.error("--step_hz requires --ovxr")
+    if not math.isfinite(args_cli.ovxr_step_hz) or args_cli.ovxr_step_hz < 0.0:
+        parser.error("--ovxr_step_hz must be finite and non-negative; 0 disables active-control pacing")
+    if args_cli.ovxr_step_hz > 0.0 and not args_cli.using_ovxr:
+        parser.error("--ovxr_step_hz requires --ovxr")
 
     # Call an external callback if requested.
     if args_cli.external_callback:
@@ -617,7 +617,7 @@ def run_teleoperation(  # noqa: C901
                             action_applied,
                             iteration_started_s=iteration_started_s,
                             action_period_s=env.step_dt,
-                            step_hz=args_cli.step_hz,
+                            step_hz=args_cli.ovxr_step_hz,
                             wait_for_shutdown=(
                                 presentation.session.wait_for_shutdown if presentation is not None else None
                             ),
