@@ -464,6 +464,10 @@ def handle_reset(
     env.reset()
     if teleop_interface is not None and hasattr(teleop_interface, "reset"):
         teleop_interface.reset()
+    if teleop_interface is not None and hasattr(teleop_interface, "notify_reset"):
+        # An operator RESET was already processed by the control channel, so reset() cannot
+        # reset retargeters. This does, and withholds actions computed before env.reset().
+        teleop_interface.notify_reset()
     success_step_count = 0
     instruction_display.show_demo(label_text)
     return success_step_count
