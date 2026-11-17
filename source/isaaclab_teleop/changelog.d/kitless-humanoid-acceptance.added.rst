@@ -3,3 +3,5 @@
   The live and replay agents run them before creating simulation resources and before each step.
 * Added the :attr:`~isaaclab_teleop.IsaacTeleopDevice.hand_tracking_presence` property, which
   reports left and right hand presence in the latest input frame.
+* Added an HDF5 recording check that rejects kitless physics for tasks with an action policy, which
+  only the live and replay agents apply.
