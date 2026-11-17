@@ -46,3 +46,17 @@ def test_entrypoints_load_out_of_tree_tasks_before_parsing(monkeypatch, module_n
     assert sys.argv == ["caller", "--caller-flag"]
     # only the session replay agent reports an outcome; the other workflows always exit 0
     assert status == (3 if cli_name == "run_teleop_replay_agent_cli" else 0)
+
+
+@pytest.mark.parametrize("module", ["teleop_se3_agent", "teleop_replay_agent"])
+def test_entrypoint_import_leaves_device_modules_to_launch(module):
+    """Importing an entrypoint must not load the XR anchor modules, which import ``omni`` before Kit bootstraps."""
+    import subprocess
+
+    script = (
+        "import sys, warp\n"
+        f"import isaaclab_teleop.entrypoints.{module}\n"
+        "assert 'isaaclab_teleop.xr_anchor_utils' not in sys.modules\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-2000:]
