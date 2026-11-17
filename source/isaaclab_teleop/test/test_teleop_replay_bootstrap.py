@@ -11,6 +11,7 @@ and Kit detection are production code. These tests do not qualify MCAP motion.
 
 import builtins
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
@@ -340,6 +341,11 @@ def test_replay_control_timing_uses_recorded_events_or_explicit_legacy_start(mon
     lifecycle._last_control_event_frame_id = None
     lifecycle._haptic_forces = {}
     lifecycle._session = SimpleNamespace(last_context=None, last_step_info=None)
+    lifecycle._retargeter_reset_lock = threading.Lock()
+    lifecycle._retargeter_reset_pending = False
+    lifecycle._retargeter_reset_frame_id = None
+    lifecycle._retargeter_reset_cutoff_ns = 0
+    lifecycle._retargeter_last_submission_ns = 0
     messages = {7: b"reset", 12: b"stop"}
     if not start_on_replay:
         messages.update({3: b"start", 10: b"start"})
@@ -376,7 +382,7 @@ def test_replay_control_timing_uses_recorded_events_or_explicit_legacy_start(mon
                 context=None,
             )
             lifecycle._session.last_context = SimpleNamespace(execution_events=events)
-            lifecycle._session.last_step_info = SimpleNamespace(returned_frame_id=frame)
+            lifecycle._session.last_step_info = SimpleNamespace(returned_frame_id=frame, submitted_frame_id=frame)
             lifecycle._update_control_events()
             return torch.zeros(1)
 
@@ -418,5 +424,8 @@ def test_replay_control_timing_uses_recorded_events_or_explicit_legacy_start(mon
     assert resets == [-1, 0, 7]
     assert recorder_resets == [0, 7]
     assert frame == 12  # STOP terminates; RESET retains the cursor and permits the later START.
+    # The control channel already consumed the recorded RESET; the notification still resets retargeters.
+    assert lifecycle._retargeter_reset_pending
+    assert lifecycle._retargeter_reset_frame_id == 7
     assert stats.active_iterations == len(applied)
     assert stats.outcome == "incomplete"
