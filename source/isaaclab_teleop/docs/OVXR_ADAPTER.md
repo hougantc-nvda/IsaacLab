@@ -28,10 +28,11 @@ after the environment exists. Publish simulation updates through the session;
 the worker owns rendering. Stop input consumers before closing the XR session,
 and retire the lease before destroying the simulation's renderer or stage.
 Pass `environment_owner="host"` to `prepare()` when Lab owns environment or
-window destruction. Stop input, close the session, require `session.retirement_complete`,
-then close the environment on the host. The default `"render_worker"` policy
-preserves worker-owned environment cleanup after lease retirement. Both policies
-retain the environment when retirement cannot be proved.
+window destruction. After stopping input, close the session, require
+`session.retirement_complete`, and only then close the environment on the host.
+With the default `"render_worker"` policy, the worker closes the environment
+after retiring the lease. Both policies retain the
+environment when retirement cannot be proved.
 
 If startup fails before the worker takes ownership, the caller closes the
 environment after releasing the lease. If input retirement fails, request
@@ -68,8 +69,8 @@ The adapter retains the environment if lease retirement cannot establish complet
 - Camera sensors on other renderers are supported: their initialization
   prepares every registered renderer on the application thread, and the XR
   renderer defers its Stage until the XR worker claims ownership. A camera that
-  resolves to the XR renderer itself (a non-panel camera configured with the
-  session's `OvxrRendererCfg`) is rejected while the lease is active.
+  resolves to the XR renderer itself (a camera configured with the session's
+  `OvxrRendererCfg`) is rejected while the lease is active.
 - Eager scene updates (`lazy_sensor_update=False`) skip the leased renderer; its
   scene publisher writes the same physics state at the reserved ordinal.
 - Dynamic anchoring takes any object implementing
@@ -81,10 +82,16 @@ The adapter retains the environment if lease retirement cannot establish complet
 The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
 knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
 preparation and the ordinary camera and scene operations, and uses the protected extension
-points for private-OVStage reservation. Its `_OvxrLeaseController` owns the lease state,
-thread-transfer capability and per-owner operation guards; it borrows the renderer's native
-resources and delegates component writes back to that renderer. The lease classes are
-internal to `isaaclab_teleop`.
+points for private-OVStage reservation.
+
+- Its `_OvxrLeaseController` owns the lease state, the thread-transfer capability, the
+  per-owner operation guards and the publication order.
+- `OvxrScenePublisher.publish()` publishes each complete scene as one transaction: it skips an
+  unchanged state, reserves an ordinal, writes every component, seals
+  it, and on failure poisons the pair and abandons the ordinal. Capture's publication guard
+  provides the cross-thread exclusion around it.
+
+The lease classes are internal to `isaaclab_teleop`.
 
 Acquiring a lease selects a private rendering OVStage without changing process
 environment variables. An explicit OVStage disable or shared-stage selection is

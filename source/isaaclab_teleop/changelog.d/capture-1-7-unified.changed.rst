@@ -1,4 +1,4 @@
-* Unified Kit and OVXR teleoperation on Isaac Capture 1.7.115rc1, with the OVXR extra
-  extending the shared teleoperation dependencies. Removed the mutually exclusive
-  extra selections and reconciled older Isaac Sim and Viser WebSocket bounds with
-  Capture's CloudXR requirement.
+* Changed the ``teleop`` extra to install ``isaaccapture==1.7.115rc1``, and added the ``ovxr`` extra, which
+  extends ``teleop`` with Capture's standalone OVXR runtime and desktop mirror. Overrode the older
+  ``websockets`` bounds of Isaac Sim and Viser with ``websockets>=17.3``, which Capture's CloudXR
+  extra requires.

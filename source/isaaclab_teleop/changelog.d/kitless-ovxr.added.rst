@@ -1,7 +1,8 @@
 * Added :class:`~isaaclab_teleop.OvLibrariesXrSession`, an OVXR application adapter and session
   bootstrap that borrow the simulation-owned OVRTX renderer and OVStage, publish scene updates,
   and coordinate render-thread ownership and shutdown with Isaac Capture.
-  Publication failures close admission, and failed lease retirement retains borrowed resources.
+  A failed scene publication stops further publication, and a session whose renderer cannot be
+  retired keeps its borrowed resources.
 * Added :class:`~isaaclab_teleop.OvxrRendererCfg`, the OVXR session's OVRTX renderer. It lends its
   native renderer and private OVStage to Isaac Capture's render worker, with a single-use
   render-thread ownership transfer, deferred Stage preparation, ordered scene publication

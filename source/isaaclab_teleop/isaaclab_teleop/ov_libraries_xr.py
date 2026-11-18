@@ -537,53 +537,44 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
             # Check the terminal policy before dedup may return an older seal.
             anchor_epoch = self._external_anchor.external_epoch
         seed_pending = anchor_epoch is not None and (anchor_epoch[1] or self._anchor_snapshot is None)
-        if not self._scene_publisher.publication_required(publication_id) and not seed_pending:
+        snapshot = None
+
+        def prepare() -> None:
+            nonlocal snapshot
+            if anchor_epoch is not None:
+                epoch, _ = anchor_epoch
+                reference = self._bootstrap.get_world_transform(self._external_anchor.external_reference_path)
+                snapshot = (epoch, reference)
+
+        def seal(ordinal: int) -> None:
+            if not seed_pending:
+                self._ordinal_ledger.publish(ordinal)
+                return
+            epoch, reference = snapshot
+
+            def commit(matrices: np.ndarray) -> None:
+                self._write_anchor_matrices(matrices, ordinal)
+                self._ordinal_ledger.publish(ordinal)
+
+            # Reset seeding must be sealed with this scene before input resumes.
+            # The first pose initializes the filter without an elapsed interval.
+            if not self._external_anchor.commit_external_pose(reference, 0.0, epoch, commit):
+                raise RuntimeError("XR anchor reset changed during complete scene publication")
+            self._last_anchor_frame_time = None
+
+        try:
+            ordinal = self._scene_publisher.publish(
+                publication_id, self._ordinal_ledger, prepare=prepare, seal=seal, force=seed_pending
+            )
+        except BaseException:
+            # A failed write or seal closed the publisher and poisoned the pair; a rejected sample did not.
+            if self._scene_publisher.closed:
+                self.close_publication()
+            raise
+        if ordinal is None:
             if self._last_published_ordinal is None:
                 raise RuntimeError("OVStage publication deduplicated before a sealed ordinal exists")
             return self._last_published_ordinal
-        snapshot = None
-        seed = False
-        if self._external_anchor is not None:
-            epoch, _ = anchor_epoch
-            seed = seed_pending
-            reference = self._bootstrap.get_world_transform(self._external_anchor.external_reference_path)
-            snapshot = (epoch, reference)
-        ordinal = self._ordinal_ledger.reserve()
-        try:
-            self._scene_publisher.write_complete_scene(ordinal, publication_id, force=seed_pending)
-        except BaseException as write_error:
-            self._scene_publisher.invalidate()
-            self.close_publication()
-            try:
-                self._ordinal_ledger.abandon(ordinal)
-            except BaseException as abandon_error:
-                write_error.add_note(f"Abandon after failed scene write also failed: {abandon_error!r}")
-            raise
-        try:
-            if seed:
-                epoch, reference = snapshot
-
-                def commit(matrices: np.ndarray) -> None:
-                    self._write_anchor_matrices(matrices, ordinal)
-                    self._ordinal_ledger.publish(ordinal)
-
-                # Reset seeding must be sealed with this scene before input resumes.
-                # The first pose initializes the filter without an elapsed interval.
-                if not self._external_anchor.commit_external_pose(reference, 0.0, epoch, commit):
-                    raise RuntimeError("XR anchor reset changed during complete scene publication")
-                self._last_anchor_frame_time = None
-            else:
-                self._ordinal_ledger.publish(ordinal)
-        except BaseException as publish_error:
-            # Component writes already consumed this generation. Do not let a
-            # retry deduplicate it to an older seal after publication failed.
-            self._scene_publisher.invalidate()
-            self.close_publication()
-            try:
-                self._ordinal_ledger.abandon(ordinal)
-            except BaseException as abandon_error:
-                publish_error.add_note(f"Abandon after failed scene publication also failed: {abandon_error!r}")
-            raise
         self._last_published_ordinal = ordinal
         self._anchor_snapshot = snapshot
         return ordinal

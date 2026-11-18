@@ -83,17 +83,14 @@ class OvxrSessionBootstrap:
             # The simulation registry owns the renderer, including cloning and
             # cleanup; the XR session only borrows its exact native pair.
             if renderer_cfg is not None and not isinstance(renderer_cfg, OvxrRendererCfg):
-                raise TypeError(
-                    "OVXR renders with OvxrRendererCfg; give the session and its camera panels the same configuration"
-                )
+                raise TypeError("OVXR renders with OvxrRendererCfg")
             renderer = sim.get_or_create_backend(renderer_cfg or OvxrRendererCfg())
             if not isinstance(renderer, OvxrRenderer):
                 raise TypeError(f"OvxrRendererCfg resolved to unexpected renderer {type(renderer).__name__}")
+            # Camera sensors prepare every registered renderer on the application thread during
+            # environment construction. The leased pair only records that call; the claimed render
+            # owner completes it in bind_environment().
             lease = renderer.acquire_render_lease()
-            # Camera sensors prepare every registered renderer on the application thread
-            # during environment construction. Only the claimed render owner materializes
-            # this pair, so that call is recorded and completed in bind_environment().
-            lease.defer_stage_until_owner_transfer()
         except BaseException as preparation_error:
             sim = SimulationContext.instance()
             try:
@@ -263,7 +260,7 @@ class OvxrSessionBootstrap:
         return target_T_world.astype(np.float32)
 
     def close(self) -> None:
-        """Release after every borrower is destroyed; retain ownership for retry on failure."""
+        """Release after the OVXR context is destroyed; retain ownership for retry on failure."""
         if self._closed:
             return
         # Keep ownership and the bootstrap retryable until retirement succeeds.

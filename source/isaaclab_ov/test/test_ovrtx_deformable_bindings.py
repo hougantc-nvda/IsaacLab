@@ -45,7 +45,7 @@ def _simulation(monkeypatch):
 
 def _make_renderer_without_backend() -> tuple[OVRTXRenderer, MagicMock]:
     renderer = OVRTXRenderer(OVRTXRendererCfg(), sim=SimulationContext.instance())
-    renderer.backend = SimpleNamespace(renderer=MagicMock(), _retained_by=None)
+    renderer.backend = SimpleNamespace(renderer=MagicMock())
     renderer.scene = renderer.backend
     renderer.scene.query = OvstageBackend.query.__get__(renderer.scene)
     renderer._device = "cpu"

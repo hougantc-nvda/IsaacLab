@@ -394,7 +394,6 @@ class OVRTXRenderer(BaseRenderer):
 
     def __init__(self, cfg: OVRTXRendererCfg, *, sim: SimulationContext):
         super().__init__(cfg, sim=sim)
-        self._closed = False
         self._warp_device = wp.get_device(self._sim.device)
         self._device = str(self._warp_device)
         self._camera_render_data: list[OVRTXCameraRenderData] = []
@@ -431,7 +430,7 @@ class OVRTXRenderer(BaseRenderer):
         return self._create_visual_material_writer if self._initialized_scene else None
 
     def _create_visual_material_writer(self, batches: tuple[VisualMaterialBatch, ...]) -> OVRTXVisualMaterialWriter:
-        """Retain material buffers; deferred scenes compile addresses after population."""
+        """Create the detached-scene material writer after scene population."""
         writer = OVRTXVisualMaterialWriter(self, batches)
         self._visual_material_writer_ref = weakref.ref(writer)
         return writer
@@ -535,10 +534,8 @@ class OVRTXRenderer(BaseRenderer):
         self._initialized_scene = True
         self._needs_transform_initialization = not self._use_ovstage and self.backend.cfg.read_gpu_transforms
 
-    # Extension points for a subclass that lends the native pair to another owner, such as the OVXR
-    # renderer in isaaclab_teleop. The defaults describe ordinary rendering. That subclass also
-    # writes through the unguarded _update_transforms, _update_geometries, _update_camera and
-    # _register_camera helpers; its tests (isaaclab_teleop/test/test_ovxr_renderer.py) cover them.
+    # Extension points for a subclass that lends the native pair to another owner. The defaults
+    # describe ordinary rendering.
 
     def _requires_private_ovstage(self) -> bool:
         """Whether clone preparation must give this renderer its own OVStage."""
@@ -1086,10 +1083,6 @@ class OVRTXRenderer(BaseRenderer):
                 )
 
     def update_transforms(self) -> None:
-        """Publish changed scene transforms."""
-        self._update_transforms()
-
-    def _update_transforms(self) -> None:
         """Write changed SDP transforms to OVRTX."""
         binding = self._object_xform_binding
         if binding is None:
@@ -1122,10 +1115,6 @@ class OVRTXRenderer(BaseRenderer):
         self._transforms_timestamp = timestamp
 
     def update_geometries(self) -> None:
-        """Publish changed scene geometry."""
-        self._update_geometries()
-
-    def _update_geometries(self) -> None:
         """Write changed SDP geometry to OVRTX."""
         for callback in self.geometry_callbacks.values():
             callback(self)
@@ -1342,7 +1331,6 @@ class OVRTXRenderer(BaseRenderer):
             self.meshes.clear()
             self.markers.clear()
             self.geometry_callbacks.clear()
-            self._closed = True
 
 
 class OVRTXMesh:

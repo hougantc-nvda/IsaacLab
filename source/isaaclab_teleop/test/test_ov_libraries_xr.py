@@ -53,6 +53,27 @@ class _FakePublisher:
         if self.fail is not None:
             raise self.fail
 
+    def publish(self, publication_id, ordinals, *, prepare=None, seal=None, force=False):
+        """The real publisher's transaction order, over this fake's hooks."""
+        if self.closed:
+            raise RuntimeError("OVStage scene publisher is closed")
+        if not force and not self.publication_required(publication_id):
+            return None
+        if prepare is not None:
+            prepare()
+        ordinal = ordinals.reserve()
+        try:
+            self.write_complete_scene(ordinal, publication_id, force=force)
+            (ordinals.publish if seal is None else seal)(ordinal)
+        except BaseException as error:
+            self.invalidate()
+            try:
+                ordinals.abandon(ordinal)
+            except BaseException as abandon_error:
+                error.add_note(f"Abandon after failed scene publication also failed: {abandon_error!r}")
+            raise
+        return ordinal
+
     def close(self):
         self.closed = True
 
@@ -380,8 +401,8 @@ def test_host_reconciles_failed_publication_without_reusing_generation(xr_module
         _initialized_scene=False,
         backend=None,
         scene=None,
-        _update_transforms=lambda: None,
-        _update_geometries=lambda: None,
+        _publish_transforms=lambda: None,
+        _publish_geometries=lambda: None,
         _visual_material_writer_ref=None,
         marker_groups=(),
         markers={},
@@ -618,9 +639,7 @@ def bootstrap_context(xr_module, monkeypatch):
         def get_or_create_backend(self, _cfg):
             if self.failure is not None:
                 raise self.failure
-            lease = SimpleNamespace(
-                release=lambda: events.append("lease-release"), defer_stage_until_owner_transfer=lambda: None
-            )
+            lease = SimpleNamespace(release=lambda: events.append("lease-release"))
             return SimpleNamespace(acquire_render_lease=lambda: lease)
 
     monkeypatch.setattr(module, "SimulationContext", Context)
@@ -795,8 +814,8 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
         _initialized_scene=False,
         backend=None,
         scene=None,
-        _update_transforms=failed_transforms,
-        _update_geometries=lambda: None,
+        _publish_transforms=failed_transforms,
+        _publish_geometries=lambda: None,
         _visual_material_writer_ref=None,
         marker_groups=(),
         markers={},

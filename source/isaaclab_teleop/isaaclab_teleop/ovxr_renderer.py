@@ -5,10 +5,10 @@
 
 """OVRTX renderer whose native OVRTX/OVStage pair is borrowed by the OVXR session.
 
-:class:`OvxrRenderer` is the simulation's OVRTX renderer for an OVXR session: the same engine and
+``OvxrRenderer`` is the simulation's OVRTX renderer for an OVXR session: the same engine and
 OVStage render the simulation's scene, but the session's render worker owns them. Its lease handles
 the render-thread handoff, deferred Stage preparation and scene publication ordering. Isaac Lab's
-ordinary OVRTX renderer is unchanged and stays available to other cameras.
+ordinary OVRTX renderer stays available to other cameras.
 """
 
 from __future__ import annotations
@@ -16,11 +16,15 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
-from collections.abc import Hashable, Iterator, Sequence
+import weakref
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 from isaaclab_ov.renderers import OVRTXRenderer, OVRTXRendererCfg
+from isaaclab_ov.renderers.visual_materials import OVRTXVisualMaterialWriter
+
+from pxr import Usd
 
 from isaaclab.renderers.camera_render_spec import CameraRenderSpec
 from isaaclab.utils import configclass
@@ -29,8 +33,6 @@ if TYPE_CHECKING:
     from isaaclab_ov.renderers.ovrtx_renderer import OVRTXCameraRenderData
     from ovrtx import Renderer
     from ovstage import Stage as OvStage
-
-    from pxr import Usd
 _NO_PHYSICS_STEP_ID = object()
 
 
@@ -43,13 +45,13 @@ class _OvxrLeaseState(Enum):
 
 
 class OvxrRenderLease:
-    """Exclusive non-owning lease over one exact attached OVRTX/OVStage pair.
+    """Exclusive non-owning lease of the OVXR session over one attached OVRTX/OVStage pair.
 
-    The lease is acquired before stage preparation. Stage preparation then
-    materializes the renderer-owned scene without requiring a camera sensor and
-    binds this object to the exact live Python ``Renderer`` and ``Stage``
-    instances. External consumers must release the lease before the renderer is
-    closed; they must never detach or destroy either borrowed object.
+    The session acquires the lease before environment construction. The renderer then defers
+    Stage preparation until Isaac Capture's render worker claims the single-use owner transfer
+    and materializes the Stage, which binds this object to the exact live Python ``Renderer``
+    and ``Stage`` instances. The session releases the lease before the renderer is closed and
+    never detaches or destroys either borrowed object.
     """
 
     _controller: _OvxrLeaseController
@@ -104,18 +106,6 @@ class OvxrRenderLease:
         """
         self._controller.cancel_owner_transfer(self, capability)
 
-    def defer_stage_until_owner_transfer(self) -> None:
-        """Defer Stage materialization requested before the owner transfer is claimed.
-
-        Camera initialization calls ``prepare_stage`` for every registered renderer on the
-        application thread. With deferral, that call only records the request; the claimed
-        render owner completes it with :meth:`materialize_deferred_stage`.
-        """
-        self._validate_active()
-        if self._state is not _OvxrLeaseState.UNBOUND:
-            raise RuntimeError("Stage deferral must be selected before Stage materialization")
-        self._controller.defer_until_transfer = True
-
     def materialize_deferred_stage(self, stage: Any, num_envs: int) -> bool:
         """Complete a deferred Stage preparation on the claimed render owner.
 
@@ -127,8 +117,7 @@ class OvxrRenderLease:
             Whether a deferred preparation was completed. ``False`` means nothing was deferred.
 
         Raises:
-            RuntimeError: If called off the render-owner thread, or deferral is selected and
-                the owner transfer has not been claimed.
+            RuntimeError: If called off the render-owner thread, or before the owner transfer is claimed.
         """
         return self._controller.materialize_deferred_stage(self, stage, num_envs)
 
@@ -153,14 +142,14 @@ class OvxrRenderLease:
     def ovstage_owner_lane(self) -> Iterator[None]:
         """Guard one non-reentrant operation on the render-owner thread.
 
-        The application's publication guard must separately exclude concurrent
-        producer writes while this operation uses the borrowed stage. A failed
-        producer write poisons publication only: the lane stays available so the
-        borrower can destroy its consumers and retire the pair.
+        Isaac Capture's render worker runs its native frame operations here. The application's
+        publication guard separately excludes scene publication while they use the borrowed stage.
+        A failed publication poisons publication only: the lane stays available so the session can
+        destroy its OVXR context and retire the pair.
         """
         self._validate_live(allow_poisoned=True)
         owner = self._controller
-        with owner.owner_lane("external renderer operation"):
+        with owner.owner_lane("render-worker operation"):
             yield
 
     def release(self) -> None:
@@ -216,25 +205,23 @@ class OvxrRenderLease:
 
 
 class OvxrScenePublisher:
-    """Application-thread writer for complete provider-derived OVStage batches.
+    """Application-thread publisher of complete provider-derived OVStage scenes.
 
-    Obtain it with :meth:`OvxrRenderLease.capture_scene_publisher`.
-    While the lease is active, the renderer skips its own eager transform, geometry and material
-    writes, and the borrower publishes each complete physics state through this object instead:
+    Obtain it with :meth:`OvxrRenderLease.capture_scene_publisher`. While the lease is active, the
+    renderer skips its own eager transform, geometry and material writes, and the OVXR session publishes
+    each complete physics state through :meth:`publish`, one transaction per scene:
 
-    1. On the application thread, call :meth:`publication_required` with the identity of the
-       current physics state.
-    2. If it returns ``True``, reserve a nonzero Stage ordinal and call
-       :meth:`write_complete_scene` with it. The write does not advance the Stage write floor:
-       the borrower seals that ordinal afterwards, or abandons it if the write fails.
-    3. Hold one application publication guard around both calls and around every operation the
-       render owner performs in :meth:`OvxrRenderLease.ovstage_owner_lane`, so that scene
-       writes and native frame operations never interleave.
+    1. Skip a state that needs no publication (see :meth:`publication_required`).
+    2. Run the session's preparation, such as capturing the inputs that the seal publishes.
+    3. Reserve an ordinal, write every scene component at it, and seal it.
+    4. If the write or seal fails, poison the pair, abandon the ordinal and re-raise.
 
-    A failed write poisons the pair: later publication and ordinary renderer use are rejected,
-    but the borrower can still retire its consumers and release the lease. The renderer must then
-    be recreated. :meth:`close` stops publication; releasing the lease also closes the publisher.
-    The OVXR teleoperation adapter, ``isaaclab_teleop.OvLibrariesXrSession``, follows this protocol.
+    Call :meth:`publish` under the application's publication guard, which the render owner also holds
+    around every operation in :meth:`OvxrRenderLease.ovstage_owner_lane`, so that scene writes and
+    native frame operations never interleave. A poisoned pair rejects later publication and ordinary
+    renderer use, but the session can still retire its OVXR context and release the lease; the
+    renderer must then be recreated. :meth:`close` stops publication; releasing the lease also closes
+    the publisher. ``isaaclab_teleop.OvLibrariesXrSession`` publishes through this method.
     """
 
     def __init__(self, owner: _OvxrLeaseController, lease: OvxrRenderLease) -> None:
@@ -244,8 +231,13 @@ class OvxrScenePublisher:
         self._lock = threading.Lock()
         self._closed = False
 
+    @property
+    def closed(self) -> bool:
+        """Whether publication stopped, by :meth:`close`, a failed publication or :meth:`invalidate`."""
+        return self._closed
+
     def publication_required(self, physics_step_id: Hashable) -> bool:
-        """Return whether a new physics step or dirty material requires a scene write.
+        """Return whether a new physics step, changed markers or dirty materials require a scene write.
 
         Args:
             physics_step_id: Hashable identity of the complete physics state to publish. Only the
@@ -253,12 +245,12 @@ class OvxrScenePublisher:
                 state does, including after a reset that does not advance the physics step count.
 
         Returns:
-            Whether ``physics_step_id`` differs from the last written batch or a visual material
-            has pending updates.
+            Whether ``physics_step_id`` differs from the last written state, the drawn markers
+            changed, or a visual material has pending updates.
 
         Raises:
-            RuntimeError: If called off the captured application thread, the publisher is closed
-                or inactive, the lease is not bound, or a failed write poisoned the pair.
+            RuntimeError: If called off the captured application thread, the publisher is closed or
+                inactive, the lease is not bound, or a failed write poisoned the pair.
             TypeError: If ``physics_step_id`` is not hashable.
         """
         self._require_application_thread()
@@ -267,40 +259,73 @@ class OvxrScenePublisher:
                 raise RuntimeError("OVStage scene publisher is closed")
             return self._controller.producer_publication_required(self._lease, physics_step_id)
 
-    def write_complete_scene(self, ordinal: int, physics_step_id: Hashable, *, force: bool = False) -> None:
-        """Write, but do not publish, one complete batch at ``ordinal``.
-
-        Writes the current transforms, geometries and pending visual materials at ``ordinal`` and
-        records ``physics_step_id`` as written. The caller seals the ordinal afterwards.
+    def publish(
+        self,
+        physics_step_id: Hashable,
+        ordinals: Any,
+        *,
+        prepare: Callable[[], None] | None = None,
+        seal: Callable[[int], None] | None = None,
+        force: bool = False,
+    ) -> int | None:
+        """Publish one complete scene as a single transaction.
 
         Args:
-            ordinal: Nonzero Stage ordinal reserved by the caller for this batch.
-            physics_step_id: The identity passed to the preceding :meth:`publication_required` call.
-            force: Publish an independently changed anchor even when physics is unchanged.
+            physics_step_id: Hashable identity of the complete physics state, as for
+                :meth:`publication_required`.
+            ordinals: Stage ordinal ledger with ``reserve()``, ``publish(ordinal)`` and
+                ``abandon(ordinal)``, such as Isaac Capture's ``StageOrdinalLedger``.
+            prepare: Called once a publication is required, before an ordinal is reserved.
+            seal: Seals the written ordinal. Defaults to ``ordinals.publish``.
+            force: Publish even when the state needs no publication, for example for an
+                independently changed XR anchor.
+
+        Returns:
+            The sealed ordinal, or ``None`` when the state needs no publication.
 
         Raises:
-            ValueError: If ``ordinal`` is not positive.
             RuntimeError: If called off the captured application thread, the publisher is closed or
-                inactive, the state needs no publication, or the write failed. A failed write
-                poisons the pair.
+                inactive, or the write or seal failed. A failed write or seal poisons the pair,
+                abandons the ordinal and closes the publisher.
         """
         self._require_application_thread()
         with self._lock:
             if self._closed:
                 raise RuntimeError("OVStage scene publisher is closed")
-            self._controller.write_producer_scene(self._lease, ordinal, physics_step_id, force=force)
+            controller = self._controller
+            if not force and not controller.producer_publication_required(self._lease, physics_step_id):
+                return None
+            if prepare is not None:
+                prepare()
+            controller.require_publishable(self._lease)
+            ordinal = ordinals.reserve()
+            try:
+                controller.write_scene_components(self._lease, ordinal, physics_step_id)
+                (ordinals.publish if seal is None else seal)(ordinal)
+            except BaseException as error:
+                self._invalidate_locked()
+                try:
+                    ordinals.abandon(ordinal)
+                except BaseException as abandon_error:
+                    # Cleanup follows the failure; retain its original cause.
+                    error.add_note(f"Abandon after failed scene publication also failed: {abandon_error!r}")
+                raise
+            return ordinal
 
     def invalidate(self) -> None:
-        """Reject further use of a pair after a borrower write or seal failed."""
+        """Reject further use of a pair after the session's own write to it failed."""
         with self._lock:
-            self._closed = True
-            if self._controller.active is self._lease:
-                self._controller._poisoned = True
+            self._invalidate_locked()
 
     def close(self) -> None:
-        """Stop scene publication after any in-flight batch finishes. Safe to call repeatedly."""
+        """Stop scene publication after any in-flight scene finishes. Safe to call repeatedly."""
         with self._lock:
             self._closed = True
+
+    def _invalidate_locked(self) -> None:
+        self._closed = True
+        if self._controller.active is self._lease:
+            self._controller._poisoned = True
 
     def _require_application_thread(self) -> None:
         if threading.current_thread() is not self._application_thread:
@@ -308,13 +333,13 @@ class OvxrScenePublisher:
 
 
 class _OvxrLeaseController:
-    """Coordinate external borrowing without owning the renderer's native resources.
+    """Coordinate the OVXR session's lease without owning the renderer's native resources.
 
     Lease state, thread transfer and publication ordering live here. The renderer
     retains scene/camera storage and supplies the component-write operations.
     """
 
-    def __init__(self, renderer: OVRTXRenderer) -> None:
+    def __init__(self, renderer: OvxrRenderer) -> None:
         self._renderer = renderer
         self._owner_thread = threading.current_thread()
         self._transfer_lock = threading.Lock()
@@ -325,8 +350,8 @@ class _OvxrLeaseController:
         self._generation = 0
         self._lane_operation: str | None = None
         self._last_step_id: Hashable = _NO_PHYSICS_STEP_ID
+        self._published_marker_revision: int | None = None
         self._poisoned = False
-        self.defer_until_transfer = False
         self.stage_deferred = False
 
     def acquire(self) -> OvxrRenderLease:
@@ -411,8 +436,8 @@ class _OvxrLeaseController:
     def owner_lane(self, operation: str) -> Iterator[None]:
         """Reject nested operations and access outside the render-owner thread.
 
-        This lane is not a cross-thread lock. The external consumer must share
-        its application publication guard with the captured scene publisher.
+        This lane is not a cross-thread lock. The OVXR session holds its application publication
+        guard around the lane and around scene publication.
         """
         self.require_owner_thread(f"enter the OVStage owner lane for {operation}")
         if self._lane_operation is not None:
@@ -456,7 +481,7 @@ class _OvxrLeaseController:
             raise RuntimeError("OvxrRenderLease pair is no longer initialized and attached")
 
     def release(self, lease: OvxrRenderLease) -> None:
-        """Retire the lease after borrower destruction and rebase the dormant ordinal."""
+        """Retire the lease after the OVXR context is destroyed and rebase the dormant ordinal."""
         self.validate_active(lease)
         if self._lane_operation is not None:
             raise RuntimeError("Cannot release OvxrRenderLease while the owner lane is active")
@@ -466,9 +491,9 @@ class _OvxrLeaseController:
             with self.owner_lane("lease-release ordinal rebase"):
                 self._renderer.scene.ordinal = self._next_ordinal()
         self._last_step_id = _NO_PHYSICS_STEP_ID
+        self._published_marker_revision = None
         self._publisher = None
         self._transfer_claimed = False
-        self.defer_until_transfer = False
         self.stage_deferred = False
         self.active = None
         if self._renderer.backend is not None:
@@ -492,12 +517,16 @@ class _OvxrLeaseController:
                 f"Cannot {operation}: a failed leased publication poisoned this OVRTX/OVStage pair; recreate it"
             )
 
-    def producer_publication_required(self, lease: OvxrRenderLease, physics_step_id: Hashable) -> bool:
-        """Check publication on the application thread without entering the render thread."""
+    def require_publishable(self, lease: OvxrRenderLease) -> None:
+        """Raise unless ``lease`` holds the active, bound and unpoisoned publisher pair."""
         if self.active is not lease or self._publisher is None:
             raise RuntimeError("OVStage scene publisher is not active for this lease")
         if self._poisoned or lease._state is not _OvxrLeaseState.BOUND:
             raise RuntimeError("OVStage scene publisher pair is unavailable")
+
+    def producer_publication_required(self, lease: OvxrRenderLease, physics_step_id: Hashable) -> bool:
+        """Check publication on the application thread without entering the render thread."""
+        self.require_publishable(lease)
         try:
             hash(physics_step_id)
         except TypeError as exc:
@@ -506,38 +535,44 @@ class _OvxrLeaseController:
         writer = writer_ref() if writer_ref is not None else None
         return (
             self._last_step_id != physics_step_id
-            or bool(self._renderer.marker_groups)
-            or bool(self._renderer.markers)
+            or self._marker_revision() != self._published_marker_revision
             or (writer is not None and writer.has_pending_updates)
         )
 
-    def write_producer_scene(
-        self, lease: OvxrRenderLease, ordinal: int, physics_step_id: Hashable, *, force: bool = False
-    ) -> None:
-        """Write a complete scene batch without advancing its reserved ordinal."""
+    def _marker_revision(self) -> int | None:
+        """Revision of the simulation's marker groups that this renderer draws, or ``None`` without markers.
+
+        The registry revision changes when a group is added, updated, hidden or removed.
+        """
+        if not self._renderer.marker_groups and not self._renderer.markers:
+            return None
+        return self._renderer._sim.vis_marker_registry.revision
+
+    def write_scene_components(self, lease: OvxrRenderLease, ordinal: int, physics_step_id: Hashable) -> None:
+        """Write every scene component at a reserved ordinal; the publisher validates and seals."""
         if ordinal <= 0:
             raise ValueError("OVStage publication ordinal must be nonzero")
-        if not self.producer_publication_required(lease, physics_step_id) and not force:
-            raise RuntimeError("OVStage scene publication is not required for this complete state")
-        self._renderer.scene.ordinal = ordinal
+        self.require_publishable(lease)
         try:
-            with self._renderer._publish_visual_materials():
-                self._renderer._update_transforms()
-                self._renderer._update_geometries()
+            self._write_components(ordinal)
         except Exception as exc:
             self._poisoned = True
             raise RuntimeError("Producer scene publication failed; recreate the exact pair") from exc
         self._last_step_id = physics_step_id
+        self._published_marker_revision = self._marker_revision()
 
     def prepare_stage(self, num_envs: int) -> bool:
         """Validate or defer leased preparation; ordinary rendering is immediately allowed.
+
+        Camera initialization prepares every registered renderer on the application thread. A leased
+        pair only records that request until Capture's render worker claims the owner transfer.
 
         Returns:
             Whether the renderer should materialize the Stage now.
         """
         lease = self.active
         if lease is not None:
-            if self.defer_until_transfer and not self._transfer_claimed:
+            if not self._transfer_claimed:
                 if lease._state is not _OvxrLeaseState.UNBOUND:
                     raise RuntimeError("Cannot replace the Stage of a bound renderer/scene pair")
                 self.stage_deferred = True
@@ -555,7 +590,7 @@ class _OvxrLeaseController:
         """Materialize a deferred Stage after render-thread ownership transfer."""
         self.require_owner_thread("materialize a deferred Stage")
         # Unclaimed, a fallback prepare_stage would only defer again; reject even if nothing is deferred yet.
-        if self.defer_until_transfer and not self._transfer_claimed:
+        if not self._transfer_claimed:
             raise RuntimeError("Deferred Stage materialization requires a claimed owner transfer")
         if not self.stage_deferred:
             return False
@@ -595,12 +630,55 @@ class _OvxrLeaseController:
             raise RuntimeError("OVStage ordinal range is exhausted")
         return floor + 1
 
+    def _write_components(self, ordinal: int) -> None:
+        """Write selected scene components; the caller owns validation and commit."""
+        self._renderer.scene.ordinal = ordinal
+        with self._renderer._publish_visual_materials():
+            self._renderer._publish_transforms()
+            self._renderer._publish_geometries()
+
+
+class _OvxrVisualMaterialWriter(OVRTXVisualMaterialWriter):
+    """Visual-material writer of the OVXR renderer, which may exist before its deferred Stage.
+
+    Environment reset finalizes material consumers before the session's render worker prepares the
+    Stage, so addresses compile on the first publication after population.
+    """
+
+    def __init__(self, renderer: OvxrRenderer, batches: tuple[Any, ...]):
+        self._pending_groups: list[tuple] = []
+        super().__init__(renderer, batches)
+
+    @property
+    def has_pending_updates(self) -> bool:
+        """Whether material changes require a scene publication even without a physics step."""
+        return bool(self._dirty_channels)
+
+    def publish(self) -> None:
+        if self._dirty_channels and self._pending_groups:
+            renderer = self._renderer_ref()
+            if not renderer._initialized_scene:
+                raise RuntimeError("Visual materials require a populated renderer scene before publication.")
+            super()._compile_addresses(renderer, self._pending_groups)
+            self._pending_groups = []
+        super().publish()
+
+    def close(self) -> None:
+        self._pending_groups = []
+        super().close()
+
+    def _compile_addresses(self, renderer: OVRTXRenderer, groups: list[tuple]) -> None:
+        if not renderer._initialized_scene:
+            self._pending_groups = list(groups)
+            return
+        super()._compile_addresses(renderer, groups)
+
 
 @configclass
 class OvxrRendererCfg(OVRTXRendererCfg):
     """OVRTX renderer configuration for an OVXR session.
 
-    The session's :class:`OvxrRenderer` lends its native renderer and OVStage to the session's
+    The session's ``OvxrRenderer`` lends its native renderer and OVStage to the session's
     render worker. Cameras with an ordinary :class:`~isaaclab_ov.renderers.OVRTXRendererCfg` keep
     Isaac Lab's ordinary renderer.
     """
@@ -618,6 +696,7 @@ class OvxrRenderer(OVRTXRenderer):
 
     def __init__(self, cfg: OvxrRendererCfg, *, sim: Any):
         super().__init__(cfg, sim=sim)
+        self._closed = False
         self._render_lease = _OvxrLeaseController(self)
 
     def acquire_render_lease(self) -> OvxrRenderLease:
@@ -643,6 +722,11 @@ class OvxrRenderer(OVRTXRenderer):
             return self._create_visual_material_writer
         return super().visual_material_writer
 
+    def _create_visual_material_writer(self, batches: tuple[Any, ...]) -> _OvxrVisualMaterialWriter:
+        writer = _OvxrVisualMaterialWriter(self, batches)
+        self._visual_material_writer_ref = weakref.ref(writer)
+        return writer
+
     # Extension points of OVRTXRenderer.
 
     def _requires_private_ovstage(self) -> bool:
@@ -650,6 +734,14 @@ class OvxrRenderer(OVRTXRenderer):
 
     def _reserve_native_pair(self) -> None:
         self._render_lease.reserve_pair()
+
+    # Scene writes for the session's publisher, without this renderer's lease guards.
+
+    def _publish_transforms(self) -> None:
+        super().update_transforms()
+
+    def _publish_geometries(self) -> None:
+        super().update_geometries()
 
     # Ordinary operations, rejected while the session holds the lease.
 
@@ -690,4 +782,7 @@ class OvxrRenderer(OVRTXRenderer):
     def close(self) -> None:
         """Release bindings once the lease is released; the registry owns the native engine."""
         self._render_lease.reject_ordinary_operation("close the renderer", retiring=True)
-        super().close()
+        try:
+            super().close()
+        finally:
+            self._closed = True

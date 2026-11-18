@@ -96,7 +96,6 @@ def _make_ovrtx_renderer_without_backend() -> OVRTXRenderer:
         clone_positions=None,
         render_products=set(),
         cfg=SimpleNamespace(read_gpu_transforms=False),
-        _retained_by=None,
     )
     renderer.scene = renderer.backend
     renderer.backend.renderer = SimpleNamespace(
@@ -698,4 +697,7 @@ def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkey
         assert ordinary.scene is ordinary.backend
     else:
         assert OvrtxReplicateContext not in routing
+    borrower._reserve_native_pair.assert_called_once_with()
+    # A later reset prepares again and must not reserve the existing pair a second time.
+    OvrtxReplicateContext.prepare(sim, {OvrtxReplicateContext: {0, 2}})
     borrower._reserve_native_pair.assert_called_once_with()

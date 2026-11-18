@@ -35,7 +35,10 @@ pytestmark = [
 
 if not _MISSING_MODULES:
     from isaaclab_ov.renderers import ovrtx_renderer as ovrtx_renderer_module  # noqa: E402
-    from isaaclab_ov.renderers.ovrtx_renderer import OVRTXCameraRenderData  # noqa: E402
+    from isaaclab_ov.renderers.ovrtx_renderer import (  # noqa: E402
+        OVRTXCameraRenderData,
+        OVRTXRenderer,
+    )
     from isaaclab_teleop.ovxr_renderer import OvxrRendererCfg, OvxrScenePublisher  # noqa: E402
 
 _SPAWN = PinholeCameraCfg(
@@ -115,10 +118,14 @@ def leased_renderer(monkeypatch):
 
 
 def _prepare_leased_renderer(renderer, *, bind=True):
+    """Prepare clones and, with ``bind``, the Stage on a render owner that claimed the transfer."""
     from isaaclab_ov.cloner import OvrtxReplicateContext
 
     OvrtxReplicateContext.prepare(renderer._sim, {})
     if bind:
+        lease = renderer._render_lease.active
+        if lease is not None:
+            lease.claim_owner_transfer(lease.offer_owner_transfer())
         renderer.prepare_stage(renderer._sim.stage, 1)
 
 
@@ -209,6 +216,24 @@ def test_render_lease_owner_transfer_is_single_use(leased_renderer):
     assert renderer.backend is renderer.scene is None
 
 
+class _Ledger:
+    """Stage ordinal ledger double that reserves one fixed ordinal and records seals and abandons."""
+
+    def __init__(self, ordinal: int):
+        self.ordinal = ordinal
+        self.reserved, self.published, self.abandoned = [], [], []
+
+    def reserve(self) -> int:
+        self.reserved.append(self.ordinal)
+        return self.ordinal
+
+    def publish(self, ordinal: int) -> None:
+        self.published.append(ordinal)
+
+    def abandon(self, ordinal: int) -> None:
+        self.abandoned.append(ordinal)
+
+
 @pytest.fixture
 def complete_scene_publication(leased_renderer, monkeypatch):
     """Exercise the application publisher with native component endpoints doubled."""
@@ -241,9 +266,10 @@ def complete_scene_publication(leased_renderer, monkeypatch):
         drain=lambda: component("material-drain"),
     )
     monkeypatch.setattr(renderer, "_visual_material_writer_ref", lambda: writer)
-    monkeypatch.setattr(renderer, "_update_transforms", lambda: component("transform"))
-    monkeypatch.setattr(renderer, "_update_geometries", lambda: component("geometry"))
-    state.publish = lambda step_id="step": publisher.write_complete_scene(state.ordinal, step_id)
+    monkeypatch.setattr(renderer, "_publish_transforms", lambda: component("transform"))
+    monkeypatch.setattr(renderer, "_publish_geometries", lambda: component("geometry"))
+    state.ledger = _Ledger(state.ordinal)
+    state.publish = lambda step_id="step", force=False: publisher.publish(step_id, state.ledger, force=force)
     try:
         yield state
     finally:
@@ -254,14 +280,15 @@ def test_render_lease_complete_scene_components_share_the_supplied_ordinal(compl
     state = complete_scene_publication
     renderer = state.renderer
     assert state.publisher.publication_required("step")
-    assert state.publish() is None
+    assert state.publish() == state.ordinal
+    assert state.ledger.published == [state.ordinal]
     names = ["material", "transform", "geometry", "material-drain"]
     assert state.events == [(name, state.ordinal) for name in names]
     assert renderer._render_lease._last_step_id == "step"
     assert renderer.scene.ordinal == state.ordinal
     assert not state.publisher.publication_required("step")
-    with pytest.raises(RuntimeError, match="publication is not required"):
-        state.publish()
+    assert state.publish() is None
+    assert state.ledger.reserved == [state.ordinal]
     assert state.events == [(name, state.ordinal) for name in names]
     renderer.scene.stage.get_attribute_write_floor.assert_not_called()
     renderer.scene.stage.advance_write_floor.assert_not_called()
@@ -269,8 +296,52 @@ def test_render_lease_complete_scene_components_share_the_supplied_ordinal(compl
 
     # An independently changed XR anchor still needs this same scene identity.
     state.events.clear()
-    state.publisher.write_complete_scene(state.ordinal + 1, "step", force=True)
-    assert state.events == [(name, state.ordinal + 1) for name in names if name != "partition"]
+    assert state.publisher.publish("step", _Ledger(state.ordinal + 1), force=True) == state.ordinal + 1
+    assert state.events == [(name, state.ordinal + 1) for name in names]
+
+
+def test_publication_prepares_only_a_scene_that_needs_publication(complete_scene_publication):
+    state = complete_scene_publication
+    prepared = []
+    assert state.publisher.publish("step", state.ledger, prepare=lambda: prepared.append(1)) == state.ordinal
+    assert state.publisher.publish("step", state.ledger, prepare=lambda: prepared.append(2)) is None
+    assert prepared == [1]
+
+
+def test_failed_seal_poisons_the_pair_and_abandons_its_ordinal(complete_scene_publication):
+    """A failed seal is a failed publication, after every component was written."""
+    state = complete_scene_publication
+
+    def seal(_ordinal):
+        raise RuntimeError("seal failed")
+
+    with pytest.raises(RuntimeError, match="seal failed"):
+        state.publisher.publish("step", state.ledger, seal=seal)
+    assert [name for name, _ in state.events][-1] == "material-drain"
+    assert state.ledger.abandoned == [state.ordinal] and not state.ledger.published
+    assert state.renderer._render_lease._poisoned
+    assert state.publisher.closed
+
+
+def test_markers_require_publication_only_when_their_registry_revision_changes(complete_scene_publication, monkeypatch):
+    """Unchanged markers do not repeat a scene write; added, updated, hidden or removed markers do."""
+    state = complete_scene_publication
+    renderer = state.renderer
+    registry = types.SimpleNamespace(revision=4)
+    monkeypatch.setattr(renderer._sim, "vis_marker_registry", registry, raising=False)
+    renderer.marker_groups = (object(),)
+    assert state.publisher.publication_required("step")
+    state.publish()
+    assert not state.publisher.publication_required("step")
+    registry.revision += 1
+    assert state.publisher.publication_required("step")
+    state.publish()
+    assert not state.publisher.publication_required("step")
+    # Removing the last group still publishes once, so that the renderer retires its markers.
+    renderer.marker_groups = ()
+    renderer.markers = {"retired": object()}
+    registry.revision += 1
+    assert state.publisher.publication_required("step")
 
 
 @pytest.mark.parametrize("failure", ["material", "transform", "geometry", "material-drain"])
@@ -286,13 +357,15 @@ def test_render_lease_complete_scene_failure_preserves_commit_boundary(complete_
     if failure != "material-drain":
         expected.append("material-drain")
     assert state.events == [(name, state.ordinal) for name in expected]
+    assert state.ledger.abandoned == [state.ordinal] and not state.ledger.published
     assert renderer._render_lease._last_step_id == state.initial_id
     assert renderer.scene.ordinal == state.ordinal
     assert renderer._render_lease._poisoned
+    assert state.publisher.closed
     with pytest.raises(RuntimeError, match="poisoned"):
         _ = lease.ovstage
     previous_events = list(state.events)
-    with pytest.raises(RuntimeError, match="unavailable|poisoned"):
+    with pytest.raises(RuntimeError, match="unavailable|poisoned|closed"):
         state.publish("next-step")
     assert state.events == previous_events
     renderer.scene.stage.advance_write_floor.assert_not_called()
@@ -319,8 +392,6 @@ def test_render_lease_complete_scene_public_authority_precedes_components(comple
     assert "thread" in str(errors[0])
     with pytest.raises(TypeError, match="physics_step_id must be hashable"):
         state.publish([])
-    with pytest.raises(ValueError, match="ordinal must be nonzero"):
-        state.publisher.write_complete_scene(0, "step")
     state.publisher.close()
     with pytest.raises(RuntimeError, match="publisher is closed"):
         state.publish()
@@ -331,21 +402,21 @@ def test_render_lease_complete_scene_public_authority_precedes_components(comple
 
 
 def test_render_lease_closed_publisher_reports_no_pending_publication(leased_renderer, monkeypatch):
-    """A closed publisher must not report a write that :meth:`write_complete_scene` would then reject."""
+    """A closed publisher must not report a write that :meth:`~OvxrScenePublisher.publish` would then reject."""
     renderer = leased_renderer
     lease = renderer.acquire_render_lease()
     publisher = lease.capture_scene_publisher()
     assert isinstance(publisher, OvxrScenePublisher)
     _prepare_leased_renderer(renderer)
-    monkeypatch.setattr(renderer, "_update_transforms", lambda: None)
-    monkeypatch.setattr(renderer, "_update_geometries", lambda: None)
+    monkeypatch.setattr(renderer, "_publish_transforms", lambda: None)
+    monkeypatch.setattr(renderer, "_publish_geometries", lambda: None)
     assert publisher.publication_required("step-1")
     publisher.close()
     publisher.close()
     with pytest.raises(RuntimeError, match="publisher is closed"):
         publisher.publication_required("step-1")
     with pytest.raises(RuntimeError, match="publisher is closed"):
-        publisher.write_complete_scene(18, "step-1")
+        publisher.publish("step-1", _Ledger(18))
     lease.release()
 
 
@@ -356,11 +427,13 @@ def test_render_lease_poison_blocks_publication_but_not_retirement(leased_render
     lease = renderer.acquire_render_lease()
     publisher = lease.capture_scene_publisher()
     _prepare_leased_renderer(renderer)
-    monkeypatch.setattr(renderer, "_update_transforms", MagicMock(side_effect=ValueError("write failed")))
-    monkeypatch.setattr(renderer, "_update_geometries", lambda: None)
+    monkeypatch.setattr(renderer, "_publish_transforms", MagicMock(side_effect=ValueError("write failed")))
+    monkeypatch.setattr(renderer, "_publish_geometries", lambda: None)
     if failure_owner == "producer":
+        ledger = _Ledger(19)
         with pytest.raises(RuntimeError, match="scene publication failed"):
-            publisher.write_complete_scene(19, "step-1")
+            publisher.publish("step-1", ledger)
+        assert ledger.abandoned == [19] and not ledger.published
     else:
         publisher.invalidate()
     with pytest.raises(RuntimeError, match="unavailable|closed"):
@@ -411,7 +484,6 @@ def test_render_lease_defers_application_thread_stage_until_owner_transfer(lease
 
     renderer = leased_renderer
     lease = renderer.acquire_render_lease()
-    lease.defer_stage_until_owner_transfer()
     _prepare_leased_renderer(renderer, bind=False)
     context = renderer._sim.render_context
     context.ensure_prepare_stage(renderer._sim.stage, 1)
@@ -447,8 +519,9 @@ def test_render_lease_eager_scene_updates_defer_to_the_publisher(leased_renderer
     lease = renderer.acquire_render_lease()
     _prepare_leased_renderer(renderer)
     transforms, geometries = MagicMock(), MagicMock()
-    monkeypatch.setattr(renderer, "_update_transforms", transforms)
-    monkeypatch.setattr(renderer, "_update_geometries", geometries)
+    # Ordinary eager updates reach the base renderer's writes once the lease is released.
+    monkeypatch.setattr(OVRTXRenderer, "update_transforms", transforms)
+    monkeypatch.setattr(OVRTXRenderer, "update_geometries", geometries)
     renderer._sim.render_context.update_scene_state(1)
     transforms.assert_not_called()
     geometries.assert_not_called()
@@ -481,6 +554,8 @@ def test_leased_material_updates_reach_the_reserved_scene(leased_renderer, monke
     context.register_visual_material(material)
     context.finalize_consumers([])
     assert renderer._visual_material_writer_ref is not None
+    # The render owner claims the pair first, so the Stage is prepared without deferral.
+    lease.claim_owner_transfer(lease.offer_owner_transfer())
     renderer.prepare_stage(renderer._sim.stage, 1)
     stage = renderer.scene.stage
     try:
@@ -490,7 +565,7 @@ def test_leased_material_updates_reach_the_reserved_scene(leased_renderer, monke
             stage.write_attribute.reset_mock()
             completion = MagicMock()
             stage.write_attribute.return_value = completion
-            publisher.write_complete_scene(ordinal, "unchanged-physics")
+            assert publisher.publish("unchanged-physics", _Ledger(ordinal)) == ordinal
             writes = [c for c in stage.write_attribute.call_args_list if c.args[1] == "inputs:diffuseColor"]
             assert len(writes) == 1
             assert writes[0].kwargs["ordinal"] == ordinal
