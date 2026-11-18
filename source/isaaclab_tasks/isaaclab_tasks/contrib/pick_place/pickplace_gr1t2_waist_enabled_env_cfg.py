@@ -30,14 +30,12 @@ class PickPlaceGR1T2WaistEnabledEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the GR1T2 environment."""
 
     class_type: type | str = "isaaclab_tasks.contrib.teleop_env:make_humanoid_teleop_env"
-    _prepared_kitless_backend: str | None = None
-    kitless_preparation: dict[str, str] = {
-        "ovphysx": "isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg:prepare_gr1t2_for_kitless_ovphysx",
-        "newton_mjwarp": (
-            "isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg:prepare_gr1t2_for_kitless_newton_mjwarp"
-        ),
+    _prepared_physics_backend: str | None = None
+    backend_preparation: dict[str, str] = {
+        "ovphysx": "isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg:prepare_gr1t2_for_ovphysx",
+        "newton_mjwarp": ("isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg:prepare_gr1t2_for_newton_mjwarp"),
     }
-    """Preparation function, as a ``"module:function"`` reference, for each supported kitless backend.
+    """Preparation function, as a ``"module:function"`` reference, for each supported standalone backend.
 
     The shared GR1T2 preparation keeps the configured controlled joints, including the waist.
     """
@@ -63,7 +61,7 @@ class PickPlaceGR1T2WaistEnabledEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
-        if self._prepared_kitless_backend is not None:
+        if self._prepared_physics_backend is not None:
             return
         # general settings
         self.decimation = 6

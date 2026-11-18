@@ -318,7 +318,7 @@ def test_humanoid_standalone_preparation_without_teleop():
                 raise AssertionError("Registered constructor did not reach the simulation boundary")
             validate(cfg)
             assert cfg.isaac_teleop is None
-            assert cfg._prepared_kitless_backend == physics
+            assert cfg._prepared_physics_backend == physics
         # Launchers prepare before simulator startup, where these imports are unsafe.
         import sys
         loaded = sorted({name.split(".")[0] for name in sys.modules} & {"scipy", "pinocchio", "pink", "qpsolvers"})

@@ -14,22 +14,20 @@ from isaaclab.envs.mdp.actions.pink_actions_cfg import PinkInverseKinematicsActi
 from isaaclab.utils.configclass import configclass
 
 if TYPE_CHECKING:
-    from .gr1t2_kitless_action import GR1T2KitlessPinkInverseKinematicsAction
+    from .gr1t2_bounded_pink_action import GR1T2BoundedPinkIKAction
 
 
 @configclass
-class GR1T2KitlessPinkInverseKinematicsActionCfg(PinkInverseKinematicsActionCfg):
+class GR1T2BoundedPinkIKActionCfg(PinkInverseKinematicsActionCfg):
     """Pink action with backend-specific target conditioning for GR1T2.
 
-    Kitless OVPhysX and Newton preparation replace the task's Pink action term
+    OVPhysX and Newton preparation replace the task's Pink action term
     with this one; the regular Kit/PhysX path keeps the base term. Preparation
     fills the hand metadata while conditioning the spawned USD before physics
     parses it.
     """
 
-    class_type: type[GR1T2KitlessPinkInverseKinematicsAction] | str = (
-        "{DIR}.gr1t2_kitless_action:GR1T2KitlessPinkInverseKinematicsAction"
-    )
+    class_type: type[GR1T2BoundedPinkIKAction] | str = "{DIR}.gr1t2_bounded_pink_action:GR1T2BoundedPinkIKAction"
 
     max_ik_joint_delta_rad: float = 0.2
     """Maximum IK target offset from measured joint position on each IK application [rad].
