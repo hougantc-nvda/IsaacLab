@@ -300,3 +300,27 @@ def test_teleop_tasks_resolve_public_physics_selectors(physics):
         physx_cfg = parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=physx_selections).sim.physics
         for name in ("bounce_threshold_velocity", "friction_correlation_distance", "solve_articulation_contact_last"):
             assert getattr(cfg.sim.physics, name) == getattr(physx_cfg, name), name
+
+
+@pytest.mark.parametrize("kit", [False, True])
+def test_so101_teleop_automatic_physx_selects_tuned_ovphysx_without_kit(kit):
+    """The ``physx`` selector resolves to the task's tuned OvPhysX config without Kit and to Isaac Sim PhysX with it."""
+    from isaaclab_ov.physics import OvPhysxCfg
+    from isaaclab_physx.physics import PhysxCfg
+
+    from isaaclab.app import validate_launch
+
+    import isaaclab_tasks  # noqa: F401 -- registers the public task IDs
+    from isaaclab_tasks.utils import parse_env_cfg
+    from isaaclab_tasks.utils.hydra import setup_preset_cli
+
+    task_name = "IsaacContrib-Stack-Cube-SO101-IK-Abs-v0"
+
+    def resolve(physics):
+        _, selections = setup_preset_cli(_make_parser(), ["--task", task_name, "--physics", physics])
+        return parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=selections)
+
+    cfg = resolve("physx")
+    validate_launch(cfg, {"visualizer": ["kit"]} if kit else {})
+    assert type(cfg.sim.physics) is (PhysxCfg if kit else OvPhysxCfg)
+    assert cfg.sim.physics == resolve("isaacsim_physx" if kit else "ovphysx").sim.physics
