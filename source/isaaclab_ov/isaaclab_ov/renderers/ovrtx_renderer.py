@@ -300,10 +300,16 @@ class OVRTXBackend:
         with OVRTXBackend._initialization_lock:
             initial = OVRTXBackend._initial_gpu_selection
             if initial is not None and selection != initial:
+                source = (
+                    "from active_cuda_gpus"
+                    if cfg.active_cuda_gpus is not None
+                    else f"for simulation device {cfg.device!r}, since active_cuda_gpus is unset"
+                )
                 raise ValueError(
-                    "OVRTX rendering GPU selection cannot change in this process:"
-                    f" first requested {initial or 'native default'}, requested {selection or 'native default'}."
-                    " Reuse the original selection or start a new process to select different rendering GPUs."
+                    "OVRTX selects rendering GPUs once per process: it already uses"
+                    f" {initial or 'the native default'}, but this renderer requests"
+                    f" {selection or 'the native default'} {source}. Every OVRTX renderer in a process must"
+                    " resolve to the same GPUs; start a new process to select different rendering GPUs."
                 )
             visible = wp.get_cuda_device_count()
             if any(index >= visible for index in selection):
