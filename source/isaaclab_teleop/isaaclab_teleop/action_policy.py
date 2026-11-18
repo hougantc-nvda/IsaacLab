@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Task-owned action validation shared by live and replay."""
+"""Task-owned action validation shared by live teleoperation, recording and replay."""
 
 from __future__ import annotations
 

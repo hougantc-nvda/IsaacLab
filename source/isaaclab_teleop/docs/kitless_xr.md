@@ -150,6 +150,6 @@ MCAP replay. Instructions are logged because no Kit window opens. Add `--mcap_re
 to also capture the session's tracker and control input for MCAP replay. Without Isaac Sim,
 `replay_demos.py` replays the HDF5 file on the backend selected with `--physics`.
 
-HDF5 recording for the humanoid kitless tasks still requires Kit/Isaac Sim because the
-recording loop does not apply their action-conditioning and tracking-readiness policies.
-Tasks without those policies can continue recording with Newton.
+Recording applies a task's initial hand-tracking gate and action conditioning and validation
+before each step, as live teleoperation and MCAP replay do, so the humanoid tasks also record
+with kitless physics.
