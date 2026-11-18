@@ -762,7 +762,8 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
                 for camera in self._auxiliary_cameras:
                     # OVXR presentation bypasses Camera's image-update path. Refresh only poses
                     # after simulation/reset kinematics, before publishing the matching scene.
-                    sensors[camera.name].refresh_world_poses()
+                    # Camera has no public pose-only refresh; its pose update renders and counts no frame.
+                    sensors[camera.name]._update_poses(env_ids=None)
             if anchor_epoch is not None:
                 epoch, _ = anchor_epoch
                 reference = self._bootstrap.get_world_transform(self._external_anchor.external_reference_path)
