@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Callable
-from dataclasses import MISSING
+from dataclasses import MISSING, field
 from typing import TYPE_CHECKING
 
 from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
@@ -744,15 +744,15 @@ def prepare_gr1t2_for_ovphysx(env_cfg: ManagerBasedRLEnvCfg) -> None:
         ValueError: If ``env_cfg`` was already prepared for a different backend.
     """
     if check_backend_preparation(env_cfg, "ovphysx"):
-        condition_standalone_gr1t2_stage(env_cfg.scene.robot, env_cfg.actions.upper_body_ik)
+        condition_standalone_gr1t2_stage(env_cfg.scene.robot)
         return
-    action_cfg = _use_bounded_pink_action_term(env_cfg)
+    _use_bounded_pink_action_term(env_cfg)
     # Do not apply retargeter defaults before hand tracking starts.
     if env_cfg.isaac_teleop is not None:
         env_cfg.isaac_teleop.require_initial_bimanual_hand_tracking = True
     apply_ovphysx_drive_gains(env_cfg.scene.robot)
     condition_ovphysx_robot_spawn_properties(env_cfg.scene.robot)
-    condition_standalone_gr1t2_stage(env_cfg.scene.robot, action_cfg)
+    condition_standalone_gr1t2_stage(env_cfg.scene.robot)
     configure_packing_table_collisions(env_cfg.scene.packing_table, physx_offsets=True)
     env_cfg._prepared_physics_backend = "ovphysx"
 
@@ -771,16 +771,16 @@ def prepare_gr1t2_for_newton_mjwarp(env_cfg: ManagerBasedRLEnvCfg) -> None:
         ValueError: If ``env_cfg`` was already prepared for a different backend.
     """
     if check_backend_preparation(env_cfg, "newton_mjwarp"):
-        condition_standalone_gr1t2_stage(env_cfg.scene.robot, env_cfg.actions.upper_body_ik, widen_hand_limits=False)
+        condition_standalone_gr1t2_stage(env_cfg.scene.robot, widen_hand_limits=False)
         return
-    action_cfg = _use_bounded_pink_action_term(env_cfg)
+    _use_bounded_pink_action_term(env_cfg)
     if env_cfg.isaac_teleop is not None:
         env_cfg.isaac_teleop.require_initial_bimanual_hand_tracking = True
     _stabilize_gr1t2_for_newton_mjwarp(env_cfg)
     # Newton orders joints and bodies differently; keep the PhysX order of Kit-recorded data.
     env_cfg.scene.robot.joint_ordering = "physx"
     env_cfg.scene.robot.body_ordering = "physx"
-    condition_standalone_gr1t2_stage(env_cfg.scene.robot, action_cfg, widen_hand_limits=False)
+    condition_standalone_gr1t2_stage(env_cfg.scene.robot, widen_hand_limits=False)
     configure_packing_table_collisions(env_cfg.scene.packing_table)
     env_cfg._prepared_physics_backend = "newton_mjwarp"
 
@@ -908,9 +908,8 @@ def _spawn_and_condition(prim_path: str, cfg: GR1T2ConditionedUsdFileCfg, *args,
     from pxr import Gf, Sdf, Usd
 
     prim = cfg.original_spawn(prim_path, cfg, *args, **kwargs)
-    action_cfg = cfg.action_cfg
-    action_cfg.hand_joint_limits.clear()
-    action_cfg.hand_mimic_relations.clear()
+    cfg.hand_joint_limits.clear()
+    cfg.hand_mimic_relations.clear()
 
     # Collision meshes below instanceable ``collisions`` scopes are
     # immutable proxies. De-instance those scopes so the parser-visible
@@ -937,7 +936,7 @@ def _spawn_and_condition(prim_path: str, cfg: GR1T2ConditionedUsdFileCfg, *args,
             reference = child.GetRelationship("physxMimicJoint:rotZ:referenceJoint")
             targets = reference.GetTargets() if reference else []
             if gearing and gearing.HasValue() and targets:
-                action_cfg.hand_mimic_relations[child.GetName()] = (
+                cfg.hand_mimic_relations[child.GetName()] = (
                     targets[0].name,
                     float(gearing.Get()),
                     float(offset.Get()) if offset and offset.HasValue() else 0.0,
@@ -955,7 +954,7 @@ def _spawn_and_condition(prim_path: str, cfg: GR1T2ConditionedUsdFileCfg, *args,
             lower = child.GetAttribute("physics:lowerLimit")
             upper = child.GetAttribute("physics:upperLimit")
             if lower and upper and lower.HasValue() and upper.HasValue():
-                action_cfg.hand_joint_limits[child.GetName()] = (
+                cfg.hand_joint_limits[child.GetName()] = (
                     math.radians(float(lower.Get())),
                     math.radians(float(upper.Get())),
                 )
@@ -967,20 +966,18 @@ def _spawn_and_condition(prim_path: str, cfg: GR1T2ConditionedUsdFileCfg, *args,
 
 @configclass
 class GR1T2ConditionedUsdFileCfg(UsdFileCfg):
-    """Serializable GR1T2 spawn preparation and asset-owned hand metadata."""
+    """Serializable GR1T2 spawn preparation and the hand metadata it records while spawning."""
 
     original_spawn: Callable | str = MISSING
-    action_cfg: GR1T2BoundedPinkIKActionCfg | None = None
     widen_hand_limits: bool = True
+    hand_mimic_relations: dict[str, tuple[str, float, float]] = field(default_factory=dict)
+    """Mimic joint to ``(reference joint, gearing, offset)``, recorded as the spawner removes the mimic constraints."""
+    hand_joint_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
+    """Anatomical hand-joint limits recorded before the spawner widens them [rad]."""
     func: Callable | str = _spawn_and_condition
 
 
-def condition_standalone_gr1t2_stage(
-    robot_cfg: ArticulationCfg,
-    action_cfg: GR1T2BoundedPinkIKActionCfg,
-    *,
-    widen_hand_limits: bool = True,
-) -> None:
+def condition_standalone_gr1t2_stage(robot_cfg: ArticulationCfg, *, widen_hand_limits: bool = True) -> None:
     """Condition the spawned GR1T2 hand description before standalone physics parses it.
 
     The raw asset has near-singular finger inertia, hard PhysX-only mimic
@@ -998,13 +995,11 @@ def condition_standalone_gr1t2_stage(
       OVPhysX). Newton retains the anatomical limits because bounding drive
       targets alone does not bound simulated positions.
 
-    The original mimic relations and anatomical limits are recorded on the typed
-    action config for target conditioning. The source USD and normal Kit path
-    remain unchanged.
+    The spawner records the original mimic relations and anatomical limits on the
+    spawn configuration it receives, where the bounded Pink action term reads them
+    for target conditioning. The source USD and normal Kit path remain unchanged.
     """
     if robot_cfg.spawn is None:
         return
     robot_cfg.spawn = wrap_spawn(robot_cfg.spawn, GR1T2ConditionedUsdFileCfg, _spawn_and_condition)
-    # Seed metadata from this environment; Asset construction owns its independent spawn copy.
-    robot_cfg.spawn.action_cfg = action_cfg
     robot_cfg.spawn.widen_hand_limits = widen_hand_limits
