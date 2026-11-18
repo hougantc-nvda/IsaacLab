@@ -144,7 +144,7 @@ def build_render_product_as_string(
     spec: CameraRenderSpec,
     render_data: OVRTXCameraRenderData,
     *,
-    device_id: int | None = None,
+    device_id: int | None,
     enable_shadows: bool = False,
 ) -> str:
     """Build a complete render product USD layer as a string.
