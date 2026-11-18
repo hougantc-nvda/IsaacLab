@@ -174,6 +174,8 @@ _LEASE_REJECTED_OPERATIONS = {
     "update_camera_intrinsics": lambda renderer: renderer.update_camera_intrinsics(object(), None, None),
     "log_mesh": lambda renderer: renderer.log_mesh("blocked"),
     "render_batch": lambda renderer: renderer.render_batch((object(),)),
+    # Releasing a product removes it from the borrowed Stage.
+    "cleanup": lambda renderer: renderer.cleanup(object()),
     "close": lambda renderer: renderer.close(),
 }
 # The session's scene publisher owns these writes; ordinary calls return without writing.
@@ -190,7 +192,6 @@ _LEASE_NEUTRAL_OPERATIONS = (
     "drain_pending_renders",
     "reset",
     "render",
-    "cleanup",
     "initialize",
 )
 
