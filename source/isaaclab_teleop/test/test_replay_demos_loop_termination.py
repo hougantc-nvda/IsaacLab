@@ -112,3 +112,15 @@ def test_replay_keeps_kit_unless_a_kitless_backend_is_selected(monkeypatch, kit_
     monkeypatch.setattr(sys, "argv", list(sys.argv))
     args = replay_demos._parse_args(["--task", "Test", *physics_args])
     assert args.require_kit is require_kit
+
+
+def test_compare_states_accepts_batched_dataset_states():
+    """Episode data returns each recorded state with its batch dimension, as the runtime state has per env."""
+    from isaaclab_teleop.entrypoints.replay_demos import compare_states
+
+    runtime = {"articulation": {"robot": {"root_pose": torch.zeros(2, 7)}}, "rigid_object": {}}
+    recorded = {"articulation": {"robot": {"root_pose": torch.zeros(1, 7)}}, "rigid_object": {}}
+    assert compare_states(recorded, runtime, 1) == (True, "")
+    recorded["articulation"]["robot"]["root_pose"][0, 2] = 1.0
+    matched, log = compare_states(recorded, runtime, 1)
+    assert not matched and '["root_pose"][2]' in log
