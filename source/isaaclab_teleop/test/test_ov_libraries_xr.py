@@ -118,6 +118,12 @@ class _FakeBootstrap:
         self.events = []
         self.closed = False
         self.aborted = False
+        self.stop_listeners = []
+        self.simulation_context = SimpleNamespace(
+            backend_manager=SimpleNamespace(
+                register_callback=lambda callback, event, **options: self.stop_listeners.append((event, options))
+            )
+        )
 
     def capture_scene_publisher(self):
         self.events.append("capture")
@@ -369,7 +375,8 @@ def test_host_lends_exact_pair_and_keeps_application_publication(xr_module, monk
     host.close_environment_on_render_thread()
     assert bootstrap.publisher.closed and bootstrap.closed
     assert binding.ordinal_ledger.destroyed
-    assert bootstrap.events[-1] == "environment-close"
+    # The host closes the environment after the session; Capture's worker only verifies retirement.
+    assert "environment-close" not in bootstrap.events
 
 
 def test_host_abandons_failed_write_and_failed_publish(xr_module, monkeypatch):
@@ -532,12 +539,10 @@ def test_publication_retains_primary_cause_when_abandon_fails(xr_module, monkeyp
     assert any("abandon failed" in note for note in caught.value.__notes__)
 
 
-@pytest.mark.parametrize("environment_owner", ["render_worker", "host"])
-def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch, environment_owner) -> None:
+def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch) -> None:
     calls = []
 
     class FakeOwner:
-        owns_environment = True
         shutdown_requested = False
         retirement_complete = False
 
@@ -574,9 +579,7 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
     bootstrap = _FakeBootstrap()
     assert xr_module.OvLibrariesXrCfg().extra_openxr_extensions == ()
     session = xr_module.OvLibrariesXrSession(
-        bootstrap,
-        xr_module.OvLibrariesXrCfg(extra_openxr_extensions=("XR_EXT_debug_utils",)),
-        environment_owner=environment_owner,
+        bootstrap, xr_module.OvLibrariesXrCfg(extra_openxr_extensions=("XR_EXT_debug_utils",))
     )
     env = SimpleNamespace(close=lambda: calls.append(("environment-close",)))
     assert session.start_render_worker(
@@ -594,7 +597,6 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
     assert session.request_render("reset", force=True) == 17
     assert calls[-2:] == [("request", "step", False), ("request", "reset", True)]
     assert session.get_target_frame_T_world("/target") == ("target", "/target")
-    assert session.async_worker_owns_environment is (environment_owner == "render_worker")
     assert not session.retirement_complete
     assert not session.shutdown_requested
     session.request_shutdown()
@@ -604,13 +606,10 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
     assert session.shutdown_requested
     session.close()
     assert session.retirement_complete
-    if environment_owner == "render_worker":
-        assert calls[-2:] == [("close",), ("environment-close",)]
-    else:
-        assert calls[-1] == ("close",)
-        assert ("environment-close",) not in calls
-        env.close()
-        assert calls[-1] == ("environment-close",)
+    assert calls[-1] == ("close",)
+    assert ("environment-close",) not in calls
+    env.close()
+    assert calls[-1] == ("environment-close",)
 
 
 @pytest.fixture
@@ -702,6 +701,10 @@ def test_caller_renderer_settings_follow_successful_preparation(xr_module, monke
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", create_bootstrap)
     xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(renderer_settings=settings))
     assert events == ["bootstrap", ("settings", settings.strip())]
+    # The session retires before every Isaac Lab STOP listener of the prepared simulation.
+    [(event, options)] = bootstrap.stop_listeners
+    assert event is xr_module.PhysicsEvent.STOP
+    assert options["order"] < 0
 
 
 @pytest.mark.parametrize("failure", ["bootstrap", "settings"])
@@ -800,7 +803,7 @@ def test_public_xr_exports_resolve_to_implemented_types(xr_module):
 
 
 def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypatch, real_lease_type):
-    """After a failed scene write, Capture's OvxrFramePump.close must still retire the pair and the env."""
+    """After a failed scene write, Capture's OvxrFramePump.close must still retire the pair."""
     host, bootstrap, env = _make_host(xr_module, monkeypatch)
     controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     stage = SimpleNamespace(floor=10)
@@ -857,7 +860,7 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
     host.close_environment_on_render_thread()
     assert bootstrap.closed
     assert controller.active is None
-    assert bootstrap.events[-1] == "environment-close"
+    assert "environment-close" not in bootstrap.events
 
 
 class _FakeAnchorState:
@@ -987,11 +990,9 @@ def test_config_imports_without_native_ovxr():
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize(
-    "environment_owner,retirement_fails", [("render_worker", False), ("host", False), ("host", True)]
-)
+@pytest.mark.parametrize("retirement_fails", [False, True])
 def test_capture_worker_retires_post_claim_attachment_failure(
-    xr_module, monkeypatch, real_lease_type, bootstrap_context, environment_owner, retirement_fails
+    xr_module, monkeypatch, real_lease_type, bootstrap_context, retirement_fails
 ) -> None:
     """Run Capture's actual worker/finally callbacks against the thread-affine Lab lease."""
     from isaaccapture.ovxr_session_manager import frame_pump
@@ -1054,9 +1055,7 @@ def test_capture_worker_retires_post_claim_attachment_failure(
         close=close_environment,
     )
     env.unwrapped = env
-    session = xr_module.OvLibrariesXrSession(
-        bootstrap, xr_module.OvLibrariesXrCfg(), environment_owner=environment_owner
-    )
+    session = xr_module.OvLibrariesXrSession(bootstrap, xr_module.OvLibrariesXrCfg())
     with pytest.raises(RuntimeError) as raised:
         session.start_render_worker(env, timeout_s=1.0)
     assert raised.value is failure
@@ -1074,22 +1073,19 @@ def test_capture_worker_retires_post_claim_attachment_failure(
             bootstrap.close()
     else:
         assert controller.active is None
-        if environment_owner == "host":
-            assert not events
-            env.close()
-            assert events == [("environment-close", threading.get_native_id())]
-        else:
-            assert events == [("environment-close", worker_ids[0])]
+        # The worker only verified retirement; the host closes the environment on its own thread.
+        assert not events
+        env.close()
+        assert events == [("environment-close", threading.get_native_id())]
 
 
 def test_host_owned_session_requires_proven_retirement(xr_module) -> None:
     """A normally returned owner close cannot release the host's environment without proof."""
-    session = xr_module.OvLibrariesXrSession(_FakeBootstrap(), xr_module.OvLibrariesXrCfg(), environment_owner="host")
-    session._owner = SimpleNamespace(close=lambda: None, owns_environment=True, retirement_complete=False)
+    session = xr_module.OvLibrariesXrSession(_FakeBootstrap(), xr_module.OvLibrariesXrCfg())
+    session._owner = SimpleNamespace(close=lambda: None, retirement_complete=False)
     with pytest.raises(RuntimeError, match="retirement is unproved"):
         session.close()
     assert not session.retirement_complete
-    assert not session.async_worker_owns_environment
     session._owner.retirement_complete = True
     session.close()
     assert session.retirement_complete

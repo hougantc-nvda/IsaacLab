@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -67,7 +68,9 @@ class OvxrSessionBootstrap:
         validate_ovxr_session_preparation()
 
         self._sim: SimulationContext | None = None
+        self._renderer: OvxrRenderer | None = None
         self._lease: OvxrRenderLease | None = None
+        self._retained_pair: tuple[Any, ...] = ()
         self._owner_transfer_capability: object | None = None
         self._bound = False
         self._closed = False
@@ -105,6 +108,7 @@ class OvxrSessionBootstrap:
         self._sim = sim
         self._prepared_device = sim.cfg.device
         self._prepared_dt = sim.cfg.dt
+        self._renderer = renderer
         self._lease = lease
 
     @property
@@ -278,6 +282,33 @@ class OvxrSessionBootstrap:
         self.close()
         if not self._bound and self._sim is not None and SimulationContext.instance() is self._sim:
             self._sim.clear_instance()
+
+    def _retain_native_pair(self) -> None:
+        """Keep the leased native pair alive while the simulation tears down around it.
+
+        The session calls this when its retirement fails or is refused while the lease is still held, so
+        a live or unproved render owner may still use the pair. The simulation then closes the
+        ``OVRTXBackend`` and ``OvstageBackend`` that own it. Moving the native renderer out of the
+        former and the Stage's resources out of the latter leaves both ``close()`` methods nothing to
+        destroy; this bootstrap, which the session and Isaac Capture's worker both reference, holds them
+        instead. Once detached, the pair no longer validates as the renderer's live pair, so the render
+        owner cannot use it again and releases nothing; it stays alive until the process exits.
+        """
+        if self._retained_pair or self._renderer is None:
+            return
+        backend, scene = self._renderer.backend, self._renderer.scene
+        retained: list[Any] = []
+        if backend is not None and backend.renderer is not None:
+            # OVRTXBackend.close() destroys only the renderer it references; detach() needs ``attached``.
+            retained.append(backend.renderer)
+            backend.renderer = None
+            backend.attached = False
+        if scene is not None and scene is not backend:
+            # OvstageBackend.close() releases the Stage, its paths and their dependent callbacks
+            # (including the engine's detach) through ``resources``.
+            retained.extend((scene.resources, scene.stage, scene.paths))
+            scene.resources = contextlib.ExitStack()
+        self._retained_pair = tuple(retained)
 
     def _require_open(self) -> None:
         if self._closed:

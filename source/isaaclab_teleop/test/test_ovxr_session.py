@@ -170,3 +170,169 @@ class _UnusedContext:
 
     def get_or_create_backend(self, _cfg):
         pytest.fail("created a renderer")
+
+
+class _CaptureOwner:
+    """Isaac Capture's session owner: closing it drains the worker, which releases the lease on the render owner."""
+
+    def __init__(self, bootstrap, events):
+        self.bootstrap = bootstrap
+        self.events = events
+        self.failure = None
+        self.closes = 0
+        self.retirement_complete = False
+
+    def external_oxr_handles(self):
+        return "handles"
+
+    def close(self):
+        self.closes += 1
+        self.events.append("xr-drain")
+        if self.failure is not None:
+            raise self.failure
+        self.bootstrap.close()
+        self.retirement_complete = True
+
+
+@pytest.fixture
+def ovxr_simulation(monkeypatch):
+    """Prepare a real kitless simulation and OVXR session whose leased pair is bound; native endpoints are doubled."""
+    import contextlib
+    import sys
+    from unittest.mock import MagicMock
+
+    pytest.importorskip("isaaccapture.ovxr_session_manager")
+    pytest.importorskip("ovphysx")
+    import isaaclab_ov.stage as stage_module
+    from isaaclab_ov.cloner import OvrtxReplicateContext
+    from isaaclab_ov.physics import OvPhysxCfg
+    from isaaclab_ov.renderers import ovrtx_renderer as ovrtx_renderer_module
+    from isaaclab_teleop import ovxr_session
+    from isaaclab_teleop.ov_libraries_xr import OvLibrariesXrCfg, OvLibrariesXrSession
+
+    from isaaclab.physics import PhysicsEvent
+    from isaaclab.sim import SimulationContext
+
+    for name in ("ISAAC_LAB_OVRTX_USE_OVSTAGE", "ISAAC_LAB_SHARE_OVSTAGE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
+    events = []
+    native, stage, paths = MagicMock(), MagicMock(), MagicMock()
+    native.destroy.side_effect = lambda: events.append("native-destroy")
+    floor = stage.get_attribute_write_floor.return_value.__enter__.return_value
+    floor.fetch.return_value = 0
+    stage.advance_write_floor.side_effect = lambda *, ordinal: SimpleNamespace(
+        wait=lambda: setattr(floor.fetch, "return_value", ordinal)
+    )
+
+    @contextlib.contextmanager
+    def create_ovstage(_name):
+        yield stage
+        events.append("stage-close")
+
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", lambda _cfg: native)
+    monkeypatch.setattr(ovrtx_renderer_module, "redirect_shader_cache", lambda _cfg: None)
+    monkeypatch.setattr(stage_module, "create_ovstage", create_ovstage)
+    monkeypatch.setattr(stage_module.ovstage, "PathDictionary", lambda _: contextlib.nullcontext(paths))
+    monkeypatch.setattr(stage_module.ovstage.population, "open_usd_from_string", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=lambda _settings: None))
+
+    session = OvLibrariesXrSession.prepare(
+        SimulationCfg(physics=OvPhysxCfg(), device="cpu", dt=0.01), OvLibrariesXrCfg()
+    )
+    bootstrap = session._bootstrap
+    sim = bootstrap.simulation_context
+    try:
+        renderer = sim.get_or_create_backend(OvxrRendererCfg())
+        renderer._sdp = SimpleNamespace(backend=SimpleNamespace(transform_paths=[]), get_geometry_points=lambda: {})
+        # Clone preparation creates the private pair; this thread then claims and binds it as the render owner.
+        OvrtxReplicateContext.prepare(sim, {})
+        lease = bootstrap.claim_render_owner_transfer(bootstrap.offer_render_owner_transfer())
+        renderer.prepare_stage(sim.stage, 1)
+        lease.validate_live()
+        # Camera sensors invalidate their render data at this STOP priority.
+        sim.backend_manager.register_callback(
+            lambda _payload: events.append("camera-cleanup"), PhysicsEvent.STOP, order=10
+        )
+        close_render_context = type(sim.render_context).close
+
+        def record_render_context_close(context):
+            events.append("render-context-close")
+            close_render_context(context)
+
+        monkeypatch.setattr(type(sim.render_context), "close", record_render_context_close)
+        owner = _CaptureOwner(bootstrap, events)
+        session._owner = owner
+        yield SimpleNamespace(
+            session=session, bootstrap=bootstrap, sim=sim, owner=owner, native=native, stage=stage, events=events
+        )
+    finally:
+        if SimulationContext.instance() is not None:
+            with contextlib.suppress(Exception):
+                SimulationContext.clear_instance()
+        if hasattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL):
+            delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL)
+
+
+def test_simulation_stop_retires_ovxr_before_cameras_renderers_and_native_backends(ovxr_simulation):
+    """Clearing the context drains the XR worker before any Isaac Lab STOP listener or native backend closes."""
+    from isaaclab.sim import SimulationContext
+
+    state = ovxr_simulation
+    SimulationContext.clear_instance()
+    events = state.events
+    assert events[0] == "xr-drain"
+    order = [events.index(name) for name in ("camera-cleanup", "render-context-close", "native-destroy", "stage-close")]
+    assert order == sorted(order)
+    assert state.session.retirement_complete
+    assert state.bootstrap.closed
+    state.native.destroy.assert_called_once_with()
+
+
+def test_simulation_stop_retirement_runs_once(ovxr_simulation):
+    """Repeated STOP events, as a later teardown dispatches, do not repeat the drain."""
+    from isaaclab.physics import PhysicsEvent
+    from isaaclab.sim import SimulationContext
+
+    state = ovxr_simulation
+    state.sim.backend_manager.dispatch_event(PhysicsEvent.STOP)
+    state.sim.backend_manager.dispatch_event(PhysicsEvent.STOP)
+    SimulationContext.clear_instance()
+    assert state.owner.closes == 1
+    assert state.events.count("xr-drain") == 1
+    state.native.destroy.assert_called_once_with()
+
+
+@pytest.mark.parametrize("refusal", ["worker", "running", "input"])
+def test_unproved_simulation_stop_retirement_keeps_the_native_pair(ovxr_simulation, refusal):
+    """A drain that fails or cannot run keeps the leased engine and OVStage alive through teardown."""
+    from isaaclab.physics import PhysicsEvent
+    from isaaclab.sim import SimulationContext
+
+    state = ovxr_simulation
+    failure = None
+    if refusal == "worker":
+        failure = state.owner.failure = TimeoutError("OVXR session worker did not stop")
+    elif refusal == "running":
+        # A hard Newton reset or an OvPhysX re-warm dispatches STOP while the simulation runs.
+        state.sim.play()
+        with pytest.raises(RuntimeError, match="while running"):
+            state.sim.backend_manager.dispatch_event(PhysicsEvent.STOP)
+    else:
+        # XR input borrowed the session's OpenXR handles and the host never confirmed they stopped.
+        assert state.session.external_oxr_handles() == "handles"
+    with pytest.raises(RuntimeError) as caught:
+        SimulationContext.clear_instance()
+    assert SimulationContext.instance() is None
+    if refusal == "worker":
+        assert state.owner.closes == 1
+        assert caught.value.__cause__.__cause__ is failure
+    else:
+        assert state.owner.closes == 0
+    if refusal == "input":
+        assert "input may still borrow" in str(caught.value.__cause__.__cause__)
+    assert not state.bootstrap.closed and not state.session.retirement_complete
+    state.native.destroy.assert_not_called()
+    state.native.detach_ovstage.assert_not_called()
+    assert "stage-close" not in state.events
+    assert state.native in state.bootstrap._retained_pair and state.stage in state.bootstrap._retained_pair

@@ -26,22 +26,26 @@ Prepare the adapter before constructing the environment so that both use the
 same simulation context and native renderer/scene pair. Start the render worker
 after the environment exists. Publish simulation updates through the session;
 the worker owns rendering. Stop input consumers before closing the XR session,
-and retire the lease before destroying the simulation's renderer or stage.
-Pass `environment_owner="host"` to `prepare()` when Lab owns environment or
-window destruction. After stopping input, close the session, require
-`session.retirement_complete`, and only then close the environment on the host.
-With the default `"render_worker"` policy, the worker closes the environment
-after retiring the lease. Both policies retain the
-environment when retirement cannot be proved.
+then close the environment on the host thread.
+
+`prepare()` registers the session's retirement as the simulation's first
+`PhysicsEvent.STOP` listener. Closing the environment clears the kitless
+simulation context, which dispatches STOP before Isaac Lab releases cameras,
+renderers, the native OVRTX engine and the OVStage, so the worker drains and
+the lease is released first. The listener closes a session that is still open
+only if it handed out no OpenXR handles. A STOP while the simulation runs (a
+hard reset or a physics re-warm) raises.
 
 If startup fails before the worker takes ownership, the caller closes the
 environment after releasing the lease. If input retirement fails, request
-shutdown and retain the borrowed resources until their retirement is proved.
+shutdown and leave the session open. Whenever the STOP listener cannot prove
+retirement, it detaches the leased renderer and OVStage from the simulation's
+backends, keeps them alive until the process exits and raises, so teardown
+destroys neither under a live render owner.
 
 The lease currently requires one environment and a private rendering OVStage.
-Ownership transfer is single-use. Failed retirement must preserve resources
-for the owning thread to finish cleanup; a failed drain is not successful
-shutdown. Importing `OvLibrariesXrSession` requires a Capture release with OVXR
+Ownership transfer is single-use. Failed retirement must preserve resources;
+a failed drain is not successful shutdown. Importing `OvLibrariesXrSession` requires a Capture release with OVXR
 session support; see [Installing kitless XR](kitless_xr_source.md). The
 `OvLibrariesXrCfg` dataclass lives in `isaaclab_teleop.ovxr_cfg` and imports
 without those packages.
@@ -50,11 +54,11 @@ A failed scene write or seal stops further publication. Recreate the session
 after retiring the failed pair; retrying the same generation cannot return an
 older scene as if the failed update succeeded. The failure poisons producer
 publication only: the render-owner lane stays available so Capture can destroy
-its OVXR context and the adapter can release the lease and close the
+its OVXR context and the adapter can release the lease before the host closes the
 environment. After a poisoned lease is released, the renderer keeps rejecting
 ordinary use (except closing it) because its write ordinal was not rebased.
 During shutdown, publication storage drains before lease guards are removed.
-The adapter retains the environment if lease retirement cannot establish completion.
+The adapter retains the renderer and Stage if lease retirement cannot establish completion.
 
 ## Environment requirements
 

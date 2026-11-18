@@ -13,10 +13,12 @@ import threading
 import time
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 from isaaccapture.ovxr_session_manager import OvxrApplicationInterface, StageOrdinalLedger
+
+from isaaclab.physics import PhysicsEvent
 
 from .ovxr_cfg import OvLibrariesXrCfg
 from .ovxr_session import OvxrSessionBootstrap, validate_ovxr_session_preparation
@@ -25,7 +27,7 @@ if TYPE_CHECKING:
     from isaaccapture.ovxr_session_manager.ovxr_session import OvxrSessionBinding
     from isaacteleop.oxr import OpenXRSessionHandles
 
-    from isaaclab.sim import SimulationCfg
+    from isaaclab.sim import SimulationCfg, SimulationContext
 
     from .ovxr_renderer import OvxrRendererCfg
 
@@ -47,10 +49,21 @@ _DEFAULT_OVXR_RENDER_SETTINGS_PATH = "/Render/OmniverseGlobalRenderSettings"
 class OvLibrariesXrSession:
     """Isaac Lab adapter around Isaac Capture's OVXR session.
 
-    The default delegates environment cleanup to the render worker. Callers
-    selecting ``environment_owner="host"`` must drain input, close this session,
-    and establish :attr:`retirement_complete` before closing the environment and
-    desktop windows on the host thread. Worker termination alone is insufficient.
+    The host owns the environment. Stop the XR input borrowers, close this session, and close the
+    environment and desktop windows on the host thread once :attr:`retirement_complete` holds.
+    Worker termination alone is insufficient.
+
+    :meth:`prepare` also registers the session's retirement as the first
+    :attr:`~isaaclab.physics.PhysicsEvent.STOP` listener of the kitless simulation, which dispatches STOP
+    when its context is cleared, for example by closing the environment. Isaac Capture's render worker
+    therefore drains and the render lease is released before cameras, renderers, the native OVRTX engine
+    and the OVStage close. The listener closes a session that is still open only if it handed out no
+    OpenXR handles, since only the host can confirm that their input borrowers stopped. A STOP while the
+    simulation runs, from a hard reset or a physics re-warm, raises instead.
+
+    When the listener cannot prove retirement, it keeps the leased renderer and OVStage alive for the
+    rest of the process and raises, so the simulation's teardown destroys neither under a live render
+    owner. The pair cannot be reused; recreate the session in a new process.
     """
 
     @runtime_checkable
@@ -96,21 +109,15 @@ class OvLibrariesXrSession:
             """
             ...
 
-    def __init__(
-        self,
-        bootstrap: OvxrSessionBootstrap,
-        cfg: OvLibrariesXrCfg,
-        *,
-        environment_owner: Literal["render_worker", "host"] = "render_worker",
-    ) -> None:
-        if environment_owner not in ("render_worker", "host"):
-            raise ValueError(f"Unknown XR environment owner: {environment_owner!r}")
+    def __init__(self, bootstrap: OvxrSessionBootstrap, cfg: OvLibrariesXrCfg) -> None:
         self._bootstrap = bootstrap
         self._cfg = cfg
-        self._environment_owner = environment_owner
         self._owner = None
         self._host = None
         self._closed = False
+        self._handles_lent = False
+        self._close_started = False
+        self._stop_handled = False
 
     def __enter__(self) -> OvLibrariesXrSession:
         self._require_open()
@@ -118,11 +125,6 @@ class OvLibrariesXrSession:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-
-    @property
-    def async_worker_owns_environment(self) -> bool:
-        """Whether the selected policy delegates environment teardown to the worker."""
-        return self._environment_owner == "render_worker" and self._owner is not None and self._owner.owns_environment
 
     @property
     def retirement_complete(self) -> bool:
@@ -181,9 +183,7 @@ class OvLibrariesXrSession:
         from .session_lifecycle import cloudxr_eula_accepted
 
         anchor_path = self._cfg.tracking_anchor_path if tracking_anchor_path is None else tracking_anchor_path
-        host = _IsaacLabOvxrApplicationInterface(
-            self._bootstrap, env, self._cfg, external_anchor_state, environment_owner=self._environment_owner
-        )
+        host = _IsaacLabOvxrApplicationInterface(self._bootstrap, env, self._cfg, external_anchor_state)
         self._host = host
         self._owner = OvxrSession(
             host,
@@ -212,7 +212,10 @@ class OvLibrariesXrSession:
     def external_oxr_handles(self) -> OpenXRSessionHandles | None:
         """Return Isaac Capture's typed external handles once its owner is ready."""
         self._require_open()
-        return None if self._owner is None else self._owner.external_oxr_handles()
+        handles = None if self._owner is None else self._owner.external_oxr_handles()
+        if handles is not None:
+            self._handles_lent = True
+        return handles
 
     def request_render(self, physics_step_id: Hashable, *, force: bool = False) -> int | None:
         """Offer one complete application generation for Isaac Capture to render.
@@ -230,19 +233,21 @@ class OvLibrariesXrSession:
         return self._owner.get_target_frame_T_world(prim_path)
 
     def close(self) -> None:
-        """Retire XR borrowers before the selected owner releases the environment.
+        """Retire XR borrowers before the host releases the environment.
 
-        Failed retirement leaves the session open and its environment borrowed.
-        Stop all input borrowers before calling, including after worker failure.
+        Failed retirement leaves the session open, and closing the environment then keeps the
+        leased renderer and OVStage alive. Stop all input borrowers before calling, including after
+        worker failure.
         """
         if self._closed:
             return
+        self._close_started = True
         if self._owner is None:
             self._bootstrap.close()
         else:
             self._owner.close()
         if not self.retirement_complete:
-            raise RuntimeError("OVXR retirement is unproved; retaining its borrowed environment")
+            raise RuntimeError("OVXR retirement is unproved; retaining its borrowed renderer and Stage")
         self._closed = True
 
     def request_shutdown(self) -> None:
@@ -268,8 +273,6 @@ class OvLibrariesXrSession:
         sim_cfg: SimulationCfg,
         cfg: OvLibrariesXrCfg,
         renderer_cfg: OvxrRendererCfg | None = None,
-        *,
-        environment_owner: Literal["render_worker", "host"] = "render_worker",
     ) -> OvLibrariesXrSession:
         """Snapshot session selection, create simulation and reserve its OVRTX lease.
 
@@ -283,18 +286,15 @@ class OvLibrariesXrSession:
             cfg: XR session configuration, snapshotted before native preparation.
             renderer_cfg: OVXR renderer registered in that context. Camera panels must use the same
                 configuration. ``None`` selects the default :class:`~isaaclab_teleop.OvxrRendererCfg`.
-            environment_owner: ``"render_worker"`` closes the environment on Capture's
-                worker. ``"host"`` leaves it for the caller after XR retirement.
 
         Returns:
-            A prepared session whose lease is reserved but has not transferred to a worker.
+            A prepared session whose lease is reserved but has not transferred to a worker. The
+            simulation retires it on STOP, before releasing its cameras and renderers.
 
         Raises:
             RuntimeError: If a simulation context already exists or extension mode is active.
-            ValueError: If the environment ownership policy or XR configuration is invalid.
+            ValueError: If the XR configuration is invalid.
         """
-        if environment_owner not in ("render_worker", "host"):
-            raise ValueError(f"Unknown XR environment owner: {environment_owner!r}")
         cfg = replace(cfg)
         validate_ovxr_session_preparation()
         import ovxr
@@ -304,6 +304,16 @@ class OvLibrariesXrSession:
             # Process-global settings change only after preparation succeeds. The native
             # renderer is created later with the environment, so they still precede it.
             ovxr.apply_renderer_settings(cfg.renderer_settings.strip())
+            session = cls(bootstrap, cfg)
+            sim = bootstrap.simulation_context
+            # Retire XR before every Isaac Lab STOP listener and the native backends close. The closure
+            # keeps the session alive until the simulation closes, even if its caller drops it.
+            sim.backend_manager.register_callback(
+                lambda _payload: session._retire_on_simulation_stop(sim),
+                PhysicsEvent.STOP,
+                order=-100,
+                name="ovxr_session_retirement",
+            )
         except BaseException as preparation_error:
             try:
                 bootstrap.abort()
@@ -311,7 +321,37 @@ class OvLibrariesXrSession:
                 # Cleanup follows the failure; retain its original cause.
                 preparation_error.add_note(f"Cleanup after failed XR preparation also failed: {abort_error!r}")
             raise
-        return cls(bootstrap, cfg, environment_owner=environment_owner)
+        return session
+
+    def _retire_on_simulation_stop(self, sim: SimulationContext) -> None:
+        """Close the session before the simulation releases its cameras, renderers and native backends.
+
+        Runs once. If retirement fails or is refused while the lease is still held, the bootstrap keeps
+        the leased pair alive (see the class description) before the error propagates.
+
+        Raises:
+            RuntimeError: If the simulation is still running, the session handed out OpenXR handles
+                but was never closed, or its retirement is unproved.
+        """
+        if self._closed or self._stop_handled:
+            return
+        self._stop_handled = True
+        try:
+            if not sim.is_stopped():
+                raise RuntimeError(
+                    "The simulation stopped physics while running (a hard reset or physics re-warm), which"
+                    " releases the OVXR renderer; close the OVXR session first"
+                )
+            if self._handles_lent and not self._close_started:
+                raise RuntimeError(
+                    "The simulation is closing while XR input may still borrow the OVXR session; stop its input"
+                    " and close the session first"
+                )
+            self.close()
+        except BaseException:
+            if not self._bootstrap.closed:
+                self._bootstrap._retain_native_pair()
+            raise
 
     def _require_open(self) -> None:
         if self._closed:
@@ -459,12 +499,9 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
         env: Any,
         cfg: OvLibrariesXrCfg,
         external_anchor_state: OvLibrariesXrSession.ExternalAnchorState | None = None,
-        *,
-        environment_owner: Literal["render_worker", "host"] = "render_worker",
     ) -> None:
         self._bootstrap = bootstrap
         self._env = env
-        self._environment_owner = environment_owner
         self._cfg = cfg
         self._publication_lock = threading.Lock()
         self._scene_publisher = None
@@ -684,19 +721,16 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
         self._bootstrap.close()
 
     def close_environment_on_render_thread(self) -> None:
-        """Verify XR retirement before the selected owner destroys the environment.
+        """Verify XR retirement; the host closes the environment after the session closes.
 
-        Capture always calls this on its worker. Host ownership leaves Lab's
-        environment and desktop windows for the host after session retirement.
+        Capture calls this on its worker. A failure leaves the session's retirement unproved.
         """
         if self._ordinal_ledger is not None:
-            raise RuntimeError("OVStage write retirement is unproved; retaining its environment")
+            raise RuntimeError("OVStage write retirement is unproved; retaining its renderer and Stage")
         if self._anchor_retirement_failed:
-            raise RuntimeError("Anchor query retirement is unproved; retaining its environment")
+            raise RuntimeError("Anchor query retirement is unproved; retaining its renderer and Stage")
         if not self._bootstrap.closed:
-            raise RuntimeError("Render lease retirement is unproved; retaining its environment")
-        if self._environment_owner == "render_worker":
-            self._env.close()
+            raise RuntimeError("Render lease retirement is unproved; retaining its renderer and Stage")
 
     def abort(self) -> None:
         # The caller owns an environment even when worker startup failed.
