@@ -1392,7 +1392,7 @@ def _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, flags, calls):
         pass
 
     @contextmanager
-    def launch(selected_cfg, _args, *, cleanup_context):
+    def launch(selected_cfg, _args):
         assert selected_cfg is config
         calls.append("launch")
         yield

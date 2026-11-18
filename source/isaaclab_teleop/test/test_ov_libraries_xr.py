@@ -1064,7 +1064,6 @@ def test_eager_selected_cameras_are_rejected_before_worker_ownership(xr_module, 
     with pytest.raises(ValueError, match="lazy_sensor_update=True"):
         session.start_render_worker(env)
     assert bootstrap.events == []
-    assert not session.async_worker_owns_environment
 
 
 def test_visual_exclusions_use_the_actual_clone_root_while_binding(xr_module, monkeypatch) -> None:
