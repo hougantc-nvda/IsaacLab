@@ -19,7 +19,6 @@ The script automatically detects which stack to use based on the environment con
 import argparse
 import logging
 import math
-import signal
 import sys
 import time
 from collections.abc import Callable
@@ -53,11 +52,14 @@ from .. import (
 from ..device_selection import create_teleop_device, select_teleop_cfg
 from ._ovxr_launch import prepare_ovxr_launch, reject_ovxr_runtime_conflicts
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
+from ._ovxr_runtime import (
+    RENDERER_ATTACH_TIMEOUT_S,
+    OvxrShutdownSignals,
+    close_teleop_resources,
+    pace_ovxr_control_loop,
+)
 
 logger = logging.getLogger(__name__)
-
-_RENDERER_ATTACH_TIMEOUT_S = 180.0
-"""Allow cold RTX preparation before failing attachment; client connection waits separately."""
 
 args_cli: argparse.Namespace
 """Parsed command line, set by :func:`_parse_args`."""
@@ -263,112 +265,6 @@ def _resolve_env_cfg() -> tuple[ManagerBasedRLEnvCfg, IsaacTeleopCfg | DeviceCfg
     return (env_cfg, teleop_cfg, use_isaac_teleop)
 
 
-def _pace_ovxr_control_loop(
-    using_ovxr: bool,
-    action_applied: bool,
-    *,
-    iteration_started_s: float,
-    action_period_s: float,
-    step_hz: float = 0.0,
-    wait_for_shutdown: Callable[[float], bool] | None = None,
-) -> None:
-    """Limit host control independently of the XR frame clock.
-
-    Credit elapsed input, physics and publication work; an overrun adds no wait
-    or catch-up steps. With no explicit limit, active control remains unpaced
-    and paused polling retains the environment's action interval.
-    """
-    if not using_ovxr or (action_applied and step_hz == 0.0):
-        return
-    period_s = 1.0 / step_hz if step_hz > 0.0 else action_period_s
-    remaining_s = period_s - (time.perf_counter() - iteration_started_s)
-    if remaining_s > 0.0:
-        if wait_for_shutdown is None:
-            time.sleep(remaining_s)
-        else:
-            wait_for_shutdown(remaining_s)
-
-
-def _restore_ovxr_shutdown_handlers(previous_handlers: dict) -> None:
-    for signum, handler in previous_handlers.items():
-        signal.signal(signum, handler)
-
-
-def _close_teleop_resources(
-    env,
-    camera_feed_session,
-    presentation: OvxrPresentation | None,
-    previous_shutdown_handlers,
-    teleop_interface=None,
-    *,
-    previous_context=None,
-) -> None:
-    """Preserve the first failure and drain XR before freeing its borrowed environment."""
-    failure = sys.exception()
-    cleanup_failure = None
-    xr_drained = True
-    camera_drained = True
-
-    def report_cleanup_error(error: Exception) -> None:
-        nonlocal cleanup_failure
-        logger.exception("Teleoperation cleanup failed")
-        if failure is not None:
-            failure.add_note(f"Cleanup also failed: {error!r}")
-        elif cleanup_failure is None:
-            cleanup_failure = error
-        else:
-            cleanup_failure.add_note(f"Cleanup also failed: {error!r}")
-
-    try:
-        input_drain_failed = getattr(teleop_interface, "session_cleanup_failed", False) is True
-        xr_drained = not input_drain_failed
-        if presentation is not None:
-            # Releases the session only after its input device drained.
-            try:
-                presentation.close()
-            except Exception as error:
-                xr_drained = False
-                report_cleanup_error(error)
-        elif input_drain_failed:
-            report_cleanup_error(
-                RuntimeError("Isaac Capture cleanup failed; borrowed XR/environment drain is unproved")
-            )
-        if not input_drain_failed:
-            # A successfully bound feed exits before Capture. This is also the
-            # cleanup path for preparation that never reached bind().
-            try:
-                camera_feed_session.close()
-            except Exception as error:
-                camera_drained = False
-                report_cleanup_error(error)
-        if env is not None and xr_drained and camera_drained:
-            if presentation is None or not presentation.session.async_worker_owns_environment:
-                try:
-                    env.close()
-                except Exception as error:
-                    report_cleanup_error(error)
-        elif env is None and xr_drained and camera_drained:
-            from isaaclab.sim import SimulationContext
-
-            if presentation is None or not presentation.session.async_worker_owns_environment:
-                context = SimulationContext.instance()
-                if context is not None and context is not previous_context:
-                    try:
-                        SimulationContext.clear_instance()
-                    except Exception as error:
-                        report_cleanup_error(error)
-    finally:
-        # Keep repeated SIGINT/SIGTERM on the owner throughout this cleanup attempt.
-        try:
-            _restore_ovxr_shutdown_handlers(previous_shutdown_handlers)
-        except Exception as error:
-            report_cleanup_error(error)
-    if cleanup_failure is not None:
-        raise cleanup_failure
-    if env is not None and xr_drained and camera_drained:
-        print("Environment closed")
-
-
 def run_teleoperation(  # noqa: C901
     env_cfg: ManagerBasedRLEnvCfg,
     teleop_cfg: IsaacTeleopCfg | DeviceCfg,
@@ -391,8 +287,7 @@ def run_teleoperation(  # noqa: C901
     env = None
     teleop_interface = None
     presentation = None
-    previous_shutdown_handlers = {}
-    shutting_down = False
+    shutdown_signals = OvxrShutdownSignals()
     try:
         # Apply the RTX/DLSS global settings when Kit runs an RTX render pipeline (Kit visualizer,
         # external cameras, or XR).
@@ -613,7 +508,7 @@ def run_teleoperation(  # noqa: C901
                         if presentation is not None:
                             presentation.publish(env, changed=action_applied, reset=reset_applied)
 
-                        _pace_ovxr_control_loop(
+                        pace_ovxr_control_loop(
                             presentation is not None,
                             action_applied,
                             iteration_started_s=iteration_started_s,
@@ -622,6 +517,7 @@ def run_teleoperation(  # noqa: C901
                             wait_for_shutdown=(
                                 presentation.session.wait_for_shutdown if presentation is not None else None
                             ),
+                            clock=time.perf_counter,
                         )
                 except Exception as e:
                     logger.error(f"Error during simulation step: {e}")
@@ -632,17 +528,7 @@ def run_teleoperation(  # noqa: C901
         # Install after environment/device initialization because embedded native
         # libraries may replace inherited signal dispositions during startup.
         if presentation is not None:
-
-            def request_shutdown(_signum, _frame) -> None:
-                nonlocal shutting_down
-                if not presentation.started and not shutting_down:
-                    shutting_down = True
-                    raise KeyboardInterrupt
-                presentation.session.request_shutdown()
-
-            previous_shutdown_handlers = {
-                sig: signal.signal(sig, request_shutdown) for sig in (signal.SIGINT, signal.SIGTERM)
-            }
+            shutdown_signals.install(presentation)
         # Run the teleoperation loop
         # Isaac Capture requires a context manager, native devices don't
         if use_isaac_teleop:
@@ -652,7 +538,7 @@ def run_teleoperation(  # noqa: C901
                 with teleop_interface, camera_feed_session.bind(env):
                     if presentation.start(
                         env,
-                        timeout_s=_RENDERER_ATTACH_TIMEOUT_S,
+                        timeout_s=RENDERER_ATTACH_TIMEOUT_S,
                         required_openxr_extensions=teleop_interface.required_openxr_extensions,
                     ):
                         run_loop()
@@ -663,12 +549,12 @@ def run_teleoperation(  # noqa: C901
             with camera_feed_session.bind(env):
                 run_loop()
     finally:
-        shutting_down = True
-        _close_teleop_resources(
+        shutdown_signals.shutting_down = True
+        close_teleop_resources(
             env,
             camera_feed_session,
             presentation,
-            previous_shutdown_handlers,
+            shutdown_signals.previous_handlers,
             teleop_interface,
             previous_context=previous_context,
         )

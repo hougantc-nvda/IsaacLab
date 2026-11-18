@@ -296,6 +296,7 @@ from .. import (
 )
 from ._ovxr_launch import prepare_ovxr_launch, reject_ovxr_runtime_conflicts
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
+from ._ovxr_runtime import requires_hard_sim_reset
 
 logger = logging.getLogger(__name__)
 
@@ -1158,13 +1159,6 @@ def _prepare_env_cfg(
     return env_cfg, success_term
 
 
-def _replay_requires_hard_sim_reset(physics_backend: str | None) -> bool:
-    """Return whether replay must rebuild the simulator before an environment reset."""
-    # Only Kit PhysX needs articulation-view rebinding for Pink IK. Both kitless
-    # backends retain their constructed solver and any leased presentation stage.
-    return physics_backend in (None, "physx")
-
-
 def _reset_replay_environment(env: gym.Env, *, hard_sim_reset: bool, reset_recorder: bool) -> None:
     """Reset replay-owned environment state in backend-safe order."""
     if hard_sim_reset:
@@ -1387,7 +1381,7 @@ def _run_single_replay(
         # Kitless backends retain the constructed solver and leased stage.
         _reset_replay_environment(
             env,
-            hard_sim_reset=_replay_requires_hard_sim_reset(env.scene.physics_backend),
+            hard_sim_reset=requires_hard_sim_reset(env.scene.physics_backend),
             reset_recorder=False,
         )
         teleop_interface.reset()
@@ -1475,7 +1469,7 @@ def _run_single_replay(
                         _handle_reset(
                             env,
                             teleop_interface,
-                            hard_sim_reset=_replay_requires_hard_sim_reset(env.scene.physics_backend),
+                            hard_sim_reset=requires_hard_sim_reset(env.scene.physics_backend),
                         )
                         if args_cli.start_on_replay:
                             teleop_interface.request_start()

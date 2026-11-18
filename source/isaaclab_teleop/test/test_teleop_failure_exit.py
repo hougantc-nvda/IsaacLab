@@ -15,7 +15,16 @@ import pytest
 
 
 @pytest.fixture
-def entry_namespace(monkeypatch):
+def runtime_namespace(monkeypatch):
+    """Use the shared cleanup helpers and restore the signal hook replaced by each test."""
+    from isaaclab_teleop.entrypoints import _ovxr_runtime
+
+    monkeypatch.setattr(_ovxr_runtime, "restore_ovxr_shutdown_handlers", Mock())
+    return vars(_ovxr_runtime)
+
+
+@pytest.fixture
+def entry_namespace(monkeypatch, runtime_namespace):
     """Use the imported entrypoint and restore all globals replaced by each test."""
     from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
 
@@ -26,11 +35,9 @@ def entry_namespace(monkeypatch):
         "_resolve_cloudxr_env",
         "has_kit",
         "create_teleop_device",
-        "_restore_ovxr_shutdown_handlers",
         "torch",
     ):
         monkeypatch.setitem(namespace, name, namespace.get(name))
-    monkeypatch.setattr(agent, "_restore_ovxr_shutdown_handlers", Mock())
     return namespace
 
 
@@ -103,7 +110,7 @@ def test_live_entry_failure_closes_resources_and_reports_cause(
 
 
 @pytest.mark.parametrize("ovxr", [True, False])
-def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entry_namespace, ovxr):
+def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entry_namespace, runtime_namespace, ovxr):
     from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
 
     from isaaclab.app import launch_simulation
@@ -124,7 +131,7 @@ def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entr
 
     def run(*_args, **_kwargs):
         state["context"] = current
-        entry_namespace["_close_teleop_resources"](env, camera, presentation, {}, interface)
+        runtime_namespace["close_teleop_resources"](env, camera, presentation, {}, interface)
 
     monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True))
     monkeypatch.setattr(agent, "args_cli", SimpleNamespace(using_ovxr=ovxr), raising=False)
@@ -150,7 +157,7 @@ def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entr
     [("xr", True), ("environment", True), ("camera", False), ("camera", True), ("signals", False)],
 )
 def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
-    entry_namespace, cleanup_stage, has_primary_error
+    entry_namespace, runtime_namespace, cleanup_stage, has_primary_error
 ):
     """Cleanup errors must stay visible without replacing the initial cause or risking UAF."""
     events = []
@@ -165,14 +172,14 @@ def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
     xr = SimpleNamespace(close=lambda: close("xr"), async_worker_owns_environment=False)
     camera = SimpleNamespace(close=lambda: close("camera"))
     env = SimpleNamespace(close=lambda: close("environment"))
-    entry_namespace["_restore_ovxr_shutdown_handlers"] = lambda _: close("signals")
+    runtime_namespace["restore_ovxr_shutdown_handlers"] = lambda _: close("signals")
 
     def exercise():
         try:
             if has_primary_error:
                 raise primary_error
         finally:
-            entry_namespace["_close_teleop_resources"](env, camera, entry_namespace["OvxrPresentation"](xr), {})
+            runtime_namespace["close_teleop_resources"](env, camera, entry_namespace["OvxrPresentation"](xr), {})
 
     with pytest.raises(RuntimeError) as caught:
         exercise()
@@ -184,7 +191,7 @@ def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
         assert any("cleanup failed" in note for note in primary_error.__notes__)
 
 
-def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace):
+def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace, runtime_namespace):
     """A second Ctrl-C requests shutdown again instead of interrupting native cleanup."""
     events = []
     original = signal.signal(signal.SIGINT, lambda *_args: events.append("shutdown"))
@@ -197,9 +204,9 @@ def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace):
         signal.raise_signal(signal.SIGINT)
         events.append("xr")
 
-    entry_namespace["_restore_ovxr_shutdown_handlers"] = restore
+    runtime_namespace["restore_ovxr_shutdown_handlers"] = restore
     try:
-        entry_namespace["_close_teleop_resources"](
+        runtime_namespace["close_teleop_resources"](
             SimpleNamespace(close=lambda: events.append("environment")),
             SimpleNamespace(close=lambda: events.append("camera")),
             entry_namespace["OvxrPresentation"](SimpleNamespace(close=close_xr, async_worker_owns_environment=False)),
@@ -212,7 +219,9 @@ def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace):
 
 
 @pytest.mark.parametrize("new_context,drain_failed", [(True, False), (False, False), (True, True)])
-def test_partial_construction_cleans_only_new_unowned_context(monkeypatch, entry_namespace, new_context, drain_failed):
+def test_partial_construction_cleans_only_new_unowned_context(
+    monkeypatch, entry_namespace, runtime_namespace, new_context, drain_failed
+):
     """Failed env construction is cleaned, but preexisting/undrained contexts survive."""
     from isaaclab.app import launch_simulation
     from isaaclab.physics import PhysicsCfg
@@ -236,7 +245,7 @@ def test_partial_construction_cleans_only_new_unowned_context(monkeypatch, entry
             try:
                 raise failure
             finally:
-                entry_namespace["_close_teleop_resources"](
+                runtime_namespace["close_teleop_resources"](
                     None, camera, entry_namespace["OvxrPresentation"](xr), {}, previous_context=previous
                 )
     assert caught.value is failure
