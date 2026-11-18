@@ -133,7 +133,7 @@ def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entr
         state["context"] = current
         entry_namespace["_close_teleop_resources"](env, camera, presentation, {}, interface)
 
-    monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True))
+    monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True, ()))
     monkeypatch.setattr(agent, "args_cli", SimpleNamespace(using_ovxr=ovxr), raising=False)
     monkeypatch.setattr(agent, "run_teleoperation", run)
     monkeypatch.setattr(
