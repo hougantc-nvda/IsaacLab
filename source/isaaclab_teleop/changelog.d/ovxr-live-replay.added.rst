@@ -7,8 +7,8 @@
 * Added external OVXR inputs to :class:`~isaaclab_teleop.IsaacTeleopDevice`, together with the
   ``target_frame_prim_path``, ``xr_render_anchor_path``, ``external_anchor_state``,
   ``required_openxr_extensions`` and ``session_cleanup_failed`` properties.
-* Added the ``prepare_environment`` task hook to :class:`~isaaclab_teleop.IsaacTeleopCfg`. The live,
-  replay and recording launchers run it once before creating simulation resources.
+* Added the experimental ``prepare_environment`` task hook to :class:`~isaaclab_teleop.IsaacTeleopCfg`.
+  The live, replay and recording launchers run it once before creating simulation resources.
 * Added :meth:`~isaaclab_teleop.IsaacTeleopDevice.notify_reset`, which reports an environment reset
   to the input pipeline: retargeters reset on their next execution and actions computed before the
   reset are withheld, while operator control events are preserved.
