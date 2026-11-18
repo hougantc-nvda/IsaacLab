@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import weakref
 from builtins import ExceptionGroup
 from collections import deque
@@ -84,7 +85,7 @@ from isaaclab_ov.renderers.ovrtx_annotator_utils import (
 )
 from isaaclab_ov.renderers.ovrtx_compat import OVRTX_USES_NAMED_SEGMENTATION_MAPS
 from isaaclab_ov.renderers.ovrtx_compat import OVRTX_VERSION as _OVRTX_VERSION
-from isaaclab_ov.renderers.ovrtx_renderer_cfg import OVRTXBackendCfg, OVRTXRendererCfg
+from isaaclab_ov.renderers.ovrtx_renderer_cfg import OVRTXBackendCfg, OVRTXRendererCfg, _parse_active_cuda_gpus
 from isaaclab_ov.renderers.ovrtx_renderer_kernels import (
     accumulate_mesh_normals,
     create_camera_transforms_kernel,
@@ -256,6 +257,10 @@ def _resolve_env_light_partitions(
 class OVRTXBackend:
     """Own one native renderer, independently of its camera products and optional OVStage."""
 
+    # None is uninitialized; an empty tuple requests native GPU selection for CPU simulation.
+    _initial_gpu_selection: tuple[int, ...] | None = None
+    _initialization_lock = threading.Lock()
+
     def __init__(self, cfg: OVRTXBackendCfg):
         self.cfg = cfg
         self.attached = False
@@ -266,9 +271,18 @@ class OVRTXBackend:
             with contextlib.suppress(OSError):
                 ctypes.CDLL(str(dependency))
         # Select the simulation's CUDA device for rendering, matching Kit's ``activeCudaGpus`` setting.
+        # An explicit ``active_cuda_gpus`` selection takes precedence.
         sim_device = wp.get_device(cfg.device)
+        active_cuda_gpus = (
+            cfg.active_cuda_gpus
+            if cfg.active_cuda_gpus is not None
+            else str(sim_device.ordinal)
+            if sim_device.is_cuda
+            else None
+        )
+        selection = _parse_active_cuda_gpus(active_cuda_gpus) if active_cuda_gpus is not None else ()
         native_cfg = RendererConfig(
-            active_cuda_gpus=str(sim_device.ordinal) if sim_device.is_cuda else None,
+            active_cuda_gpus=active_cuda_gpus,
             log_file_path=cfg.log_file_path,
             log_level=cfg.log_level,
             read_gpu_transforms=cfg.read_gpu_transforms,
@@ -276,8 +290,6 @@ class OVRTXBackend:
             suppress_deprecation_warnings=True,
             texture_streaming_mode=TextureStreamingMode.SYNCHRONOUS,
         )
-        # Redirection may initialize the native library and must use the same settings.
-        redirect_shader_cache(native_cfg)
         self.next_camera_id = 0
         if not cfg.use_ovstage:
             # Prepared by clone dispatch, consumed after camera overrides are authored.
@@ -285,7 +297,26 @@ class OVRTXBackend:
             self.clone_env_paths: list[str] = []
             self.population_env_paths: list[str] = []
             self.clone_positions: np.ndarray | None = None
-        self.renderer = Renderer(native_cfg)
+        with OVRTXBackend._initialization_lock:
+            initial = OVRTXBackend._initial_gpu_selection
+            if initial is not None and selection != initial:
+                raise ValueError(
+                    "OVRTX rendering GPU selection cannot change in this process:"
+                    f" first requested {initial or 'native default'}, requested {selection or 'native default'}."
+                    " Reuse the original selection or start a new process to select different rendering GPUs."
+                )
+            visible = wp.get_cuda_device_count()
+            if any(index >= visible for index in selection):
+                # Reject before the selection is reserved for the process.
+                raise ValueError(
+                    f"active_cuda_gpus {active_cuda_gpus!r} names a CUDA device this process cannot see"
+                    f" ({visible} visible)."
+                )
+            # Cache redirection and failed renderer construction can retain native system state.
+            # Reserve the selection before either call; keep_system_alive also preserves it after close.
+            OVRTXBackend._initial_gpu_selection = selection
+            redirect_shader_cache(native_cfg)
+            self.renderer = Renderer(native_cfg)
 
     def detach(self) -> None:
         """Release the borrowed stage before it is rebuilt or destroyed."""
@@ -539,6 +570,39 @@ class OVRTXRenderer(BaseRenderer):
         """Whether clone preparation must give this renderer its own OVStage."""
         return False
 
+    def _native_cuda_gpus(self) -> str | None:
+        """Native rendering GPUs, such as ``"0,1"``, or ``None`` to render on the simulation device."""
+        return None
+
+    def _render_product_device_id(self) -> int | None:
+        """CUDA index that render products request, or ``None`` for OVRTX's automatic assignment."""
+        return self._warp_device.ordinal if self._warp_device.is_cuda else None
+
+    def _write_ovstage_transforms(self, binding: Any, matrices: wp.array, stream: wp.Stream | None) -> None:
+        """Write changed rigid poses to the OVStage at the current ordinal and wait for consumption."""
+        # The producing CUDA stream orders access to the borrowed buffer.
+        self.scene.stage.write_attribute(
+            binding,
+            "omni:xform",
+            ordinal=self.scene.ordinal,
+            tensors=xform_tensor_from_warp(matrices),
+            is_array=False,
+            semantic=ovstage.AttributeSemantic.MATRIX,
+            cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
+        ).wait()
+
+    def _write_ovstage_points(self, binding: Any, points: list[wp.array], stream: wp.Stream | None) -> None:
+        """Write changed geometry points to the OVStage at the current ordinal and wait for consumption."""
+        self.scene.stage.write_attribute(
+            binding,
+            "points",
+            ordinal=self.scene.ordinal,
+            tensors=[points_tensor_from_warp(array) for array in points],
+            is_array=True,
+            semantic=ovstage.AttributeSemantic.POINT,
+            cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
+        ).wait()
+
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""
         object_paths = self._sdp.backend.transform_paths
@@ -678,7 +742,7 @@ class OVRTXRenderer(BaseRenderer):
         usd = build_render_product_as_string(
             spec,
             render_data,
-            device_id=self._warp_device.ordinal if self._warp_device.is_cuda else None,
+            device_id=self._render_product_device_id(),
             enable_shadows=self.cfg.enable_shadows,
         )
         try:
@@ -1111,17 +1175,7 @@ class OVRTXRenderer(BaseRenderer):
             return
         matrices = output.matrices
         if self._use_ovstage:
-            # The write waits for consumption; the producing CUDA stream orders access to the
-            # borrowed buffer.
-            self.scene.stage.write_attribute(
-                binding,
-                "omni:xform",
-                ordinal=self.scene.ordinal,
-                tensors=xform_tensor_from_warp(matrices),
-                is_array=False,
-                semantic=ovstage.AttributeSemantic.MATRIX,
-                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
-            ).wait()
+            self._write_ovstage_transforms(binding, matrices, stream)
         elif asynchronous:
             self._transform_writes.submit(binding, matrices, stream)
         else:
@@ -1165,15 +1219,7 @@ class OVRTXRenderer(BaseRenderer):
         if self._geometry_timestamp == timestamp:
             return
         if self._use_ovstage:
-            self.scene.stage.write_attribute(
-                binding,
-                "points",
-                ordinal=self.scene.ordinal,
-                tensors=[points_tensor_from_warp(array) for array in points],
-                is_array=True,
-                semantic=ovstage.AttributeSemantic.POINT,
-                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
-            ).wait()
+            self._write_ovstage_points(binding, points, stream)
         elif asynchronous:
             self._geometry_writes.submit(binding, points, stream)
         else:
