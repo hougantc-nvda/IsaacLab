@@ -17,7 +17,7 @@ import contextlib
 import os
 import threading
 import weakref
-from collections.abc import Callable, Hashable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
@@ -353,6 +353,8 @@ class _OvxrLeaseController:
         self._published_marker_revision: int | None = None
         self._poisoned = False
         self.stage_deferred = False
+        self._marker_consumer: object | None = None
+        self._previous_marker_groups: Iterable = ()
 
     def acquire(self) -> OvxrRenderLease:
         """Reserve the exact OVRTX/OVStage pair before stage preparation."""
@@ -368,6 +370,10 @@ class _OvxrLeaseController:
         if self._renderer.backend is not None or self._renderer._initialized_scene or self._generation != 0:
             raise RuntimeError("OvxrRenderLease must be acquired before clone preparation")
         lease = OvxrRenderLease._create_unbound(self)
+        registry = self._renderer._sim.vis_marker_registry
+        self._marker_consumer = registry.register_consumer()
+        self._previous_marker_groups = self._renderer.marker_groups
+        self._renderer.marker_groups = registry.get_groups().values()
         self.active = lease
         return lease
 
@@ -495,6 +501,10 @@ class _OvxrLeaseController:
         self._publisher = None
         self._transfer_claimed = False
         self.stage_deferred = False
+        self._renderer._sim.vis_marker_registry.unregister_consumer(self._marker_consumer)
+        self._marker_consumer = None
+        self._renderer.marker_groups = self._previous_marker_groups
+        self._previous_marker_groups = ()
         self.active = None
         if self._renderer.backend is not None:
             self._renderer.backend._retained_by = None

@@ -18,6 +18,7 @@ import pytest
 import torch
 import warp as wp
 
+from isaaclab.markers.vis_marker_registry import VisMarkerRegistry
 from isaaclab.renderers.camera_render_spec import CameraRenderSpec
 from isaaclab.sensors.camera import CameraCfg
 from isaaclab.sim import PinholeCameraCfg, SimulationContext
@@ -75,6 +76,11 @@ def _simulation_registry(monkeypatch):
     registry = []
     sim = types.SimpleNamespace(
         device="cpu",
+        has_gui=False,
+        has_offscreen_render=False,
+        visualizers=[],
+        get_setting=lambda _key: False,
+        vis_marker_registry=VisMarkerRegistry(),
         _backend_registry=registry,
         _render_context=RenderContext(registry),
         backend_manager=types.SimpleNamespace(clone_context_type=None, backend=None, _clone_recipes=[]),
@@ -154,6 +160,7 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
     assert lease.ovstage is shared.scene.stage
     lease.release()
     lease.release()
+    assert not renderer._sim.vis_marker_registry.has_consumers
     assert renderer.backend._retained_by is None
     assert renderer.scene._retained_by is None
     native.destroy.assert_not_called()
@@ -323,12 +330,12 @@ def test_failed_seal_poisons_the_pair_and_abandons_its_ordinal(complete_scene_pu
     assert state.publisher.closed
 
 
-def test_markers_require_publication_only_when_their_registry_revision_changes(complete_scene_publication, monkeypatch):
+def test_markers_require_publication_only_when_their_registry_revision_changes(complete_scene_publication):
     """Unchanged markers do not repeat a scene write; added, updated, hidden or removed markers do."""
     state = complete_scene_publication
     renderer = state.renderer
-    registry = types.SimpleNamespace(revision=4)
-    monkeypatch.setattr(renderer._sim, "vis_marker_registry", registry, raising=False)
+    registry = renderer._sim.vis_marker_registry
+    registry.revision = 4
     renderer.marker_groups = (object(),)
     assert state.publisher.publication_required("step")
     state.publish()
@@ -576,3 +583,57 @@ def test_leased_material_updates_reach_the_reserved_scene(leased_renderer, monke
         lease.release()
         for writer in context._visual_material_writers:
             writer.close()
+
+
+def test_public_markers_reach_leased_renderer_without_an_ordinary_visualizer(leased_renderer, monkeypatch):
+    """Public markers appear, move without a physics step, hide and retire through the leased publisher."""
+    from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+    from isaaclab.sim import SphereCfg
+
+    renderer = leased_renderer
+    registry = renderer._sim.vis_marker_registry
+    markers = VisualizationMarkers(
+        VisualizationMarkersCfg(prim_path="/Visuals/HandJoints", markers={"joint": SphereCfg(radius=0.005)})
+    )
+    markers.visualize(translations=[[0.0, 0.0, 1.0]])
+    assert not registry.get_groups()  # No renderer or visualizer requested marker state yet.
+    observed = []
+
+    class NativeMarkers:
+        def __init__(self, _renderer, _cfg):
+            pass
+
+        def update(self, translations, orientations, scales, indices, *, visible):
+            observed.append((translations.tolist(), visible))
+
+        def close(self):
+            observed.append("retired")
+
+    monkeypatch.setattr(ovrtx_renderer_module, "OVRTXMarkers", NativeMarkers)
+    lease = renderer.acquire_render_lease()
+    try:
+        publisher = lease.capture_scene_publisher()
+        _prepare_leased_renderer(renderer)
+        ledger = _Ledger(23)
+        markers.visualize(translations=[[0.0, 0.0, 1.0]])
+        publisher.publish("unchanged-physics", ledger)
+        assert observed[-1] == ([[0.0, 0.0, 1.0]], True)
+        assert not publisher.publication_required("unchanged-physics")
+        markers.visualize(translations=[[0.5, 0.0, 1.0]])
+        assert publisher.publication_required("unchanged-physics")
+        publisher.publish("unchanged-physics", ledger)
+        assert observed[-1] == ([[0.5, 0.0, 1.0]], True)
+        markers.set_visibility(False)
+        publisher.publish("unchanged-physics", ledger)
+        assert observed[-1] == ([[0.5, 0.0, 1.0]], False)
+        del markers
+        publisher.publish("unchanged-physics", ledger)
+        assert observed[-1] == "retired"
+    finally:
+        lease.release()
+    assert not registry.has_consumers
+    unused = VisualizationMarkers(
+        VisualizationMarkersCfg(prim_path="/Visuals/NoConsumer", markers={"joint": SphereCfg(radius=0.005)})
+    )
+    unused.visualize(translations=[[0.0, 0.0, 1.0]])
+    assert not registry.get_groups()

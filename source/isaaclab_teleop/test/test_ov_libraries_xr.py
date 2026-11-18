@@ -22,6 +22,8 @@ import pytest
 pytestmark = pytest.mark.ov
 from isaaclab_teleop.ovxr_cfg import OvLibrariesXrCfg
 
+from isaaclab.markers.vis_marker_registry import VisMarkerRegistry
+
 
 class _FakeLease:
     def __init__(self):
@@ -397,6 +399,7 @@ def test_host_reconciles_failed_publication_without_reusing_generation(xr_module
     # detect a retry returning the older ordinal after a failed seal.
     controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     renderer = SimpleNamespace(
+        _sim=SimpleNamespace(vis_marker_registry=VisMarkerRegistry()),
         _closed=False,
         _initialized_scene=False,
         backend=None,
@@ -810,6 +813,7 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
         raise ValueError("geometry callback failed")
 
     renderer = SimpleNamespace(
+        _sim=SimpleNamespace(vis_marker_registry=VisMarkerRegistry()),
         _closed=False,
         _initialized_scene=False,
         backend=None,
@@ -996,7 +1000,13 @@ def test_capture_worker_retires_post_claim_attachment_failure(
     monkeypatch.setattr(builtins, module._TERMINAL_MODE_SENTINEL, True, raising=False)
     controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     renderer = SimpleNamespace(
-        _closed=False, _initialized_scene=False, backend=None, scene=None, _geometry_publication=None
+        _sim=SimpleNamespace(vis_marker_registry=VisMarkerRegistry()),
+        _closed=False,
+        _initialized_scene=False,
+        backend=None,
+        scene=None,
+        _geometry_publication=None,
+        marker_groups=(),
     )
     controller = controller_type(renderer)
     renderer.acquire_render_lease = controller.acquire

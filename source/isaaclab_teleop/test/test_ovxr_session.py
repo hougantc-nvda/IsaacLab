@@ -12,6 +12,7 @@ import pytest
 
 pytestmark = pytest.mark.ov
 
+from isaaclab.markers.vis_marker_registry import VisMarkerRegistry
 from isaaclab.sim import SimulationCfg
 
 pytest.importorskip("ovrtx")
@@ -59,7 +60,12 @@ def bootstrap(monkeypatch):
     monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
     monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
-    renderer = OvxrRenderer(OvxrRendererCfg(), sim=SimpleNamespace(device="cpu", get_scene_data_provider=lambda: None))
+    renderer = OvxrRenderer(
+        OvxrRendererCfg(),
+        sim=SimpleNamespace(
+            device="cpu", get_scene_data_provider=lambda: None, vis_marker_registry=VisMarkerRegistry()
+        ),
+    )
 
     class Context:
         current = None

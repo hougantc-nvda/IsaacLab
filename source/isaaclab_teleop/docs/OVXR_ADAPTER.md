@@ -91,6 +91,11 @@ points for private-OVStage reservation.
   it, and on failure poisons the pair and abandons the ordinal. Capture's publication guard
   provides the cross-thread exclusion around it.
 
+The lease registers the renderer as a consumer of the simulation's visualization-marker registry.
+This enables the existing marker backend even without an ordinary visualizer and lets lazily created
+tracking markers participate in scene publication. The registration and registry subscription retire
+with the lease.
+
 The lease classes are internal to `isaaclab_teleop`.
 
 Acquiring a lease selects a private rendering OVStage without changing process
