@@ -1311,9 +1311,8 @@ def test_task_preparation_precedes_ovxr_simulation_context(monkeypatch, entrypoi
             return None
 
     @contextmanager
-    def launch(selected_cfg, _args, *, cleanup_context):
+    def launch(selected_cfg, _args):
         assert selected_cfg is config
-        assert not cleanup_context
         calls.append("launch")
         yield
 
