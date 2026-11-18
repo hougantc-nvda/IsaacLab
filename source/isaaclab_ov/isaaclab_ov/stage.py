@@ -196,7 +196,7 @@ class OvstageBackend:
         """Whether population reserved a render-copy commit that consumers have not completed."""
         return self._deferred_render_copies is not None
 
-    def populate(self, usda: str) -> None:
+    def populate(self, usda: str, *, population_desc: ovstage.population.Desc | None = None) -> None:
         """Import the exported prototypes and apply the clone context's prepared operations.
 
         Population commits ordinal 1. With early physics attachment, ordinal 2 is reserved for
@@ -205,17 +205,23 @@ class OvstageBackend:
 
         Args:
             usda: USD scene containing the routed prototypes and their materials.
+            population_desc: Optional native property selection for this scene population.
         """
         if self.ordinal:
             return
 
         if self.cfg.defer_render_copies:
-            self._populate_originals(usda)
+            self._populate_originals(usda, population_desc=population_desc)
             return
 
         # Ordinal 0 is the empty state; population and cloning form the first committed write.
         populate_stage(
-            self.stage, usda, ordinal=1, domains=self.cfg.population_domains, physics=self.cfg.populate_physics
+            self.stage,
+            usda,
+            ordinal=1,
+            domains=self.cfg.population_domains,
+            physics=self.cfg.populate_physics,
+            population_desc=population_desc,
         )
         ovstage_replicate(
             self.stage, self.paths, self.clone_copies, self.clone_env_paths, self.clone_positions, ordinal=1
@@ -293,7 +299,7 @@ class OvstageBackend:
             self.paths = resources.enter_context(ovstage.PathDictionary(self.stage))
             self.resources = resources.pop_all()
 
-    def _populate_originals(self, usda: str) -> None:
+    def _populate_originals(self, usda: str, *, population_desc: ovstage.population.Desc | None = None) -> None:
         """Populate complete physics originals and retain the remaining render copies."""
         layer = Sdf.Layer.CreateAnonymous()
         if not layer.ImportFromString(usda):
@@ -322,6 +328,7 @@ class OvstageBackend:
             ordinal=1,
             domains=self.cfg.population_domains,
             physics=self.cfg.populate_physics,
+            population_desc=population_desc,
         )
         if OVSTAGE_REQUIRES_CPU_HIERARCHY_BEFORE_CLONE and any(targets for _, targets in copies):
             self.stage.compute_hierarchy(
