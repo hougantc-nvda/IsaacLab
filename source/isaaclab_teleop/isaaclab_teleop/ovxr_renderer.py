@@ -918,7 +918,9 @@ class OvxrRendererCfg(OVRTXRendererCfg):
 
     Give the session and every camera it shows as a panel the same configuration, so they share one
     ``OvxrRenderer``. Cameras with an ordinary :class:`~isaaclab_ov.renderers.OVRTXRendererCfg`
-    keep Isaac Lab's ordinary renderer.
+    keep Isaac Lab's ordinary renderer, which renders on the simulation device. OVRTX selects
+    rendering GPUs once per process, so such cameras can only share the process when
+    :attr:`active_cuda_gpus` is unset or names just the simulation GPU.
     """
 
     class_type: type[OvxrRenderer] | str = "{DIR}.ovxr_renderer:OvxrRenderer"
