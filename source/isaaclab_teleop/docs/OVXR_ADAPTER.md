@@ -102,6 +102,12 @@ This enables the existing marker backend even without an ordinary visualizer and
 tracking markers participate in scene publication. The registration and registry subscription retire
 with the lease.
 
+On the private presentation Stage, the bootstrap selects the `viewer` partition for the
+eye cameras and disables all-partition viewing. Task geometry and environment lights,
+including native copies, are common to the eye and sensor views; tracking markers remain
+in `viewer`. Sensor images therefore exclude tracking markers without changing the
+application USD or ordinary OVRTX rendering defaults.
+
 The lease classes are internal to `isaaclab_teleop`.
 
 Acquiring a lease selects a private rendering OVStage without changing process

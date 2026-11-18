@@ -141,6 +141,9 @@ class _FakeBootstrap:
         self.events.append(("bind", env))
         return self.lease
 
+    def configure_view_partitions(self, camera_paths, ledger):
+        pass
+
     def configure_auxiliary_camera(self, camera_cfg, *, max_fps=30.0):
         self.auxiliary_camera_cfgs.append(camera_cfg)
 
@@ -963,7 +966,12 @@ def test_capture_worker_retires_post_claim_attachment_failure(
     controller_type = real_lease_type._create_unbound.__globals__["_OvxrLeaseController"]
     renderer = SimpleNamespace(
         _sim=SimpleNamespace(vis_marker_registry=VisMarkerRegistry()),
-        _closed=False, _initialized_scene=False, backend=None, scene=None, _geometry_publication=None, marker_groups=()
+        _closed=False,
+        _initialized_scene=False,
+        backend=None,
+        scene=None,
+        _geometry_publication=None,
+        marker_groups=(),
     )
     renderer._panels = real_lease_type._create_unbound.__globals__["_OvxrPanelCameras"](renderer)
     controller = controller_type(renderer)

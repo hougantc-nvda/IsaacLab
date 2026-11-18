@@ -582,6 +582,7 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
             auxiliary_paths = self._lease.auxiliary_render_product_paths
         with self._lease.ovstage_owner_lane():
             self._ordinal_ledger = _StageOrdinalLedger(self._lease.ovstage)
+            self._bootstrap.configure_view_partitions(self._cfg.camera_paths, self._ordinal_ledger)
             if self._external_anchor is not None:
                 import ovstage
 
