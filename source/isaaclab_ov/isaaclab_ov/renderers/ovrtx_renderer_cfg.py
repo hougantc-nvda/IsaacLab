@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from dataclasses import MISSING
 from typing import TYPE_CHECKING, ClassVar
@@ -21,6 +22,26 @@ from isaaclab.utils import configclass
 
 if TYPE_CHECKING:
     from .ovrtx_renderer import OVRTXBackend, OVRTXRenderer
+
+
+def _parse_active_cuda_gpus(value: str) -> tuple[int, ...]:
+    """Parse an ``active_cuda_gpus`` selection such as ``"0"`` or ``"0,1"``.
+
+    Args:
+        value: Comma-separated CUDA device indices.
+
+    Returns:
+        The CUDA device indices in the given order.
+
+    Raises:
+        ValueError: If the value is not a comma-separated list of unique non-negative CUDA indices.
+    """
+    if re.fullmatch(r"(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*", value) is None:
+        raise ValueError(f"active_cuda_gpus must list CUDA indices such as '0' or '0,1'; got {value!r}")
+    indices = tuple(int(index) for index in value.split(","))
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"active_cuda_gpus lists a CUDA index more than once: {value!r}")
+    return indices
 
 
 @configclass
@@ -41,6 +62,13 @@ class OVRTXBackendCfg(BackendCfg):
     """Whether OVRTX reads its GPU transform cache, resolved before native construction."""
     device: str = MISSING
     """Normalized simulation device: ``cpu`` or ``cuda:<index>``."""
+
+    active_cuda_gpus: str | None = None
+    """Native rendering GPUs, such as ``"0,1"``, or None to render on the simulation device.
+
+    A CPU simulation without a selection uses native GPU selection. The first native initialization
+    fixes the selection for the process; a later backend that requests another one is rejected.
+    """
 
 
 @configclass

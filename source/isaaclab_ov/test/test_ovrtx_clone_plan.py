@@ -661,12 +661,15 @@ def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkey
     monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     if explicit_stage is not None:
         monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", explicit_stage)
-    ordinary = SimpleNamespace(cfg=OVRTXRendererCfg(), backend=None, _requires_private_ovstage=lambda: False)
+    ordinary = SimpleNamespace(
+        cfg=OVRTXRendererCfg(), backend=None, _requires_private_ovstage=lambda: False, _native_cuda_gpus=lambda: None
+    )
     borrower = SimpleNamespace(
         cfg=OVRTXRendererCfg(log_file_path="borrower.log"),
         backend=None,
         _requires_private_ovstage=lambda: True,
         _reserve_native_pair=Mock(),
+        _native_cuda_gpus=lambda: None,
     )
     native = SimpleNamespace(cfg=OVRTXBackendCfg(scene_key=ordinary.cfg, use_ovstage=False))
     if initialized:

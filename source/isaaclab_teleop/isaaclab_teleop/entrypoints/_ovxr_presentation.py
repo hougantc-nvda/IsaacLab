@@ -63,11 +63,16 @@ class OvxrPresentation:
 
         Returns:
             The prepared presentation.
+
+        Raises:
+            ValueError: If both ``auxiliary_cameras`` and ``renderer_cfg`` are given.
         """
         from .. import OvLibrariesXrCfg, OvLibrariesXrSession
         from ..ovxr_renderer import OvxrRendererCfg
 
         if auxiliary_cameras:
+            if renderer_cfg is not None:
+                raise ValueError("Camera panels carry the session's OVRTX configuration; do not also pass renderer_cfg")
             # Camera selection assigned one OVRTX configuration to every panel; the session shares it.
             renderer_cfg = auxiliary_cameras[0].camera_cfg.renderer_cfg
         elif renderer_cfg is None:

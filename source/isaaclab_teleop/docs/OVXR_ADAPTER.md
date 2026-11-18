@@ -71,8 +71,11 @@ The adapter retains the environment if lease retirement cannot establish complet
   renderer defers its Stage until the XR worker claims ownership. A camera that
   resolves to the XR renderer itself (a non-panel camera configured with the
   session's `OvxrRendererCfg`) is rejected while the lease is active.
-- Eager scene updates (`lazy_sensor_update=False`) skip the leased renderer; its
-  scene publisher writes the same physics state at the reserved ordinal.
+- Eager scene updates (`lazy_sensor_update=False`) skip ordinary updates of the
+  leased renderer. Retained camera sensors can still attempt their own capture,
+  so camera panels require `lazy_sensor_update=True`; the adapter rejects eager
+  retained cameras before starting the worker. The scene publisher refreshes
+  their world poses without triggering camera capture before publication.
 - CPU simulation devices publish scene transforms, but visual-material
   publication requires CUDA material buffers, as it does for ordinary OVRTX
   cameras. With `--device cpu`, an environment that has `VisualMaterial` assets
@@ -86,7 +89,8 @@ The adapter retains the environment if lease retirement cannot establish complet
 The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
 knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
 preparation and the ordinary camera and scene operations, and uses the protected extension
-points for scene population, deferred camera registration and private-OVStage reservation.
+points for scene population, deferred camera registration, private-OVStage reservation, the
+native rendering GPUs, the render-product device and OVStage pose and point writes.
 
 - Its `_OvxrLeaseController` owns the lease state, the thread-transfer capability, the
   per-owner operation guards and the publication order.
@@ -96,6 +100,9 @@ points for scene population, deferred camera registration and private-OVStage re
   unchanged state, validates panel samples, reserves an ordinal, writes every component, seals
   it, and on failure poisons the pair and abandons the ordinal. Capture's publication guard
   provides the cross-thread exclusion around it.
+- With `OvxrRendererCfg.active_cuda_gpus` excluding the physics GPU, rigid poses and points are
+  copied to the first rendering GPU before OVStage consumes them
+  (`isaaclab_teleop.ovxr_gpu_publication`).
 
 The lease registers the renderer as a consumer of the simulation's visualization-marker registry.
 This enables the existing marker backend even without an ordinary visualizer and lets lazily created

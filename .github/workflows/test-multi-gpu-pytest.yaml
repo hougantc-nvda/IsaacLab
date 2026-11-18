@@ -375,3 +375,39 @@ jobs:
           pytest-options: -m kitless -n 4
           # Same reason as the Kit lane.
           volume-mount-source: ${{ github.workspace }}
+
+      - name: Split physics and rendering GPUs (kitless renderer)
+        # These cases need two GPUs at once, which the one-device shards never expose, so they
+        # skip everywhere else. This step selects cuda:0 and cuda:1; the next step fails on skips.
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/run-tests
+        env:
+          ISAACLAB_TEST_DEVICES: "011"
+        with:
+          test-path: source/isaaclab_teleop/test/test_check_cuda_peer.py
+          result-file: multi-gpu-split-rendering-report.xml
+          container-name: isaac-lab-mgpu-split-rendering-${{ github.run_id }}-${{ github.run_attempt }}
+          image-tag: ${{ env.CI_KITLESS_IMAGE_TAG }}
+          pytest-options: >-
+            source/isaaclab_teleop/test/test_ovxr_renderer.py::test_rigid_publication_uses_target_device_and_retains_failed_producer
+            source/isaaclab_teleop/test/test_ovxr_renderer.py::test_geometry_publication_cuda_devices_resize_and_failed_consumption
+          # Same reason as the Kit lane.
+          volume-mount-source: ${{ github.workspace }}
+          # The kitless image does not install isaaclab_teleop. Split-GPU publication needs only the
+          # OV libraries already in the image, so skip the Isaac Capture/Teleop dependencies.
+          extra-pip-packages: --no-deps -e /workspace/isaaclab/source/isaaclab_teleop
+
+      - name: Require the split-GPU cases to run
+        # Every case above skips on a runner without two GPUs; fail instead of passing vacuously.
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - reports/multi-gpu-split-rendering-report.xml <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          skipped = [case.get("name") for case in cases if case.find("skipped") is not None]
+          if not cases or skipped:
+              print(f"::error::split-GPU rendering ran {len(cases)} cases and skipped {skipped}")
+              sys.exit(1)
+          PY

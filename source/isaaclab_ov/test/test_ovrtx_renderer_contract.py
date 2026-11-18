@@ -130,6 +130,52 @@ def _simulation_registry(monkeypatch):
     monkeypatch.setattr(SimulationContext, "_instance", sim)
 
 
+def test_unavailable_rendering_gpu_is_rejected_before_the_selection_is_reserved(monkeypatch):
+    """A mistyped GPU index must not fix the process to a selection the native renderer cannot use."""
+    monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
+    monkeypatch.setattr(ovrtx_renderer_module.wp, "get_cuda_device_count", lambda: 2)
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", lambda _cfg: pytest.fail("constructed a renderer"))
+    cfg = OVRTXBackendCfg(device="cpu", active_cuda_gpus="7", use_ovstage=False, read_gpu_transforms=True)
+    with pytest.raises(ValueError, match="cannot see"):
+        OVRTXBackend(cfg)
+    assert OVRTXBackend._initial_gpu_selection is None
+
+
+@pytest.mark.parametrize(("initial_selection", "failure_point"), [(None, None), ("0", "redirect"), ("0", "renderer")])
+def test_native_gpu_selection_survives_close_and_partial_startup(monkeypatch, initial_selection, failure_point):
+    """Default selection is repeatable; partial native startup cannot authorize a different GPU."""
+    monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
+    monkeypatch.setattr(ovrtx_renderer_module.wp, "get_cuda_device_count", lambda: 2)
+    calls = []
+
+    def redirect(config):
+        calls.append("redirect")
+        if failure_point == "redirect":
+            raise RuntimeError("native startup failed")
+
+    def construct(config):
+        calls.append("renderer")
+        if failure_point == "renderer":
+            raise RuntimeError("native startup failed")
+        return types.SimpleNamespace(destroy=lambda: None)
+
+    monkeypatch.setattr(ovrtx_renderer_module, "redirect_shader_cache", redirect)
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", construct)
+    cfg = OVRTXBackendCfg(device="cpu", active_cuda_gpus=initial_selection, use_ovstage=False, read_gpu_transforms=True)
+    if failure_point is None:
+        OVRTXBackend(cfg).close()
+    else:
+        with pytest.raises(RuntimeError, match="native startup failed"):
+            OVRTXBackend(cfg)
+    before = calls.copy()
+    failure_point = None
+    with pytest.raises(ValueError, match="new process"):
+        OVRTXBackend(replace(cfg, active_cuda_gpus="1"))
+    assert calls == before, "Reject conflicting selections before any native initialization."
+    OVRTXBackend(cfg).close()
+    assert calls[len(before) :] == ["redirect", "renderer"]
+
+
 @pytest.mark.parametrize(
     "settings, with_physics, use_ovstage, shared_physics",
     [
@@ -161,6 +207,9 @@ def test_ovrtx_renderer_config_enables_supported_runtime_options(
     loaded = []
     monkeypatch.setattr(ovrtx_renderer_module.ovstage, "__file__", str(tmp_path / "__init__.py"))
     monkeypatch.setattr(ctypes, "CDLL", lambda path: loaded.append(path))
+    # Isolate mocked startup from the real native system's retained GPU selection.
+    monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
+    monkeypatch.setattr(ovrtx_renderer_module.wp, "get_cuda_device_count", lambda: 3)
     # Cache redirection can load the SDK too; isolate it with the other native entry points.
     monkeypatch.setenv("OVRTX_SHADER_CACHE_PATH", str(tmp_path / "shader-cache"))
     monkeypatch.setattr(ovrtx_renderer_module, "redirect_shader_cache", redirected.append)
@@ -207,6 +256,9 @@ def test_ovrtx_renderer_config_enables_supported_runtime_options(
         routes = {OvPhysxReplicateContext: {0}, OvrtxReplicateContext: {1}}
         OvrtxReplicateContext.prepare(sim, routes)
         assert routes == {OvPhysxReplicateContext: {0}, OvrtxReplicateContext: {1}}
+    active_override = "2" if settings == ("1", None) and not with_physics else None
+    # A renderer subclass supplies an explicit native GPU selection through this extension point.
+    monkeypatch.setattr(OVRTXRenderer, "_native_cuda_gpus", lambda _self: active_override)
     cfg = OVRTXRendererCfg()
     renderer = sim.get_or_create_backend(cfg)
     shared = sim.get_or_create_backend(replace(cfg))
@@ -233,7 +285,9 @@ def test_ovrtx_renderer_config_enables_supported_runtime_options(
     assert loaded == [str(dependency)] * (1 if shared_physics else 2)
     assert len(redirected) == (1 if shared_physics else 2)
     assert renderer.backend.renderer is not None
-    assert config_kwargs.get("active_cuda_gpus") == ("1" if use_ovstage else None)
+    assert config_kwargs.get("active_cuda_gpus") == (
+        active_override if active_override is not None else "1" if use_ovstage else None
+    )
     # Camera compatibility must retain the requested GPU scene-transform path,
     # including when simulation tensors originate on the CPU.
     assert config_kwargs["read_gpu_transforms"] is True

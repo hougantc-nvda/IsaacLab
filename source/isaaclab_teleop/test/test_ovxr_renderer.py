@@ -23,6 +23,7 @@ from isaaclab.markers.vis_marker_registry import VisMarkerRegistry
 from isaaclab.renderers.camera_render_spec import CameraRenderSpec
 from isaaclab.sensors.camera import CameraCfg
 from isaaclab.sim import PinholeCameraCfg, SimulationContext
+from isaaclab.test.utils import DeviceScope, test_devices
 
 _REQUIRED_MODULES = ("isaaclab_ov", "ovrtx")
 _MISSING_MODULES = [module for module in _REQUIRED_MODULES if importlib.util.find_spec(module) is None]
@@ -36,11 +37,17 @@ pytestmark = [
 ]
 
 if not _MISSING_MODULES:
+    from isaaclab_ov.renderers import OVRTXBackendCfg  # noqa: E402
     from isaaclab_ov.renderers import ovrtx_renderer as ovrtx_renderer_module  # noqa: E402
     from isaaclab_ov.renderers.ovrtx_renderer import (  # noqa: E402
+        OVRTXBackend,
         OVRTXCameraRenderData,
         OVRTXRenderer,
+        _AsyncWriteBuffers,
     )
+    from isaaclab_teleop import ovxr_gpu_publication  # noqa: E402
+    from isaaclab_teleop import ovxr_renderer as ovxr_renderer_module  # noqa: E402
+    from isaaclab_teleop.ovxr_gpu_publication import _GeometryPublicationBuffers  # noqa: E402
     from isaaclab_teleop.ovxr_renderer import OvxrRenderer, OvxrRendererCfg, OvxrScenePublisher  # noqa: E402
 
 _SPAWN = PinholeCameraCfg(
@@ -106,6 +113,7 @@ def leased_renderer(monkeypatch):
     import isaaclab_ov.stage as stage_module
 
     monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
+    monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
     native, stage, paths = MagicMock(), MagicMock(), MagicMock()
     floor = stage.get_attribute_write_floor.return_value.__enter__.return_value
     floor.fetch.return_value = 0
@@ -159,6 +167,26 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
     native = lease.ovrtx_renderer
     assert native is shared.backend.renderer
     assert lease.ovstage is shared.scene.stage
+    # A failed transfer drain must retain native-owner guards through registry cleanup.
+    publication = _GeometryPublicationBuffers.__new__(_GeometryPublicationBuffers)
+    source, stream = object(), object()
+    publication._sources = [source]
+    publication._source_streams = [stream]
+    publication._stream = None
+    publication._buffers = {}
+    renderer._geometry_publication = publication
+    with monkeypatch.context() as patch:
+        patch.setattr(wp, "synchronize_stream", MagicMock(side_effect=RuntimeError("producer drain failed")))
+        with pytest.raises(RuntimeError, match="producer drain failed"):
+            lease.release()
+        assert publication._sources == [source]
+        assert renderer._sim.vis_marker_registry.has_consumers
+        with pytest.raises(RuntimeError, match="another owner borrows it"):
+            SimulationContext.instance().close_backend(renderer.backend)
+        with pytest.raises(RuntimeError, match="another owner borrows it"):
+            SimulationContext.instance().close_backend(renderer.scene)
+        native.destroy.assert_not_called()
+    monkeypatch.setattr(wp, "synchronize_stream", lambda _stream: None)
     lease.release()
     lease.release()
     assert not renderer._sim.vis_marker_registry.has_consumers
@@ -912,3 +940,273 @@ def Xform "World" {
     assert resolved.get((camera_paths[0], names[1])) == [False]
     assert resolved.get((camera_paths[1], names[1])) == [False]
     assert (camera_paths[2], names[0]) not in resolved
+
+
+# Split-GPU rendering
+
+
+def _make_ovxr_renderer_without_backend(cfg: OvxrRendererCfg) -> OvxrRenderer:
+    """An OVXR renderer with a registered placeholder backend and no lease, as before clone preparation."""
+    renderer = OvxrRenderer(cfg, sim=SimulationContext.instance())
+    renderer.backend = OVRTXBackend.__new__(OVRTXBackend)
+    renderer.backend._retained_by = None
+    renderer.scene = renderer.backend
+    from isaaclab_ov.stage import OvstageBackend
+
+    renderer.scene.commit = OvstageBackend.commit.__get__(renderer.scene)
+    renderer.scene._commit = OvstageBackend._commit.__get__(renderer.scene)
+    renderer.scene.query = OvstageBackend.query.__get__(renderer.scene)
+    renderer.scene.next_camera_id = 0
+    renderer.scene.clone_copies = []
+    renderer.scene.clone_env_paths = ["/World/envs/env_0", "/World/envs/env_1"]
+    renderer.backend.attached = False
+    renderer.backend.render_products = set()
+    backend_cfg = OVRTXBackendCfg(scene_key=renderer.cfg, use_ovstage=False, read_gpu_transforms=True, device="cpu")
+    renderer.scene.stage = renderer.scene.paths = None
+    renderer.backend.cfg = backend_cfg
+    SimulationContext.instance()._backend_registry.append((backend_cfg, renderer.backend))
+    return renderer
+
+
+@pytest.mark.parametrize(
+    ("active_cuda_gpus", "excluded"), [(None, False), ("0", False), ("0,1", False), ("1", True), ("1,2", True)]
+)
+def test_rendering_gpus_excluding_the_simulation_gpu_require_the_session_lease(active_cuda_gpus, excluded):
+    """Only the leased pair's private OVStage stages simulation data for other GPUs; reject it unleased."""
+    renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus))
+    renderer._device = "cuda:0"
+    assert renderer._native_cuda_gpus() == active_cuda_gpus
+    if excluded:
+        with pytest.raises(ValueError, match="require the OVXR session's lease"):
+            renderer._requires_private_ovstage()
+    else:
+        assert renderer._requires_private_ovstage() is False
+
+
+def test_split_gpu_renderer_renders_only_camera_panels(monkeypatch):
+    """An ordinary camera's outputs would stay on a rendering GPU that is never copied back."""
+    renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg())
+    monkeypatch.setattr(renderer, "_excludes_simulation_gpu", lambda: True)
+    cfg = _make_camera_cfg(["rgb"])
+    with pytest.raises(RuntimeError, match="renders only camera panels"):
+        renderer.create_render_data(CameraRenderSpec(cfg, renderer._device, 1, (cfg.prim_path,), 1))
+
+
+@pytest.mark.parametrize(
+    ("simulation", "active_cuda_gpus", "requested"),
+    [("cpu", None, None), ("cuda:2", None, 2), ("cuda:2", "0,2", 2), ("cuda:2", "0", None)],
+)
+def test_panel_products_request_the_simulation_gpu_only_when_it_renders(simulation, active_cuda_gpus, requested):
+    """OVRTX skips a product request outside the rendering set, so such products use automatic assignment."""
+    renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus))
+    renderer._device = simulation
+    renderer._warp_device = types.SimpleNamespace(is_cuda=simulation != "cpu", ordinal=2 if simulation != "cpu" else -1)
+    assert renderer._render_product_device_id() == requested
+
+
+def test_geometry_publication_does_not_wait_on_the_host_before_stage_consumes_it(monkeypatch):
+    """A batch without foreign sources does not block on the transfer stream of an earlier copy."""
+    devices = test_devices(DeviceScope.CUDA)
+    if not devices:
+        pytest.skip("Geometry publication requires a CUDA device")
+    device = devices[0]
+    publisher = _GeometryPublicationBuffers(device)
+    # The transfer stream exists once a foreign batch has been copied.
+    publisher._stream = wp.Stream(device)
+    syncs = []
+    monkeypatch.setattr(wp, "synchronize_stream", syncs.append)
+    writes = []
+    stage = types.SimpleNamespace(
+        write_attribute=lambda *_args, **kwargs: writes.append(kwargs) or types.SimpleNamespace(wait=lambda: None)
+    )
+    publisher.write(stage, object(), ["/World/Mesh"], [wp.zeros(3, dtype=wp.vec3, device=device)], ordinal=1)
+    assert syncs == []
+    # Stage still orders its copy-in after same-device producer work.
+    assert writes[0]["cuda_stream"] == publisher._stream.cuda_stream
+
+
+def test_geometry_publication_cuda_devices_resize_and_failed_consumption(monkeypatch):
+    """Only foreign CUDA points move; replacement sources and failed consumption cannot corrupt a snapshot."""
+    with pytest.raises(ValueError, match="explicit CUDA device"):
+        _GeometryPublicationBuffers("cuda")
+    devices = test_devices(DeviceScope.CUDA)
+    if len(devices) < 2:
+        pytest.skip("Cross-device geometry publication requires two selected CUDA devices")
+    source_device, target_device = devices[0], devices[-1]
+    publisher = _GeometryPublicationBuffers(target_device)
+    inputs = [
+        wp.array([[4, 5, 6]], dtype=wp.vec3, device=target_device),
+        wp.array([[7, 8, 9], [10, 11, 12]], dtype=wp.vec3, device=source_device),
+    ]
+    observed = []
+    wrap_tensor = ovxr_gpu_publication.points_tensor_from_warp
+    empty_like = wp.empty_like
+    allocation_streams = []
+
+    def allocate(source, *, device):
+        # Stream-ordered allocations must precede their first copy on the consuming stream.
+        allocation_streams.append(wp.get_stream(device).cuda_stream)
+        assert allocation_streams[-1] == publisher._stream.cuda_stream
+        return empty_like(source, device=device)
+
+    monkeypatch.setattr(wp, "empty_like", allocate)
+
+    def observe(array):
+        observed.append(array)
+        return wrap_tensor(array)
+
+    monkeypatch.setattr(ovxr_gpu_publication, "points_tensor_from_warp", observe)
+    stage = MagicMock()
+    paths = ["/Local", "/Foreign"]
+    syncs = []
+    synchronize = wp.synchronize_stream
+    monkeypatch.setattr(wp, "synchronize_stream", lambda stream: syncs.append(stream) or synchronize(stream))
+    try:
+        publisher.write(stage, object(), paths, inputs, 1)
+        # Stage reads after the copy on the transfer stream; no host wait on that stream precedes it.
+        assert publisher._stream not in syncs
+        assert observed[0] is inputs[0]
+        assert str(observed[1].device) == target_device
+        np.testing.assert_array_equal(observed[1].numpy(), [[7, 8, 9], [10, 11, 12]])
+        observed.clear()
+        # The provider may replace and resize its point storage while preserving the prim path.
+        with wp.ScopedStream(wp.Stream(source_device)):
+            inputs[1] = wp.array([[13, 14, 15]], dtype=wp.vec3, device=source_device)
+            publisher.write(stage, object(), paths, inputs, 2)
+            inputs[1].fill_(wp.vec3(-100))
+        snapshot = observed[1]
+        assert len(allocation_streams) == 2  # First use and replacement after resize.
+        np.testing.assert_array_equal(snapshot.numpy(), [[13, 14, 15]])
+        observed.clear()
+        operation = stage.write_attribute.return_value
+        operation.wait.side_effect = RuntimeError("Stage rejected the write")
+        with pytest.raises(RuntimeError, match="Stage rejected"):
+            publisher.write(stage, object(), paths, inputs, 3)
+        waits = operation.wait.call_count
+        with pytest.raises(RuntimeError, match="close and recreate"):
+            publisher.write(stage, object(), paths, inputs, 4)
+        publisher.close()
+        assert operation.wait.call_count == waits  # Native wait already consumed the failed operation.
+    finally:
+        publisher.close()
+
+
+@pytest.mark.parametrize(
+    ("cuda_ordinal", "active_cuda_gpus", "use_ovstage", "expected"),
+    [
+        (0, None, True, None),
+        (0, "0,1", True, None),
+        (None, "0", True, None),
+        (1, "0", False, None),
+        (1, "0", True, "cuda:0"),
+        (2, "1,0", True, "cuda:1"),
+    ],
+)
+def test_geometry_is_staged_on_the_first_rendering_gpu_when_rendering_excludes_the_simulation_gpu(
+    monkeypatch, cuda_ordinal, active_cuda_gpus, use_ovstage, expected
+):
+    """Only OVStage rendering away from the CUDA simulation GPU stages geometry; others publish in place."""
+
+    class Reached(Exception):
+        pass
+
+    renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus))
+    renderer._use_ovstage = use_ovstage
+    renderer._device = "cpu" if cuda_ordinal is None else f"cuda:{cuda_ordinal}"
+
+    class Device:
+        is_cuda = cuda_ordinal is not None
+        ordinal = -1 if cuda_ordinal is None else cuda_ordinal  # Warp reports ordinal -1 for the CPU.
+
+    renderer._warp_device = Device()
+    assert renderer._geometry_publication_device() == expected
+    if expected is None:
+        return
+
+    def reach(device):
+        assert device == expected
+        raise Reached
+
+    # Stage preparation creates the buffers first; native allocation is outside this check.
+    monkeypatch.setattr(ovxr_renderer_module, "_GeometryPublicationBuffers", reach)
+    with pytest.raises(Reached):
+        renderer.prepare_stage(renderer._sim.stage, 1)
+    assert renderer._geometry_publication is None
+
+
+def test_rigid_publication_uses_target_device_and_retains_failed_producer(monkeypatch):
+    """Rigid poses follow the selected GPU; failed drains keep the exact producer and scene alive."""
+    devices = test_devices(DeviceScope.CUDA)
+    if len(devices) < 2:
+        pytest.skip("Cross-device rigid publication requires two selected CUDA devices")
+    source_device, target_device = devices[0], devices[-1]
+    renderer = _make_ovxr_renderer_without_backend(
+        OvxrRendererCfg(active_cuda_gpus=target_device.removeprefix("cuda:"))
+    )
+    renderer._use_ovstage = True
+    renderer._warp_device = wp.get_device(source_device)
+    renderer._device = source_device
+    renderer._object_xform_binding = MagicMock()
+    publisher = renderer._geometry_publication = _GeometryPublicationBuffers(target_device)
+    expected = np.array([[[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [2, 3, 4, 1]]], dtype=np.float64)
+    producer = wp.Stream(source_device)
+    with wp.ScopedStream(producer):
+        matrices = wp.array(expected, dtype=wp.mat44d, device=source_device)
+    renderer._transform_writes = _AsyncWriteBuffers([types.SimpleNamespace(matrices=matrices)])
+    renderer._sdp = types.SimpleNamespace(
+        backend=types.SimpleNamespace(transforms_timestamp=1), get_transforms=lambda *_a, **_kw: True
+    )
+    renderer.scene.stage = stage = MagicMock()
+    renderer.scene.ordinal = 11
+    observed = []
+    convert = ovxr_gpu_publication.xform_tensor_from_warp
+
+    def observe(array):
+        observed.append(array)
+        return convert(array)
+
+    monkeypatch.setattr(ovxr_gpu_publication, "xform_tensor_from_warp", observe)
+    try:
+        with wp.ScopedStream(producer):
+            renderer.update_transforms()
+        assert str(observed[-1].device) == target_device
+        np.testing.assert_array_equal(observed[-1].numpy(), expected)
+        assert stage.write_attribute.call_args.args[1] == "omni:xform"
+        assert stage.write_attribute.call_args.kwargs["is_array"] is False
+        # Reset/changed state must reuse the target allocation while publishing fresh values.
+        snapshot = observed[-1]
+        renderer._sdp.backend.transforms_timestamp = 2
+        with wp.ScopedStream(producer):
+            matrices.fill_(wp.mat44d(0.0))
+            renderer.update_transforms()
+        assert observed[-1] is snapshot
+        np.testing.assert_array_equal(snapshot.numpy(), np.zeros_like(expected))
+        renderer._sdp.backend.transforms_timestamp = 3
+        stage.write_attribute.return_value.wait.side_effect = RuntimeError("Rejected consumption")
+        with wp.ScopedStream(producer), pytest.raises(RuntimeError, match="Rejected consumption"):
+            renderer.update_transforms()
+        # The device's current stream has changed. Drain the captured producer, not its replacement.
+        original_sync = wp.synchronize_stream
+        drained = []
+
+        def failed_drain(stream):
+            drained.append(stream)
+            raise RuntimeError("Drain failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(wp, "synchronize_stream", failed_drain)
+            with pytest.raises(RuntimeError, match="Drain failed"):
+                renderer.close()
+        assert drained == [producer]
+        assert renderer._geometry_publication is publisher
+        assert publisher._sources == [matrices]
+        assert renderer._object_xform_binding is not None
+        original_sync(producer)
+    finally:
+        renderer.close()
+
+
+@pytest.mark.parametrize("value", ["cuda:0", "0,,1"])
+def test_renderer_cfg_rejects_malformed_gpu_selection(value):
+    with pytest.raises(ValueError, match="must list CUDA indices"):
+        OvxrRendererCfg(active_cuda_gpus=value)
