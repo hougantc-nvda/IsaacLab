@@ -133,11 +133,11 @@ class OvxrPresentation:
         """Close the session once :attr:`input_device` drained; otherwise only request shutdown.
 
         Raises:
-            RuntimeError: If the input device failed to drain. The session and the environment stay
-                borrowed, so the caller must not release them.
+            RuntimeError: If the input device failed to drain. The session stays open; closing the
+                environment then keeps its renderer and Stage alive.
         """
         if self.input_device is not None and self.input_device.session_cleanup_failed:
-            error = RuntimeError("OVXR input did not drain; retaining the borrowed XR session and environment")
+            error = RuntimeError("OVXR input did not drain; leaving the borrowed XR session open")
             try:
                 self.session.request_shutdown()
             except Exception as shutdown_error:

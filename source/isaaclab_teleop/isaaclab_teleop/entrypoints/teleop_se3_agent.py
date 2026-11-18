@@ -194,7 +194,7 @@ def main() -> None:  # noqa: C901
         None
     """
     env_cfg, teleop_cfg, use_isaac_teleop = _resolve_env_cfg()
-    with launch_simulation(env_cfg, args_cli, cleanup_context=not use_isaac_teleop):
+    with launch_simulation(env_cfg, args_cli):
         run_teleoperation(env_cfg, teleop_cfg, use_isaac_teleop=use_isaac_teleop)
 
 

@@ -143,7 +143,6 @@ def run_live_workflow(monkeypatch):
         session.external_oxr_handles = None
         vars(session).setdefault("start_render_worker", lambda *_args, **_kwargs: started)
         vars(session).setdefault("close", lambda: None)
-        session.async_worker_owns_environment = False
         vars(env).setdefault("close", lambda: None)
         env.unwrapped = env
         env.scene = SimpleNamespace(env_prim_paths=["/World/envs/env_0"])
@@ -424,7 +423,6 @@ def run_record_workflow(monkeypatch):
             return SimpleNamespace(unwrapped=env)
 
         session.external_oxr_handles = lambda: None
-        session.async_worker_owns_environment = False
         vars(session).setdefault("close", lambda: events.append("xr-close"))
         env.unwrapped = env
         monkeypatch.setattr(
@@ -879,7 +877,7 @@ def test_ovxr_presentation_retains_a_forced_reset_until_admitted():
 
 @pytest.mark.parametrize(("drained", "shutdown_fails"), [(True, False), (False, False), (False, True)])
 def test_ovxr_presentation_closes_only_after_input_drain(drained, shutdown_fails):
-    """An undrained input device keeps the session and environment borrowed and only requests shutdown."""
+    """An undrained input device leaves the session open and only requests shutdown."""
     from unittest.mock import Mock
 
     from isaaclab_teleop.entrypoints._ovxr_presentation import OvxrPresentation

@@ -151,11 +151,7 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
     monkeypatch.setattr(SimulationContext, "clear_instance", clear_context)
     handlers = {}
     reports = []
-    session = SimpleNamespace(
-        shutdown_requested=False,
-        async_worker_owns_environment=not stop_at.startswith("construction"),
-        request_shutdown=lambda: None,
-    )
+    session = SimpleNamespace(shutdown_requested=False, request_shutdown=lambda: None)
 
     class Presentation:
         @classmethod
@@ -200,6 +196,7 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
     env = SimpleNamespace(
         sim=SimpleNamespace(is_running=lambda: True),
         scene=SimpleNamespace(env_prim_paths=["/Lab/Cells/Cell0"]),
+        close=lambda: calls.append("env-close"),
     )
     from isaaclab_teleop.entrypoints import teleop_replay_agent as replay_agent
 
@@ -239,15 +236,19 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
         assert reports[0]["num_replays"] == 1
         assert reports[0]["requested_num_replays"] == requested
         assert reports[0]["batch_complete"] is (requested == 1)
-        # The shutdown handlers are active again before input starts.
-        assert calls == [("replay", True) if stop_at == "native-replaced" else "replay", "presentation-close"]
+        # The shutdown handlers are active again before input starts; the environment closes after XR.
+        assert calls == [
+            ("replay", True) if stop_at == "native-replaced" else "replay",
+            "presentation-close",
+            "env-close",
+        ]
     # Restoration returns the dispositions that preceded the batch.
     assert handlers == {1: None, 2: None}
 
 
 @pytest.mark.parametrize("primary,drain_failed", [(False, False), (True, False), (True, True)])
 def test_native_replay_cleanup_preserves_cause_and_borrowed_owners(monkeypatch, primary, drain_failed):
-    """The public replay entry retains failed input owners and still stops independent CloudXR."""
+    """The public replay entry keeps CloudXR for a failed input drain and still closes the environment."""
     from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
     from isaacteleop.teleop_session_manager import RetargetingExecutionConfig
 
@@ -309,11 +310,7 @@ def test_native_replay_cleanup_preserves_cause_and_borrowed_owners(monkeypatch, 
         ),
         raising=False,
     )
-    monkeypatch.setattr(
-        replay,
-        "launch_simulation",
-        lambda _cfg, _args, *, cleanup_context: launch_simulation(PhysicsCfg(), cleanup_context=cleanup_context),
-    )
+    monkeypatch.setattr(replay, "launch_simulation", lambda _cfg, _args: launch_simulation(PhysicsCfg()))
     monkeypatch.setattr(replay.gym, "make", make_env)
     monkeypatch.setattr(replay, "_maybe_launch_cloudxr", lambda *_args: runtime)
     monkeypatch.setattr(replay, "create_isaac_teleop_device", create_device)
@@ -321,10 +318,10 @@ def test_native_replay_cleanup_preserves_cause_and_borrowed_owners(monkeypatch, 
     with pytest.raises(RuntimeError) as caught:
         replay.main()
     assert caught.value is (original if primary else cleanup)
-    assert env.close.call_count == int(not drain_failed)
+    env.close.assert_called_once_with()
     assert runtime.stop.call_count == int(not drain_failed)
-    clear.assert_not_called()
-    assert state["context"] is current
+    # The environment double leaves the context, which the launcher then releases.
+    clear.assert_called_once_with()
     if primary:
         assert any(
             ("drain failed" if drain_failed else "environment close failed") in note for note in original.__notes__

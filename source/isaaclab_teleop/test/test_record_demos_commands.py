@@ -146,8 +146,8 @@ def test_recording_ovxr_checks_launch_before_preparing_and_owns_context_cleanup(
         return cfg, runner
 
     @contextlib.contextmanager
-    def launch(_cfg, _args, *, cleanup_context):
-        calls.append(("launch", cleanup_context))
+    def launch(_cfg, _args):
+        calls.append("launch")
         yield
 
     monkeypatch.setattr(record_demos, "resolve_task_config", resolve_traced)
@@ -159,7 +159,7 @@ def test_recording_ovxr_checks_launch_before_preparing_and_owns_context_cleanup(
     monkeypatch.setattr(record_demos, "record_demos", lambda cfg, *_args: calls.append(("record", cfg)))
     record_demos.main()
 
-    assert calls[:-1] == ["ovxr-launch", "validate_launch", "ovxr-conflicts", "prepare_environment", ("launch", False)]
+    assert calls[:-1] == ["ovxr-launch", "validate_launch", "ovxr-conflicts", "prepare_environment", "launch"]
     cfg = calls[-1][1]
     assert cfg.events.randomize_joint_state.params["std"] == 0.0
 

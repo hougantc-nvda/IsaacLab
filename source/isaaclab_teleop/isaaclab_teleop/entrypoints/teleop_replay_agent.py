@@ -1641,11 +1641,12 @@ def main() -> int:
         persisted to disk; a one-line-per-run stdout summary is always
         printed. See the module docstring for the full JSON schema.
 
-    Cleanup first drains replay input and, with ``--ovxr``, the viewer that
-    may own the environment. A failed input drain retains the borrowed
-    environment and runtime rather than releasing resources a worker may
-    still use. Other failures still service independent cleanup owners.
-    Repeated shutdown signals request owner shutdown without interrupting its drain.
+    Cleanup first drains replay input and, with ``--ovxr``, the viewer, then
+    closes the environment on this thread. An undrained viewer keeps its
+    renderer and Stage alive through that close, and a failed input drain
+    also keeps the CloudXR runtime. Other failures still service independent
+    cleanup owners. Repeated shutdown signals request owner shutdown without
+    interrupting its drain.
 
     Returns:
         The host process exit code, mapped from the worst-of-N outcome
@@ -1671,7 +1672,7 @@ def main() -> int:
             "MCAP replay requires env_cfg.isaac_teleop to be set."
         )
 
-    with launch_simulation(env_cfg, args_cli, cleanup_context=False):
+    with launch_simulation(env_cfg, args_cli):
         exit_code = _run_replay_batch(env_cfg, success_term)
     return exit_code
 
@@ -1786,14 +1787,16 @@ def _run_replay_batch(env_cfg: ManagerBasedRLEnvCfg, success_term: object | None
             if presentation is not None:
                 presentation.close()
             if input_drain_failed:
-                raise RuntimeError("Isaac Capture input drain failed; retaining the environment and runtime")
+                raise RuntimeError("Isaac Capture input drain failed; retaining the XR session and runtime")
+        except BaseException as cleanup_error:
+            record_cleanup_error(cleanup_error)
+        try:
+            # The simulation's STOP retires the viewer, or keeps its renderer and Stage alive if it did not drain.
             if env is not None:
-                if presentation is None or not presentation.session.async_worker_owns_environment:
-                    env.close()
+                env.close()
                 print("Environment closed")
-            elif presentation is None or not presentation.session.async_worker_owns_environment:
-                # Construction may have created a context before returning env.
-                # Only run after proven input/viewer drain; preserve older contexts.
+            else:
+                # Construction may have created a context before returning env; preserve older contexts.
                 context = SimulationContext.instance()
                 if context is not None and context is not previous_context:
                     SimulationContext.clear_instance()

@@ -101,11 +101,14 @@ def close_teleop_resources(
     *,
     previous_context=None,
 ) -> None:
-    """Preserve the first failure and drain XR before freeing its borrowed environment."""
+    """Preserve the first failure, drain XR, then close the environment on this thread.
+
+    An undrained XR session stays open. Closing the environment dispatches the simulation's STOP, where the
+    session retires or keeps its renderer and Stage alive, so the environment closes either way.
+    """
     failure = sys.exception()
     cleanup_failure = None
-    xr_drained = True
-    camera_drained = True
+    environment_closed = False
 
     def report_cleanup_error(error: Exception) -> None:
         nonlocal cleanup_failure
@@ -119,13 +122,11 @@ def close_teleop_resources(
 
     try:
         input_drain_failed = getattr(teleop_interface, "session_cleanup_failed", False) is True
-        xr_drained = not input_drain_failed
         if presentation is not None:
             # Releases the session only after its input device drained.
             try:
                 presentation.close()
             except Exception as error:
-                xr_drained = False
                 report_cleanup_error(error)
         elif input_drain_failed:
             report_cleanup_error(
@@ -137,24 +138,23 @@ def close_teleop_resources(
             try:
                 camera_feed_session.close()
             except Exception as error:
-                camera_drained = False
                 report_cleanup_error(error)
-        if env is not None and xr_drained and camera_drained:
-            if presentation is None or not presentation.session.async_worker_owns_environment:
-                try:
-                    env.close()
-                except Exception as error:
-                    report_cleanup_error(error)
-        elif env is None and xr_drained and camera_drained:
+        if env is not None:
+            try:
+                env.close()
+                environment_closed = True
+            except Exception as error:
+                report_cleanup_error(error)
+        else:
             from isaaclab.sim import SimulationContext
 
-            if presentation is None or not presentation.session.async_worker_owns_environment:
-                context = SimulationContext.instance()
-                if context is not None and context is not previous_context:
-                    try:
-                        SimulationContext.clear_instance()
-                    except Exception as error:
-                        report_cleanup_error(error)
+            # Construction may have created a context before returning env; preserve older contexts.
+            context = SimulationContext.instance()
+            if context is not None and context is not previous_context:
+                try:
+                    SimulationContext.clear_instance()
+                except Exception as error:
+                    report_cleanup_error(error)
     finally:
         # Keep repeated SIGINT/SIGTERM on the owner throughout this cleanup attempt.
         try:
@@ -163,5 +163,5 @@ def close_teleop_resources(
             report_cleanup_error(error)
     if cleanup_failure is not None:
         raise cleanup_failure
-    if env is not None and xr_drained and camera_drained:
+    if environment_closed:
         print("Environment closed")
