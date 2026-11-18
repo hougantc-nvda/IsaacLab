@@ -34,7 +34,7 @@ dependencies = [
     "isaaclab-tasks-experimental",
     "isaaclab-visualizers",
     # ----- generic -----
-    "numpy>=2,<2.5",
+    "numpy>=2",
     "torch==2.11.0",
     "torchvision==0.26.0",
     "onnx>=1.18.0",
@@ -209,7 +209,6 @@ teleop = [
 ovxr = [
     "isaaclab-dev[ov,teleop] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "isaaccapture[ovxr,desktop-mirror] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "ipywidgets>=8.1.5 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 rlinf = [
     "ray[default]>=2.47.0",
@@ -425,8 +424,7 @@ environments = [
 override-dependencies = [
     # Capture CloudXR requires >=17.3; override Isaac Sim 6.2's <15 and Viser 1.0's <17 caps.
     "websockets>=17.3",
-    # Numba 0.64 rejects NumPy 2.5 at import; preserve its upper bound despite overrides.
-    "numpy>=2,<2.5",
+    "numpy>=2",
     "mujoco~=3.17.0",
     "mujoco-warp~=3.17.0",
     "newton[sim] @ git+https://github.com/newton-physics/newton.git@d31603ff5e8389d1d6b2a5daef6ea2cb074c26ff ; extra != 'optix'",

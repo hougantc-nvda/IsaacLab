@@ -1,5 +1,5 @@
 websockets>=17.3
-numpy>=2,<2.5
+numpy>=2
 mujoco~=3.17.0
 mujoco-warp~=3.17.0
 newton[sim] @ git+https://github.com/newton-physics/newton.git@d31603ff5e8389d1d6b2a5daef6ea2cb074c26ff ; extra != 'optix'

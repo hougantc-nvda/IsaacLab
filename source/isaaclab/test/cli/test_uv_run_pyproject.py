@@ -101,7 +101,7 @@ def test_uv_run_exposes_centralized_feature_extras(source_checkout_root: Path):
     assert any(dep.startswith("ovstage") for dep in optional_dependencies["ov"])
 
 
-def test_all_extra_aggregates_curated_ov_rl_and_visualizer_extras(source_checkout_root: Path) -> None:
+def test_all_extra_aggregates_curated_ov_rl_and_visualizer_extras(source_checkout_root: Path):
     """``all`` aggregates only the curated OV, RL, and visualizer extras."""
     optional = _root_pyproject(source_checkout_root)["project"]["optional-dependencies"]
 
@@ -219,11 +219,18 @@ def test_public_ov_packages_use_public_pypi_index(source_checkout_root: Path):
         assert sources[package] == {"index": "pypi-public"}
 
 
-def test_uv_run_declares_no_extra_conflicts(source_checkout_root: Path) -> None:
-    """Kit and OVXR share Capture and remain combinable with the other extras."""
+def test_uv_run_declares_no_extra_conflicts(source_checkout_root: Path):
+    """No extra is forked: every combination resolves into a single environment.
+
+    ``[tool.uv].conflicts`` used to fork ``isaacsim`` / ``teleop`` away from the OV runtimes,
+    and briefly away from the standalone importers. The remaining dependency overrides reconcile
+    packages whose Isaac Sim pins lag the standalone stack. The importers install beside Isaac Sim
+    without displacing it: the two distributions share no files, and Kit serves ``isaacsim.asset``
+    from its extension roots either way.
+    """
     tool_uv = _root_pyproject(source_checkout_root)["tool"]["uv"]
 
-    assert not tool_uv.get("conflicts")
+    assert "conflicts" not in tool_uv
     assert "websockets>=17.3" in tool_uv["override-dependencies"]
     assert "fsspec>=2026.6.0" in tool_uv["override-dependencies"]
     assert "packaging>=20,<27" in tool_uv["override-dependencies"]
