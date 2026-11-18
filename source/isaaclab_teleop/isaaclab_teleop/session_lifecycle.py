@@ -1532,11 +1532,13 @@ class TeleopSessionLifecycle:
             )
         except Exception as e:
             # The async retarget worker dies permanently on any pipeline
-            # exception, so session re-entry is the only recovery either way;
-            # what differs is the cause and the restart pacing.
-            if not self._is_replay and (
-                self._external_oxr_handles_provider is not None or self._kit_xr_session_is_active()
-            ):
+            # exception, so session re-entry is the only recovery; what differs
+            # is the cause and the restart pacing. Borrowed OVXR handles keep
+            # their attached action sets, so a new session cannot attach to them.
+            borrowed_handles = self._external_oxr_handles_provider is not None
+            if borrowed_handles:
+                pass  # Re-raised below after teardown; the entrypoint reports it.
+            elif not self._is_replay and self._kit_xr_session_is_active():
                 logger.warning(
                     "Isaac Capture retargeting step failed (pipeline error, XR session still active); "
                     f"restarting the teleop session in {self._STEP_FAILURE_RESTART_COOLDOWN_S:.0f}s: {e}"
@@ -1553,8 +1555,9 @@ class TeleopSessionLifecycle:
                 self._session_cleanup_error = e
                 e.add_note(f"Teleop session drain also failed: {cleanup_error!r}")
                 raise e from cleanup_error
-            if self._is_replay:
-                # Re-entering replay would silently rewind a failed recording.
+            if self._is_replay or borrowed_handles:
+                # Re-entering replay would silently rewind a failed recording, and
+                # re-entering a borrowed OVXR session would fail to attach its inputs.
                 raise
             return None
 
