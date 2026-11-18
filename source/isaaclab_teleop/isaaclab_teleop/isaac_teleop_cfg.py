@@ -318,4 +318,9 @@ class IsaacTeleopCfg:
     and renderer backends, and must not change them. A task's environment entry point
     may apply the same preparation again, so it must be idempotent. Keep this
     callable's imports safe before simulator startup.
+
+    .. note::
+
+        This hook is experimental and may change or be removed in a future release, for example once
+        tasks declare their backend-specific settings through presets.
     """
