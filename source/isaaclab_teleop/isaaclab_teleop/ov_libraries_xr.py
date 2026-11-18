@@ -22,7 +22,7 @@ from isaaccapture.ovxr_session_manager import OvxrApplicationInterface, StageOrd
 
 from isaaclab.physics import PhysicsEvent
 
-from .ovxr_cfg import OvLibrariesXrCameraCfg, OvLibrariesXrCfg
+from .ovxr_cfg import OvLibrariesXrCameraCfg, OvLibrariesXrCfg, OvLibrariesXrDesktopMirrorCfg
 from .ovxr_session import OvxrSessionBootstrap, validate_ovxr_session_preparation
 
 if TYPE_CHECKING:
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from .ovxr_renderer import OvxrRendererCfg
 
-__all__ = ["OvLibrariesXrCameraCfg", "OvLibrariesXrCfg", "OvLibrariesXrSession"]
+__all__ = ["OvLibrariesXrCameraCfg", "OvLibrariesXrCfg", "OvLibrariesXrDesktopMirrorCfg", "OvLibrariesXrSession"]
 
 logger = logging.getLogger(__name__)
 
@@ -656,14 +656,14 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
             for path, camera in zip(auxiliary_paths, self._auxiliary_cameras, strict=True)
         )
         consumers = [CameraPanelConsumer(panels)] if panels else []
-        if self._cfg.desktop_mirror_enabled:
+        if self._cfg.desktop_mirror is not None:
             # Headless sessions never import the optional mirror modules.
             from isaaccapture.ovxr_session_manager.desktop_mirror import DesktopMirrorConfig
             from isaaccapture.ovxr_session_manager.owned_mirror import MirrorProduct, OwnedDesktopMirror
 
             self.desktop_mirror = OwnedDesktopMirror(
                 DesktopMirrorConfig(
-                    max_fps=self._cfg.desktop_mirror_max_fps,
+                    max_fps=self._cfg.desktop_mirror.max_fps,
                     initial_status_text="Waiting for headset",
                 ),
                 camera_products=tuple(MirrorProduct(panel.render_product_path, panel.label) for panel in panels),

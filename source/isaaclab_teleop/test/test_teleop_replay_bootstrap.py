@@ -74,8 +74,7 @@ def test_ovxr_presentation_preserves_camera_layout(monkeypatch, layout_mode):
     presentation = OvxrPresentation.prepare(config, args, application_name="replay", auxiliary_cameras=cameras)
     assert presentation.session is prepare.return_value
     session_config = prepare.call_args.args[1]
-    assert session_config.desktop_mirror_enabled is True
-    assert session_config.desktop_mirror_max_fps == 20.0
+    assert session_config.desktop_mirror.max_fps == 20.0
     assert [camera.max_fps for camera in session_config.auxiliary_cameras] == [15.0, 15.0]
     # Panels copy the sensor configuration; an equal renderer configuration shares one renderer.
     assert prepare.call_args.kwargs["renderer_cfg"] == config.scene.left.renderer_cfg
