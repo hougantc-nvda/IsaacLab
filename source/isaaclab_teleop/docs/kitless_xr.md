@@ -159,6 +159,6 @@ replays the HDF5 file on the kitless backend selected with `--physics`. A task t
 Isaac Sim RTX camera also needs a kitless renderer, such as `--renderer ovrtx`; otherwise the
 camera's Kit renderer conflicts with the kitless physics.
 
-HDF5 recording for the humanoid kitless tasks still requires Kit/Isaac Sim because the
-recording loop does not apply their action-conditioning and tracking-readiness policies.
-Tasks without those policies can continue recording with Newton.
+Recording applies a task's initial hand-tracking gate and action conditioning and validation
+before each step, as live teleoperation and MCAP replay do, so the humanoid tasks also record
+with kitless physics.

@@ -29,17 +29,26 @@ def test_recording_defers_command_resampling(monkeypatch, tmp_path, backend_flag
     assert min(resampling_time_range) > 24 * 60 * 60
 
 
-@pytest.mark.parametrize("backend", ["newton_mjwarp", "ovphysx"])
-def test_recording_rejects_unsupported_task_action_policy(monkeypatch, tmp_path, backend):
-    """Prepared humanoid policies must not reach an HDF5 loop that cannot apply them."""
+@pytest.mark.parametrize(
+    ("task", "backend"),
+    [
+        ("IsaacContrib-PickPlace-GR1T2-Abs", "newton_mjwarp"),
+        ("IsaacContrib-PickPlace-GR1T2-Abs", "ovphysx"),
+        ("IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs", "newton_mjwarp"),
+    ],
+)
+def test_recording_runs_task_action_policy_on_kitless_physics(monkeypatch, tmp_path, task, backend):
+    """Kitless preparation selects the task's action policy, which the recording loop applies."""
     from isaaclab_teleop.entrypoints import record_demos
 
     monkeypatch.setattr(sys, "argv", ["record_demos.py"])
-    record_demos._parse_args(
-        ["--task", "IsaacContrib-PickPlace-GR1T2-Abs", "--physics", backend, "--renderer", "ovrtx"]
-    )
-    with pytest.raises(ValueError, match="does not run this task's kitless action policy"):
-        record_demos.create_environment_config(str(tmp_path), "rejected")
+    record_demos._parse_args(["--task", task, "--physics", backend, "--renderer", "ovrtx"])
+    cfg, _, teleop_cfg = record_demos.create_environment_config(str(tmp_path), "policy")
+    assert teleop_cfg is cfg.isaac_teleop
+    if "GR1T2" in task:
+        assert teleop_cfg.require_initial_bimanual_hand_tracking
+    else:
+        assert teleop_cfg.action_conditioner is not None and teleop_cfg.action_validator is not None
 
 
 def test_recording_prepares_so101_calibrated_reset(monkeypatch, tmp_path):

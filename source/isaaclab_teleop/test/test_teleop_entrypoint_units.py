@@ -452,7 +452,7 @@ def run_record_workflow(monkeypatch):
     import isaaclab_teleop
     from isaaclab_teleop.entrypoints import record_demos
 
-    def run(env, session, events, *arguments, make=None, create_device=None):
+    def run(env, session, events, *arguments, make=None, create_device=None, teleop_cfg=None, haptic_driver=None):
         camera = SimpleNamespace(
             bind=lambda _env: contextlib.nullcontext(),
             refresh=lambda: None,
@@ -480,12 +480,13 @@ def run_record_workflow(monkeypatch):
         monkeypatch.setattr(record_demos, "time", SimpleNamespace(perf_counter=lambda: 0.0, time=time.time))
         monkeypatch.setattr(record_demos.gym, "make", make or make_env)
         monkeypatch.setattr(record_demos, "create_teleop_device", create_device)
-        monkeypatch.setattr(isaaclab_teleop, "create_haptic_feedback_driver", lambda *_args: None)
+        monkeypatch.setattr(isaaclab_teleop, "create_haptic_feedback_driver", lambda *_args: haptic_driver)
         monkeypatch.setattr(isaaclab_teleop.XrCameraFeedSession, "prepare", lambda *_args, **_kwargs: camera)
         monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
         cfg = SimpleNamespace(sim=object())
+        teleop_cfg = isaaclab_teleop.IsaacTeleopCfg() if teleop_cfg is None else teleop_cfg
         with contextlib.ExitStack() as cleanup:
-            record_demos.record_demos(cfg, None, isaaclab_teleop.IsaacTeleopCfg(), cleanup)
+            record_demos.record_demos(cfg, None, teleop_cfg, cleanup)
 
     return run
 
@@ -676,6 +677,120 @@ def test_record_ovxr_startup_failure_drains_xr_before_releasing_the_environment(
         else:
             assert events == ["xr-prepare", "make", "xr-close", "camera-close", "env-close"]
     assert {sig: signal.getsignal(sig) for sig in original} == original
+
+
+def test_record_loop_applies_task_action_policy_like_live(run_record_workflow, caplog):
+    """The recorder gates on initial hand tracking, conditions and validates actions, and clears that state."""
+    import logging
+
+    from isaaclab_teleop import IsaacTeleopCfg
+
+    events = []
+    frames = []
+    steps = []
+    seeds = []
+    haptics = []
+    presence = {1: (False, True), 3: (True, False), 5: (False, True)}
+
+    class Device:
+        session_cleanup_failed = False
+        target_frame_prim_path = None
+        xr_render_anchor_path = None
+        external_anchor_state = None
+        required_openxr_extensions = ()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def reset(self):
+            events.append("device-reset")
+
+        def notify_reset(self):
+            pass
+
+        def advance(self):
+            frames.append(len(frames) + 1)
+            return torch.full((1, 1), float(frames[-1]))
+
+        @property
+        def last_control_events(self):
+            return SimpleNamespace(is_active=frames[-1] != 7, should_reset=frames[-1] == 4)
+
+        @property
+        def hand_tracking_presence(self):
+            return presence.get(frames[-1], (True, True))
+
+    def condition(_env, action, state):
+        seeds.append(state.get("last"))
+        state["last"] = int(action.item())
+        return action * 10
+
+    def step(actions):
+        steps.append(int(actions.item()))
+        return {}, None, torch.tensor([False]), torch.tensor([False]), {}
+
+    fail = pytest.fail
+    env = SimpleNamespace(
+        num_envs=1,
+        step_dt=0.02,
+        cfg=SimpleNamespace(),
+        scene=SimpleNamespace(env_prim_paths=["/World/envs/env_0"], physics_backend="newton"),
+        sim=SimpleNamespace(
+            visualizers=(),
+            is_running=lambda: len(frames) < 8,
+            is_stopped=lambda: False,
+            get_physics_step_count=lambda: len(steps),
+            render=lambda: fail("OVXR owns rendering; a rejected frame must not render on the control thread"),
+            reset=lambda: fail("Kitless physics must not be rebuilt"),
+        ),
+        recorder_manager=SimpleNamespace(reset=lambda: None, exported_successful_episode_count=0),
+        reset=lambda: events.append("env-reset"),
+        step=step,
+        close=lambda: None,
+    )
+    session = SimpleNamespace(
+        shutdown_requested=False,
+        start_render_worker=lambda *_args, **_kwargs: True,
+        request_render=lambda *_args, **_kwargs: 1,
+        wait_for_shutdown=lambda _seconds: False,
+    )
+    teleop_cfg = IsaacTeleopCfg(
+        require_initial_bimanual_hand_tracking=True,
+        action_conditioner=condition,
+        action_validator=lambda action: "rejected" if action.item() == 30 else None,
+    )
+    driver = SimpleNamespace(update=lambda: haptics.append("update"), stop=lambda: haptics.append("stop"))
+    with caplog.at_level(logging.WARNING, logger="isaaclab_teleop.entrypoints._ovxr_runtime"):
+        run_record_workflow(
+            env,
+            session,
+            events,
+            create_device=lambda *_args, **_kwargs: Device(),
+            teleop_cfg=teleop_cfg,
+            haptic_driver=driver,
+        )
+
+    # Frames 1 and 5 wait for both hands (the operator reset at frame 4 clears the latch); frame 3's
+    # conditioned action is rejected; frame 7 pauses. Only accepted, conditioned actions step.
+    assert steps == [20, 40, 60, 80]
+    # Rejected conditioning is not committed; reset and pause clear the conditioner state.
+    assert seeds == [None, 2, 2, None, None]
+    assert haptics == ["stop", "update", "stop", "update", "stop", "update", "stop", "update"]
+    issues = [record.args[0] for record in caplog.records]
+    assert issues == ["waiting for initial left hand tracking", "rejected", "waiting for initial left hand tracking"]
+    assert events == [
+        "xr-prepare",
+        "make",
+        "env-reset",
+        "device-reset",
+        "env-reset",
+        "device-reset",
+        "xr-close",
+        "camera-close",
+    ]
 
 
 @pytest.mark.parametrize("selector", [["--physics", "ovphysx"], ["physics=ovphysx"]])
