@@ -164,7 +164,7 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
     native = lease.ovrtx_renderer
     assert native is shared.backend.renderer
     assert lease.ovstage is shared.scene.stage
-    # A failed transfer drain must retain native-owner guards through registry cleanup.
+    # A failed transfer drain keeps the lease, so the renderer still refuses to close.
     publication = _GeometryPublicationBuffers.__new__(_GeometryPublicationBuffers)
     source, stream = object(), object()
     publication._sources = [source]
@@ -178,10 +178,8 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
             lease.release()
         assert publication._sources == [source]
         assert renderer._sim.vis_marker_registry.has_consumers
-        with pytest.raises(RuntimeError, match="another owner borrows it"):
-            SimulationContext.instance().close_backend(renderer.backend)
-        with pytest.raises(RuntimeError, match="another owner borrows it"):
-            SimulationContext.instance().close_backend(renderer.scene)
+        with pytest.raises(RuntimeError, match="while an OvxrRenderLease is active"):
+            SimulationContext.instance().close_backend(renderer)
         native.destroy.assert_not_called()
     monkeypatch.setattr(wp, "synchronize_stream", lambda _stream: None)
     lease.release()
@@ -1017,12 +1015,10 @@ def _make_ovxr_renderer_without_backend(cfg: OvxrRendererCfg) -> OvxrRenderer:
     """An OVXR renderer with a registered placeholder backend and no lease, as before clone preparation."""
     renderer = OvxrRenderer(cfg, sim=SimulationContext.instance())
     renderer.backend = OVRTXBackend.__new__(OVRTXBackend)
-    renderer.backend._retained_by = None
     renderer.scene = renderer.backend
     from isaaclab_ov.stage import OvstageBackend
 
     renderer.scene.commit = OvstageBackend.commit.__get__(renderer.scene)
-    renderer.scene._commit = OvstageBackend._commit.__get__(renderer.scene)
     renderer.scene.query = OvstageBackend.query.__get__(renderer.scene)
     renderer.scene.next_camera_id = 0
     renderer.scene.clone_copies = []

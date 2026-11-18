@@ -558,8 +558,8 @@ class _OvxrLeaseController:
             raise RuntimeError("Cannot release OvxrRenderLease while the owner lane is active")
         if self._publisher is not None:
             self._publisher.close()
-        # Keep native-owner guards installed until every retained producer/transfer
-        # completes. Environment teardown must not bypass a failed drain.
+        # Keep the lease active until every retained producer/transfer completes, so
+        # environment teardown keeps the pair after a failed drain.
         if self._renderer._geometry_publication is not None:
             self._renderer._geometry_publication.close()
         if lease._state is _OvxrLeaseState.BOUND and (not self._poisoned):
