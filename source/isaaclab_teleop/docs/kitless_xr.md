@@ -42,6 +42,27 @@ and restore the caller's arguments on return. The scripts under
 `scripts/environments/teleoperation/` and `scripts/tools/record_demos.py` delegate to
 these package entrypoints.
 
+## Switching a Kit workflow to kitless
+
+Each step of the Kit teleoperation and imitation-learning workflow runs without Isaac Sim. Install
+the `ovxr` selection (add `mimic` for the imitation-learning scripts) instead of `isaacsim`, then:
+
+| Step | Kit | Kitless |
+|---|---|---|
+| Teleoperate | `isaaclab teleop run --xr` | `isaaclab teleop run --ovxr` |
+| Record demonstrations | `isaaclab teleop record --xr` | `isaaclab teleop record --ovxr` |
+| Replay demonstrations | `isaaclab teleop replay` | same command |
+| Replay an MCAP capture | `teleop_replay_agent.py` | `teleop_replay_agent.py --ovxr` |
+| Annotate, generate (Mimic) | `annotate_demos.py`, `generate_dataset.py` | same commands with `physics=...` |
+| Train, play (robomimic) | `train.py`, `play.py` | same commands; `play.py` takes `physics=...` |
+
+Select the physics backend with `--physics physx` (OvPhysX without Isaac Sim) or `--physics newton_mjwarp`;
+the Mimic scripts take the same choice as `physics=...`. Isaac Sim PhysX (`isaacsim_physx`) is not available
+without Kit. Cameras that render through Isaac Sim RTX need a kitless renderer, such as `renderer=ovrtx`,
+when a script keeps them. The OVXR session strips camera observations, so kitless HDF5 demonstrations
+are state-only. The G1 locomanipulation SDG task still requires Isaac Sim. To restart an OVXR session,
+start the command again.
+
 ## Live teleoperation
 
 Start with CPU OvPhysX using the command below. The same registered-task
