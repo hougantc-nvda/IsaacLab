@@ -126,7 +126,9 @@ teleoperation, with the same `--ovxr_session_mode` and `--ovxr_step_hz` options;
 control. Resets between attempts keep the kitless simulator instead of rebuilding it, as in
 MCAP replay. Instructions are logged because no Kit window opens. Add `--mcap_record_path`
 to also capture the session's tracker and control input for MCAP replay. `replay_demos.py`
-replays the HDF5 file on the kitless backend selected with `--physics`.
+replays the HDF5 file on the kitless backend selected with `--physics`. A task that keeps an
+Isaac Sim RTX camera also needs a kitless renderer, such as `--renderer ovrtx`; otherwise the
+camera's Kit renderer conflicts with the kitless physics.
 
 HDF5 recording for the humanoid kitless tasks still requires Kit/Isaac Sim because the
 recording loop does not apply their action-conditioning and tracking-readiness policies.

@@ -1362,8 +1362,8 @@ Capture with its OVXR extra and select the compatible rendering dependencies.
 
 MCAP supplies tracker and control input; the connected client supplies the view.
 A recorded STOP, task success or failure, or the replay duration limit ends the
-run. The separate ``isaaclab teleop replay`` command replays HDF5 demonstrations
-through Kit.
+run. The separate ``isaaclab teleop replay`` command replays HDF5 demonstrations;
+the task's ``--physics`` and ``--renderer`` selections decide whether it starts Kit.
 
 .. _isaac-teleop-xr-anchor:
 
