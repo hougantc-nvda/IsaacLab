@@ -25,6 +25,11 @@ on a host with a usable GPU-backed desktop display. Without that option, no loca
 window is opened; headset rendering still requires the GPU. Camera panels are
 independent of the mirror.
 
+Add `--enable_debug_visualization` to show red hand-joint markers and controller aim axes
+when their tracking data is available. These markers appear in the headset eye views and their
+desktop-mirror views, but are excluded from sensor images, including PiP. They do not require
+an ordinary desktop visualizer.
+
 For adapter regression tests, include the test tools:
 
 ```bash
