@@ -815,7 +815,7 @@ class _OvxrPanelCameras:
             self._renderer._register_camera(camera.spec, camera.render_data)
             camera.product_path = camera.render_data.render_product_path
         if self.cameras:
-            self._renderer.scene._commit()
+            self._renderer.scene.commit()
 
     def queue_update(self, render_data, positions, orientations, intrinsics) -> bool:
         """Retain the latest pose sample of a selected camera until publication."""

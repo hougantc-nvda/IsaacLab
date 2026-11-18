@@ -80,7 +80,7 @@ def test_tracking_markers_render_in_eyes_but_not_sensor_after_motion_and_reset(m
                 for name, camera in zip(("sensor", "left", "right"), cameras, strict=True)
             ),
         )
-        host = _IsaacLabOvxrApplicationInterface(bootstrap, env, cfg, environment_owner="host")
+        host = _IsaacLabOvxrApplicationInterface(bootstrap, env, cfg)
         binding = host.attach_on_render_thread(host.offer_render_owner_transfer())
         products = bootstrap._lease.auxiliary_render_product_paths
         # The second light exists only in the native replicated scene, not the source USD.
