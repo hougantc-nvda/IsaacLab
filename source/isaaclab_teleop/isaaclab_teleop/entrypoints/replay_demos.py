@@ -83,9 +83,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         sys.argv = [sys.argv[0], *argv]
     parser = _build_parser()
     args_cli, hydra_args = setup_preset_cli(parser)
-    # Installs with Isaac Sim keep the Kit runtime. Without it, replay runs on the kitless
-    # backend selected with --physics; the pause/resume keys work with any visualizer.
-    args_cli.require_kit = has_kit()
+    # Installs with Isaac Sim keep the Kit runtime unless --physics selects a kitless backend; without
+    # Isaac Sim, replay runs on the selected kitless backend. The pause/resume keys work with any visualizer.
+    physics = next((arg.partition("=")[2] for arg in hydra_args if arg.startswith("physics=")), None)
+    args_cli.require_kit = has_kit() and physics in (None, "physx", "isaacsim_physx")
 
     # Call an external callback if requested.
     if args_cli.external_callback:

@@ -88,3 +88,27 @@ def test_replay_loop_does_not_step_after_the_recorded_actions():
     assert len(env.stepped_actions) == len(recorded_actions)
     for stepped, recorded in zip(env.stepped_actions, recorded_actions):
         torch.testing.assert_close(stepped, recorded.unsqueeze(0), atol=1e-6, rtol=0.0)
+
+
+@pytest.mark.parametrize(
+    ("kit_installed", "physics_args", "require_kit"),
+    [
+        (True, [], True),
+        (True, ["--physics", "isaacsim_physx"], True),
+        (True, ["--physics", "physx"], True),
+        (True, ["--physics", "ovphysx"], False),
+        (True, ["--physics", "newton_mjwarp"], False),
+        (False, [], False),
+        (False, ["--physics", "physx"], False),
+    ],
+)
+def test_replay_keeps_kit_unless_a_kitless_backend_is_selected(monkeypatch, kit_installed, physics_args, require_kit):
+    """Installs with Isaac Sim keep Kit by default; an explicit kitless backend replays without it."""
+    import sys
+
+    from isaaclab_teleop.entrypoints import replay_demos
+
+    monkeypatch.setattr(replay_demos, "has_kit", lambda: kit_installed)
+    monkeypatch.setattr(sys, "argv", list(sys.argv))
+    args = replay_demos._parse_args(["--task", "Test", *physics_args])
+    assert args.require_kit is require_kit

@@ -168,7 +168,7 @@ contend for the GIL at the start of the step.
 
 MCAP records DeviceIO tracker/control input, not historical simulation scenes.
 Environment/control reset does not rewind MCAP input. `record_demos.py --ovxr` records HDF5
-demonstrations through OVXR, and `replay_demos.py` replays them without Isaac Sim on the
+demonstrations through OVXR, and `replay_demos.py` replays them on the kitless
 backend selected with `--physics`; see the [kitless XR guide](kitless_xr.md).
 
 ## Utilities

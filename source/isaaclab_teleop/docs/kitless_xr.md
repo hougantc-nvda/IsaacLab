@@ -124,8 +124,8 @@ teleoperation, with the same `--ovxr_session_mode` and `--ovxr_step_hz` options;
 `--ovxr_step_hz` replaces the `--step_hz` limit. Recording starts with the client's Play
 control. Resets between attempts keep the kitless simulator instead of rebuilding it, as in
 MCAP replay. Instructions are logged because no Kit window opens. Add `--mcap_record_path`
-to also capture the session's tracker and control input for MCAP replay. Without Isaac Sim,
-`replay_demos.py` replays the HDF5 file on the backend selected with `--physics`.
+to also capture the session's tracker and control input for MCAP replay. `replay_demos.py`
+replays the HDF5 file on the kitless backend selected with `--physics`.
 
 HDF5 recording for the humanoid kitless tasks still requires Kit/Isaac Sim because the
 recording loop does not apply their action-conditioning and tracking-readiness policies.
