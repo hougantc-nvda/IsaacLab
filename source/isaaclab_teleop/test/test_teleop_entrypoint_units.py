@@ -715,6 +715,29 @@ def test_live_unset_task_physics_keeps_simulation_default(monkeypatch):
     assert kit_sources
 
 
+def test_ovxr_omitted_launch_options_match_documented_defaults(monkeypatch):
+    """The shortened ``--ovxr`` command keeps the documented CloudXR profile, launch policy and visualizers."""
+    from isaaclab.app.sim_launcher import validate_launch
+    from isaaclab.sim import SimulationCfg
+
+    monkeypatch.delenv("LIVESTREAM", raising=False)
+
+    def parse(*arguments):
+        return _load_teleop_agent(monkeypatch, *arguments).args_cli
+
+    implicit = parse("--ovxr")
+    explicit = parse("--ovxr", "--viz", "none", "--auto_launch_cloudxr", "--cloudxr_env", "cloudxrjs")
+    assert implicit.auto_launch_cloudxr is explicit.auto_launch_cloudxr is True
+    assert implicit.cloudxr_env == explicit.cloudxr_env
+    assert implicit.cloudxr_env.endswith(".env")
+    left_cfg, right_cfg = SimulationCfg(), SimulationCfg()
+    validate_launch(left_cfg, vars(implicit).copy())
+    validate_launch(right_cfg, vars(explicit).copy())
+    assert left_cfg.visualizer_cfgs == right_cfg.visualizer_cfgs == []
+    assert parse("--ovxr", "--no-auto_launch_cloudxr").auto_launch_cloudxr is False
+    assert parse("--ovxr", "--cloudxr_env", "none").cloudxr_env is None
+
+
 def test_live_ovxr_rejects_unset_task_physics_before_launch(monkeypatch):
     monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     agent = _load_teleop_agent(monkeypatch, "--task", _UNSET_PHYSICS_TASK, "--ovxr")
