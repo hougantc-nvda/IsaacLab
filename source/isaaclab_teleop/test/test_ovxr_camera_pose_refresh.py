@@ -3,7 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Camera pose refresh for renderers presented outside :meth:`Camera.update`."""
+"""The camera pose update that OVXR camera panels use outside :meth:`Camera.update`.
+
+Camera has no public pose-only refresh, so the OVXR session calls the private ``_update_poses``; this
+test keeps the behavior it relies on visible to teleoperation.
+"""
 
 from types import SimpleNamespace
 
@@ -68,13 +72,13 @@ class _CpuCamera(Camera):
         return ProxyArray(positions), ProxyArray(orientations)
 
 
-def test_refresh_world_poses_updates_data_and_renderer_without_capturing():
-    """A refresh exposes moved poses to the data and the renderer, but captures no frame."""
+def test_camera_pose_update_reaches_data_and_renderer_without_capturing():
+    """A pose update exposes moved poses to the data and the renderer, but captures no frame."""
     camera = _CpuCamera()
     camera.positions = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     camera.orientations = torch.tensor([[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
 
-    camera.refresh_world_poses()
+    camera._update_poses(env_ids=None)
 
     # The data and renderer carry the world-convention orientation that a direct pose query reports.
     _, world_orientations = camera.get_world_poses(convention="world")
@@ -86,10 +90,10 @@ def test_refresh_world_poses_updates_data_and_renderer_without_capturing():
     _assert_same_rotations(orientations, world_orientations)
     assert camera.frame.torch.tolist() == [0] * _NUM_CAMERAS
 
-    # A partial refresh leaves the other camera's cached pose unchanged.
+    # A partial update leaves the other camera's cached pose unchanged.
     moved = torch.tensor([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]])
     camera.positions = moved
-    camera.refresh_world_poses(env_ids=[1])
+    camera._update_poses(env_ids=[1])
 
     torch.testing.assert_close(camera.data.pos_w.torch, torch.tensor([[1.0, 2.0, 3.0], [10.0, 11.0, 12.0]]))
     assert len(camera._renderer.poses) == 2

@@ -547,7 +547,8 @@ def test_selected_camera_poses_follow_motion_and_reset_before_publication(xr_mod
         cached = -1
         fail = False
 
-        def refresh_world_poses(self):
+        def _update_poses(self, env_ids=None):
+            assert env_ids is None
             if self.fail:
                 raise RuntimeError("pose unavailable")
             self.cached = self.live
