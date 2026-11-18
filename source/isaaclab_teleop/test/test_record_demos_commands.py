@@ -207,7 +207,8 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
     import contextlib
     from types import SimpleNamespace
 
-    # These adapter tests require the optional Capture OVXR session module.
+    # These adapter tests require the OVRTX runtime and the optional Capture OVXR session module.
+    pytest.importorskip("ovrtx")
     pytest.importorskip("isaaccapture.ovxr_session_manager")
     import isaaclab_teleop
     from isaaclab_teleop.entrypoints import record_demos
