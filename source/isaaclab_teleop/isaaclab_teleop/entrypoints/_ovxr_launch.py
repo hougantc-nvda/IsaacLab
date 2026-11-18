@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Launch checks shared by the live and replay OVXR entrypoints."""
+"""Launch checks shared by the live, recording and replay OVXR entrypoints."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def require_kitless_physics(env_cfg: Any, task: str) -> None:
 
 
 def add_ovxr_presentation_args(parser: argparse.ArgumentParser) -> None:
-    """Add the OVXR camera-panel and desktop-mirror options shared by live teleoperation and replay."""
+    """Add the OVXR camera-panel and desktop-mirror options shared by live teleoperation, recording and replay."""
     parser.add_argument(
         "--ovxr_desktop_mirror",
         action=argparse.BooleanOptionalAction,
