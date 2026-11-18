@@ -98,7 +98,7 @@ this client origin before changing the renderer.
 `--ovxr` and Kit's `--xr` select separate XR runtimes and are mutually exclusive.
 An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 
-OVXR live teleoperation and MCAP replay run without a local window by default.
+OVXR live teleoperation, recording and MCAP replay run without a local window by default.
 Add `--ovxr_desktop_mirror` to open the mirror on a host with a desktop display;
 `--no-ovxr_desktop_mirror` explicitly disables it; `--viz` remains the general
 visualizer selector. `--ovxr_session_mode {ar,vr}` (default `ar`) selects the OpenXR
@@ -148,7 +148,8 @@ uv run --extra ovxr isaaclab teleop record \
 ```
 
 `record --ovxr` writes HDF5 demonstrations through the same OVXR session as live
-teleoperation, with the same `--ovxr_session_mode` and `--ovxr_step_hz` options;
+teleoperation, with the same `--ovxr_session_mode`, `--ovxr_step_hz`, camera-panel and
+desktop-mirror options;
 `--ovxr_step_hz` replaces the `--step_hz` limit. Recording starts with the client's Play
 control. Resets between attempts keep the kitless simulator instead of rebuilding it, as in
 MCAP replay. Instructions are logged because no Kit window opens. Add `--mcap_record_path`

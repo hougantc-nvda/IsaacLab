@@ -474,6 +474,7 @@ def run_record_workflow(monkeypatch):
 
         session.external_oxr_handles = lambda: None
         vars(session).setdefault("close", lambda: events.append("xr-close"))
+        vars(session).setdefault("report_host_timing", lambda *_args: None)
         env.unwrapped = env
         monkeypatch.setattr(
             record_demos,
@@ -488,8 +489,8 @@ def run_record_workflow(monkeypatch):
         monkeypatch.setattr(isaaclab_teleop, "create_haptic_feedback_driver", lambda *_args: haptic_driver)
         monkeypatch.setattr(isaaclab_teleop.XrCameraFeedSession, "prepare", lambda *_args, **_kwargs: camera)
         monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
-        cfg = SimpleNamespace(sim=object())
         teleop_cfg = isaaclab_teleop.IsaacTeleopCfg() if teleop_cfg is None else teleop_cfg
+        cfg = SimpleNamespace(sim=object(), isaac_teleop=teleop_cfg)
         with contextlib.ExitStack() as cleanup:
             record_demos.record_demos(cfg, None, teleop_cfg, cleanup)
 
@@ -573,6 +574,7 @@ def test_record_ovxr_loop_follows_live_presentation_and_shutdown_order(run_recor
             is_running=lambda: len(frames) < 4,
             is_stopped=lambda: False,
             get_physics_step_count=lambda: len(steps),
+            get_physics_dt=lambda: 0.01,
             render=lambda: fail("OVXR owns rendering; the control thread must not render"),
             reset=lambda: fail("A stage leased to OVXR must not be rebuilt"),
         ),
@@ -746,6 +748,7 @@ def test_record_loop_applies_task_action_policy_like_live(run_record_workflow, c
             is_running=lambda: len(frames) < 8,
             is_stopped=lambda: False,
             get_physics_step_count=lambda: len(steps),
+            get_physics_dt=lambda: 0.01,
             render=lambda: fail("OVXR owns rendering; a rejected frame must not render on the control thread"),
             reset=lambda: fail("Kitless physics must not be rebuilt"),
         ),
@@ -754,11 +757,13 @@ def test_record_loop_applies_task_action_policy_like_live(run_record_workflow, c
         step=step,
         close=lambda: None,
     )
+    reports = []
     session = SimpleNamespace(
         shutdown_requested=False,
         start_render_worker=lambda *_args, **_kwargs: True,
         request_render=lambda *_args, **_kwargs: 1,
         wait_for_shutdown=lambda _seconds: False,
+        report_host_timing=lambda step, _dt: reports.append(step),
     )
     teleop_cfg = IsaacTeleopCfg(
         require_initial_bimanual_hand_tracking=True,
@@ -782,6 +787,8 @@ def test_record_loop_applies_task_action_policy_like_live(run_record_workflow, c
     # Rejected conditioning is not committed; reset and pause clear the conditioner state.
     assert seeds == [None, 2, 2, None, None]
     assert haptics == ["stop", "update", "stop", "update", "stop", "update", "stop", "update"]
+    # Each host frame reports its timing once, including the paused frame's idle publication.
+    assert len(reports) == 8
     issues = [record.args[0] for record in caplog.records]
     assert issues == ["waiting for initial left hand tracking", "rejected", "waiting for initial left hand tracking"]
     assert events == [
