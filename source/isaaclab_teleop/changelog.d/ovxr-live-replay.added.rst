@@ -14,3 +14,5 @@
   reset are withheld, while operator control events are preserved.
 * Added OVXR launch validation that rejects dynamic ``CUSTOM`` XR anchors, whose callback needs a
   previous head pose that OVXR does not supply. Kit keeps supporting them.
+* Added terminal handling of retargeting failures in live OVXR sessions. The borrowed XR session keeps
+  its attached input actions, so the failure ends the session instead of restarting input on it.
