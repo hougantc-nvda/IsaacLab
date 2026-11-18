@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Bounded Pink upper-body action for G1 on kitless Newton."""
+"""Bounded Pink upper-body action for G1 on Newton."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import torch
 
 from isaaclab.envs.mdp.actions.pink_task_space_actions import PinkInverseKinematicsAction
 
-from .g1_kitless_newton import bound_pink_joint_targets
+from .g1_newton_actions import bound_pink_joint_targets
 
 
 class G1NewtonBoundedPinkInverseKinematicsAction(PinkInverseKinematicsAction):

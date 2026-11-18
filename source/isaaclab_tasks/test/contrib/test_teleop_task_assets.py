@@ -65,7 +65,7 @@ def test_g1_hand_contact_sensors_resolve_to_rigid_hand_links(task):
     assert matched["left"].isdisjoint(matched["right"])
 
 
-def test_gr1t2_kitless_kinematics_urdf_matches_the_spawned_asset():
+def test_gr1t2_kinematics_urdf_matches_the_spawned_asset():
     """The vendored Pink URDF must keep the spawned USD's movable joints and limits [rad]."""
     from isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg import PickPlaceGR1T2EnvCfg
 
@@ -98,9 +98,9 @@ def test_gr1t2_kitless_kinematics_urdf_matches_the_spawned_asset():
         assert urdf_limits[name] == pytest.approx((lower, upper), abs=1.0e-4), name
 
 
-def test_gr1t2_kitless_mimic_conversion_matches_the_kinematics_urdf():
-    """Kitless hands follow the asset's PhysX mimic relations with the URDF's sign and reference."""
-    from isaaclab_tasks.contrib.pick_place.gr1t2_kitless_action import physx_mimic_to_linear_relation
+def test_gr1t2_mimic_conversion_matches_the_kinematics_urdf():
+    """Standalone-backend hands follow the asset's PhysX mimic relations with the URDF's sign and reference."""
+    from isaaclab_tasks.contrib.pick_place.gr1t2_bounded_pink_action import physx_mimic_to_linear_relation
     from isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg import PickPlaceGR1T2EnvCfg
 
     stage = _open_asset(PickPlaceGR1T2EnvCfg().scene.robot.spawn.usd_path)
@@ -143,7 +143,7 @@ def test_gr1t2_kitless_mimic_conversion_matches_the_kinematics_urdf():
         ), name
 
 
-def test_gr1t2_kitless_kinematics_urdf_reproduces_the_asset_forward_kinematics():
+def test_gr1t2_kinematics_urdf_reproduces_the_asset_forward_kinematics():
     """Every URDF link must sit where the spawned USD's joint frames place it at an asymmetric pose [m, rad].
 
     Matching joint names and limits would not catch a moved joint origin or a reversed joint axis.

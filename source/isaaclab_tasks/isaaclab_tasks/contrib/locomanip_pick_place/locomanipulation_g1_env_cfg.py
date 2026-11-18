@@ -31,7 +31,7 @@ from isaaclab_assets.robots.unitree import G1_29DOF_CFG
 
 from ..teleop_physics_cfg import (
     TeleopPhysicsCfg,
-    check_kitless_backend_preparation,
+    check_backend_preparation,
     prepare_humanoid_teleop_environment,
 )
 
@@ -439,18 +439,18 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
     """
 
     class_type: type | str = "isaaclab_tasks.contrib.teleop_env:make_humanoid_teleop_env"
-    _prepared_kitless_backend: str | None = None
-    kitless_preparation: dict[str, str] = {
+    _prepared_physics_backend: str | None = None
+    backend_preparation: dict[str, str] = {
         "ovphysx": (
             "isaaclab_tasks.contrib.locomanip_pick_place.locomanipulation_g1_env_cfg"
-            ":prepare_locomanipulation_g1_for_kitless_ovphysx"
+            ":prepare_locomanipulation_g1_for_ovphysx"
         ),
         "newton_mjwarp": (
             "isaaclab_tasks.contrib.locomanip_pick_place.locomanipulation_g1_env_cfg"
-            ":prepare_locomanipulation_g1_for_kitless_newton_mjwarp"
+            ":prepare_locomanipulation_g1_for_newton_mjwarp"
         ),
     }
-    """Preparation function, as a ``"module:function"`` reference, for each supported kitless backend."""
+    """Preparation function, as a ``"module:function"`` reference, for each supported standalone backend."""
     haptic_feedback: object | None = None
     image_obs_list: list[str] = ["robot_pov_cam"]
     sim: SimulationCfg = SimulationCfg(physics=TeleopPhysicsCfg())
@@ -469,7 +469,7 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
-        if self._prepared_kitless_backend is not None:
+        if self._prepared_physics_backend is not None:
             return
         # The pretrained Agile policy consumes and produces PhysX-ordered joints.
         self.scene.robot.joint_ordering = "physx"
@@ -530,7 +530,7 @@ class LocomanipulationG1EnvCfg(ManagerBasedRLEnvCfg):
             )
 
 
-def prepare_locomanipulation_g1_for_kitless_ovphysx(env_cfg: LocomanipulationG1EnvCfg) -> None:
+def prepare_locomanipulation_g1_for_ovphysx(env_cfg: LocomanipulationG1EnvCfg) -> None:
     """Provide the packing-table support shape required by standalone OVPhysX.
 
     Args:
@@ -539,14 +539,14 @@ def prepare_locomanipulation_g1_for_kitless_ovphysx(env_cfg: LocomanipulationG1E
     Raises:
         ValueError: If ``env_cfg`` was already prepared for a different backend.
     """
-    if check_kitless_backend_preparation(env_cfg, "ovphysx"):
+    if check_backend_preparation(env_cfg, "ovphysx"):
         return
     configure_packing_table_collisions(env_cfg.scene.packing_table, physx_offsets=True)
-    env_cfg._prepared_kitless_backend = "ovphysx"
+    env_cfg._prepared_physics_backend = "ovphysx"
 
 
-def prepare_locomanipulation_g1_for_kitless_newton_mjwarp(env_cfg: LocomanipulationG1EnvCfg) -> None:
-    """Prepare shared task collision geometry for kitless Newton without replacing the locomotion policy.
+def prepare_locomanipulation_g1_for_newton_mjwarp(env_cfg: LocomanipulationG1EnvCfg) -> None:
+    """Prepare shared task collision geometry for Newton without replacing the locomotion policy.
 
     Args:
         env_cfg: G1 locomanipulation task configuration.
@@ -554,7 +554,7 @@ def prepare_locomanipulation_g1_for_kitless_newton_mjwarp(env_cfg: Locomanipulat
     Raises:
         ValueError: If ``env_cfg`` was already prepared for a different backend.
     """
-    if check_kitless_backend_preparation(env_cfg, "newton_mjwarp"):
+    if check_backend_preparation(env_cfg, "newton_mjwarp"):
         return
     from isaaclab_tasks.contrib.steering_wheel import condition_newton_steering_wheel_detail_collisions
 
@@ -568,4 +568,4 @@ def prepare_locomanipulation_g1_for_kitless_newton_mjwarp(env_cfg: Locomanipulat
     solver_cfg.njmax = max(solver_cfg.njmax or 0, 1536)
     configure_packing_table_collisions(env_cfg.scene.packing_table)
     condition_newton_steering_wheel_detail_collisions(env_cfg.scene.object)
-    env_cfg._prepared_kitless_backend = "newton_mjwarp"
+    env_cfg._prepared_physics_backend = "newton_mjwarp"

@@ -128,7 +128,7 @@ class G1LocomanipulationSDGEnvCfg(LocomanipulationG1EnvCfg, LocomanipulationSDGE
 
     class_type: type | str = "{DIR}.g1_locomanipulation_sdg_env:G1LocomanipulationSDGEnv"
     sim: sim_utils.SimulationCfg = sim_utils.SimulationCfg(physics=PhysxCfg())
-    """Isaac Sim PhysX only: the SDG environment does not run the teleoperation task's kitless
+    """Isaac Sim PhysX only: the SDG environment does not run the teleoperation task's standalone
     backend preparation, so the inherited ``ovphysx``/``newton_mjwarp`` selectors are not offered."""
 
     # Scene settings

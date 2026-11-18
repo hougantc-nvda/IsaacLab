@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Sim-free tests for the GR1T2 kitless OVPhysX action boundary."""
+"""Sim-free tests for the GR1T2 bounded Pink action boundary."""
 
 from copy import deepcopy
 from types import SimpleNamespace
@@ -20,21 +20,21 @@ from isaaclab.envs.mdp.actions.pink_actions_cfg import PinkInverseKinematicsActi
 from isaaclab.envs.mdp.actions.pink_task_space_actions import PinkInverseKinematicsAction
 
 from isaaclab_tasks.contrib.pick_place import pickplace_gr1t2_env_cfg as gr1t2_env_cfg
-from isaaclab_tasks.contrib.pick_place.gr1t2_kitless_action import (
-    GR1T2KitlessPinkInverseKinematicsAction,
+from isaaclab_tasks.contrib.pick_place.gr1t2_bounded_pink_action import (
+    GR1T2BoundedPinkIKAction,
     _HandTargetSlewState,
     bound_ik_joint_targets,
     constrain_hand_joint_targets,
 )
-from isaaclab_tasks.contrib.pick_place.gr1t2_kitless_action_cfg import (
-    GR1T2KitlessPinkInverseKinematicsActionCfg,
+from isaaclab_tasks.contrib.pick_place.gr1t2_bounded_pink_action_cfg import (
+    GR1T2BoundedPinkIKActionCfg,
 )
 from isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_env_cfg import (
     PickPlaceGR1T2EnvCfg,
-    condition_kitless_gr1t2_stage,
-    condition_kitless_ovphysx_robot_spawn_properties,
-    prepare_gr1t2_for_kitless_newton_mjwarp,
-    prepare_gr1t2_for_kitless_ovphysx,
+    condition_ovphysx_robot_spawn_properties,
+    condition_standalone_gr1t2_stage,
+    prepare_gr1t2_for_newton_mjwarp,
+    prepare_gr1t2_for_ovphysx,
 )
 from isaaclab_tasks.contrib.pick_place.pickplace_gr1t2_waist_enabled_env_cfg import PickPlaceGR1T2WaistEnabledEnvCfg
 from isaaclab_tasks.contrib.steering_wheel import SteeringWheelUsdFileCfg
@@ -43,7 +43,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 
 def test_hand_slew_preserves_mimic_gearing(monkeypatch):
     """Bound the driver command before deriving its coupled finger target."""
-    action = GR1T2KitlessPinkInverseKinematicsAction.__new__(GR1T2KitlessPinkInverseKinematicsAction)
+    action = GR1T2BoundedPinkIKAction.__new__(GR1T2BoundedPinkIKAction)
     monkeypatch.setattr(
         PinkInverseKinematicsAction,
         "process_actions",
@@ -63,8 +63,8 @@ def test_hand_slew_preserves_mimic_gearing(monkeypatch):
 
 
 _PREPARE_GR1T2 = {
-    "ovphysx": prepare_gr1t2_for_kitless_ovphysx,
-    "newton_mjwarp": prepare_gr1t2_for_kitless_newton_mjwarp,
+    "ovphysx": prepare_gr1t2_for_ovphysx,
+    "newton_mjwarp": prepare_gr1t2_for_newton_mjwarp,
 }
 
 
@@ -77,7 +77,7 @@ def test_newton_contract_is_backend_scoped_and_complete(config_type):
         else "IsaacContrib-PickPlace-GR1T2-Abs"
     )
     newton_cfg = parse_env_cfg(task, device="cpu", num_envs=1, overrides=["physics=newton_mjwarp"])
-    prepare_gr1t2_for_kitless_newton_mjwarp(newton_cfg)
+    prepare_gr1t2_for_newton_mjwarp(newton_cfg)
 
     expected = {
         "head": (80.0, 8.0, 0.03, 80.0),
@@ -100,10 +100,10 @@ def test_newton_contract_is_backend_scoped_and_complete(config_type):
     assert newton_cfg.sim.physics.solver_cfg.njmax == 1536
     assert (newton_cfg.scene.robot.joint_ordering, newton_cfg.scene.robot.body_ordering) == ("physx", "physx")
     assert newton_cfg.isaac_teleop.require_initial_bimanual_hand_tracking is True
-    assert isinstance(newton_cfg.actions.upper_body_ik, GR1T2KitlessPinkInverseKinematicsActionCfg)
+    assert isinstance(newton_cfg.actions.upper_body_ik, GR1T2BoundedPinkIKActionCfg)
     assert type(default_cfg.actions.upper_body_ik) is PinkInverseKinematicsActionCfg
-    assert isinstance(newton_cfg.scene.robot.spawn, gr1t2_env_cfg.GR1T2KitlessUsdFileCfg)
-    assert not isinstance(default_cfg.scene.robot.spawn, gr1t2_env_cfg.GR1T2KitlessUsdFileCfg)
+    assert isinstance(newton_cfg.scene.robot.spawn, gr1t2_env_cfg.GR1T2ConditionedUsdFileCfg)
+    assert not isinstance(default_cfg.scene.robot.spawn, gr1t2_env_cfg.GR1T2ConditionedUsdFileCfg)
     assert default_cfg.isaac_teleop.require_initial_bimanual_hand_tracking is False
 
     assert set(default_cfg.scene.robot.actuators) == {
@@ -187,9 +187,7 @@ def test_hand_physical_limits_are_widened_only_for_ovphysx(monkeypatch, backend,
         self._raw_actions = torch.zeros((1, 8))
 
     monkeypatch.setattr(PinkInverseKinematicsAction, "__init__", initialize_solver)
-    action = GR1T2KitlessPinkInverseKinematicsAction(
-        cfg.actions.upper_body_ik, SimpleNamespace(device="cpu", num_envs=1)
-    )
+    action = GR1T2BoundedPinkIKAction(cfg.actions.upper_body_ik, SimpleNamespace(device="cpu", num_envs=1))
     assert action._hand_lower.shape == action._hand_upper.shape == (1,)
     assert cfg.actions.upper_body_ik.hand_joint_limits is not asset.cfg.spawn.action_cfg.hand_joint_limits
     joint = UsdPhysics.RevoluteJoint(stage.GetPrimAtPath("/World/Robot/R_thumb_distal_joint"))
@@ -227,7 +225,7 @@ def test_newton_wheel_wrapper_hulls_only_non_graspable_details(monkeypatch, conf
     spawn.func = spawn_wheel
     monkeypatch.setattr(gr1t2_env_cfg.sim_utils, "find_matching_prim_paths", lambda _path: ["/World/Wheel"])
 
-    prepare_gr1t2_for_kitless_newton_mjwarp(cfg)
+    prepare_gr1t2_for_newton_mjwarp(cfg)
     spawn = cfg.scene.object.spawn
     wrapped_spawn = spawn.func
     wrapped_spawn("/World/Wheel", spawn)
@@ -249,7 +247,7 @@ def test_newton_wheel_wrapper_hulls_only_non_graspable_details(monkeypatch, conf
 
 @pytest.mark.parametrize("config_type", [PickPlaceGR1T2EnvCfg, PickPlaceGR1T2WaistEnabledEnvCfg])
 @pytest.mark.parametrize("backend", ["newton_mjwarp", "ovphysx"])
-def test_kitless_kinematics_model_loads_without_the_kit_exporter(config_type, backend):
+def test_kinematics_model_loads_without_the_kit_exporter(config_type, backend):
     from isaaclab.controllers.pink_ik.pink_kinematics_configuration import PinkKinematicsConfiguration
 
     cfg = config_type()
@@ -261,7 +259,9 @@ def test_kitless_kinematics_model_loads_without_the_kit_exporter(config_type, ba
     action = cfg.actions.upper_body_ik
     assert action.pink_controlled_joint_names == controlled_joints
     assert cfg.scene.robot.spawn.usd_path == spawn_usd
-    assert action.controller.urdf_path is not None, "Kitless IK must not invoke Isaac Sim's USD-to-URDF exporter"
+    assert action.controller.urdf_path is not None, (
+        "Standalone-backend IK must not invoke Isaac Sim's USD-to-URDF exporter"
+    )
     kinematics = PinkKinematicsConfiguration(
         controlled_joint_names=action.pink_controlled_joint_names,
         urdf_path=action.controller.urdf_path,
@@ -279,9 +279,9 @@ def test_kitless_kinematics_model_loads_without_the_kit_exporter(config_type, ba
             np.testing.assert_allclose(world_axis, [0.0, 0.0, 1.0], atol=1e-6)
 
 
-def test_kitless_action_metadata_is_not_shared():
-    first = GR1T2KitlessPinkInverseKinematicsActionCfg()
-    second = GR1T2KitlessPinkInverseKinematicsActionCfg()
+def test_bounded_pink_action_metadata_is_not_shared():
+    first = GR1T2BoundedPinkIKActionCfg()
+    second = GR1T2BoundedPinkIKActionCfg()
 
     first.hand_joint_limits["joint"] = (-1.0, 1.0)
 
@@ -356,10 +356,10 @@ def test_robot_conditioning_authors_collision_offsets_and_deinstances_scopes():
         rigid_props=[PhysxRigidBodyCfg(max_depenetration_velocity=1.0)],
     )
     robot_cfg = SimpleNamespace(spawn=spawn)
-    action_cfg = GR1T2KitlessPinkInverseKinematicsActionCfg()
+    action_cfg = GR1T2BoundedPinkIKActionCfg()
 
-    condition_kitless_ovphysx_robot_spawn_properties(robot_cfg)
-    condition_kitless_gr1t2_stage(robot_cfg, action_cfg)
+    condition_ovphysx_robot_spawn_properties(robot_cfg)
+    condition_standalone_gr1t2_stage(robot_cfg, action_cfg)
     spawn = robot_cfg.spawn
     spawn.func("/World/Robot", spawn)
 
@@ -394,7 +394,7 @@ def test_wheel_mesh_collision_geometry_is_not_replaced():
 
     cfg = PickPlaceGR1T2EnvCfg()
     cfg.scene.object.spawn.func = spawn_wheel
-    prepare_gr1t2_for_kitless_ovphysx(cfg)
+    prepare_gr1t2_for_ovphysx(cfg)
     root = cfg.scene.object.spawn.func("/World/Wheel", cfg.scene.object.spawn)
     assert stage.GetRootLayer().ExportToString() == original["layer"]
     colliders = [p for p in Usd.PrimRange(root) if p.HasAPI(UsdPhysics.CollisionAPI)]

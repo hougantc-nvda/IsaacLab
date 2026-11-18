@@ -20,7 +20,7 @@ class LocomanipulationG1MimicEnvCfg(LocomanipulationG1EnvCfg, MimicEnvCfg):
 
     class_type: type | str = "{DIR}.locomanipulation_g1_mimic_env:LocomanipulationG1MimicEnv"
     sim: SimulationCfg = SimulationCfg(physics=PhysxCfg())
-    """Isaac Sim PhysX only: the Mimic environment does not run the teleoperation task's kitless
+    """Isaac Sim PhysX only: the Mimic environment does not run the teleoperation task's standalone
     backend preparation, so the inherited ``ovphysx``/``newton_mjwarp`` selectors are not offered."""
 
     def __post_init__(self):
