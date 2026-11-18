@@ -147,6 +147,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="ar",
         help="OVXR session mode. Defaults to 'ar'; pass 'vr' for an opaque background.",
     )
+    parser.add_argument(
+        "--ovrtx_active_cuda_gpus",
+        type=_cuda_index_list,
+        default=None,
+        help="Comma-separated CUDA indices for OVRTX rendering, e.g. 0. Does not select physics or camera outputs.",
+    )
     add_ovxr_presentation_args(parser)
 
     add_launcher_args(parser)
@@ -172,6 +178,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--ovxr_step_hz must be finite and non-negative; 0 disables active-control pacing")
     if args_cli.ovxr_step_hz > 0.0 and not args_cli.using_ovxr:
         parser.error("--ovxr_step_hz requires --ovxr")
+    if not args_cli.using_ovxr and args_cli.ovrtx_active_cuda_gpus is not None:
+        parser.error("--ovrtx_active_cuda_gpus requires --ovxr")
     validate_ovxr_presentation_args(parser, args_cli, using_ovxr=args_cli.using_ovxr)
 
     # Call an external callback if requested.
@@ -271,11 +279,9 @@ def _resolve_env_cfg() -> tuple[
     selected_cameras = ()
     if args_cli.using_ovxr:
         if args_cli.ovxr_pip_camera is not None:
-            from ..ovxr_renderer import OvxrRendererCfg
-
             # Resolve the panels before launch preparation removes the other cameras, so that an
             # invalid selection or task layout fails before launch.
-            selected_cameras = resolve_ovxr_pip_cameras(env_cfg, args_cli, OvxrRendererCfg())
+            selected_cameras = resolve_ovxr_pip_cameras(env_cfg, args_cli, _ovxr_renderer_cfg())
         env_cfg = prepare_ovxr_launch(
             env_cfg, args_cli.task, args_cli.num_envs, keep=tuple(args_cli.ovxr_pip_camera or ())
         )
@@ -286,6 +292,24 @@ def _resolve_env_cfg() -> tuple[
     if use_isaac_teleop and teleop_cfg.prepare_environment is not None:
         teleop_cfg.prepare_environment(env_cfg)
     return env_cfg, teleop_cfg, use_isaac_teleop, selected_cameras
+
+
+def _cuda_index_list(value: str) -> str:
+    """Validate ``--ovrtx_active_cuda_gpus`` at parse time."""
+    from ..ovxr_gpu_publication import parse_active_cuda_gpus
+
+    try:
+        parse_active_cuda_gpus(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    return value
+
+
+def _ovxr_renderer_cfg():
+    """Build the OVRTX configuration shared by the OVXR session and its PiP cameras."""
+    from ..ovxr_renderer import OvxrRendererCfg
+
+    return OvxrRendererCfg(active_cuda_gpus=args_cli.ovrtx_active_cuda_gpus)
 
 
 def _apply_teleop_frame(env, action, issue: str | None, haptic_driver, *, render: bool = True) -> tuple[bool, bool]:
@@ -357,6 +381,8 @@ def run_teleoperation(  # noqa: C901
                 args_cli,
                 application_name=f"isaaclab-ovxr-teleop-{args_cli.task}",
                 auxiliary_cameras=selected_cameras,
+                # Selected panels already carry this configuration from launch resolution.
+                renderer_cfg=None if selected_cameras else _ovxr_renderer_cfg(),
             )
 
         try:
