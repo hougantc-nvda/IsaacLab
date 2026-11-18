@@ -54,6 +54,8 @@ from ..action_policy import initial_hand_tracking_issue, prepare_teleop_action
 from ..device_selection import create_teleop_device, select_teleop_cfg
 from ._ovxr_launch import (
     add_ovxr_presentation_args,
+    cuda_index_list,
+    ovxr_renderer_cfg,
     prepare_ovxr_launch,
     reject_ovxr_runtime_conflicts,
     resolve_ovxr_camera_feeds,
@@ -149,7 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ovrtx_active_cuda_gpus",
-        type=_cuda_index_list,
+        type=cuda_index_list,
         default=None,
         help="Comma-separated CUDA indices for OVRTX rendering, e.g. 0. Does not select physics or camera outputs.",
     )
@@ -281,7 +283,9 @@ def _resolve_env_cfg() -> tuple[
         if args_cli.ovxr_camera_feed is not None:
             # Resolve the panels before launch preparation removes the other cameras, so that an
             # invalid selection or task layout fails before launch.
-            selected_cameras = resolve_ovxr_camera_feeds(env_cfg, args_cli, _ovxr_renderer_cfg())
+            selected_cameras = resolve_ovxr_camera_feeds(
+                env_cfg, args_cli, ovxr_renderer_cfg(args_cli.ovrtx_active_cuda_gpus)
+            )
         env_cfg = prepare_ovxr_launch(
             env_cfg, args_cli.task, args_cli.num_envs, keep=tuple(args_cli.ovxr_camera_feed or ())
         )
@@ -292,24 +296,6 @@ def _resolve_env_cfg() -> tuple[
     if use_isaac_teleop and teleop_cfg.prepare_environment is not None:
         teleop_cfg.prepare_environment(env_cfg)
     return env_cfg, teleop_cfg, use_isaac_teleop, selected_cameras
-
-
-def _cuda_index_list(value: str) -> str:
-    """Validate ``--ovrtx_active_cuda_gpus`` at parse time."""
-    from ..ovxr_gpu_publication import parse_active_cuda_gpus
-
-    try:
-        parse_active_cuda_gpus(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(str(error)) from error
-    return value
-
-
-def _ovxr_renderer_cfg():
-    """Build the OVRTX configuration shared by the OVXR session and its PiP cameras."""
-    from ..ovxr_renderer import OvxrRendererCfg
-
-    return OvxrRendererCfg(active_cuda_gpus=args_cli.ovrtx_active_cuda_gpus)
 
 
 def _apply_teleop_frame(env, action, issue: str | None, haptic_driver, *, render: bool = True) -> tuple[bool, bool]:
@@ -382,7 +368,7 @@ def run_teleoperation(  # noqa: C901
                 application_name=f"isaaclab-ovxr-teleop-{args_cli.task}",
                 camera_feeds=selected_cameras,
                 # Selected panels already carry this configuration from launch resolution.
-                renderer_cfg=None if selected_cameras else _ovxr_renderer_cfg(),
+                renderer_cfg=None if selected_cameras else ovxr_renderer_cfg(args_cli.ovrtx_active_cuda_gpus),
             )
 
         try:

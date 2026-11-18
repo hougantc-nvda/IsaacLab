@@ -18,6 +18,7 @@ from ..xr_cfg import XrAnchorRotationMode, remove_camera_configs
 
 if TYPE_CHECKING:
     from ..ovxr_cfg import OvLibrariesXrCameraFeedCfg
+    from ..ovxr_renderer import OvxrRendererCfg
 
 # Earlier spellings of the camera-feed options. Unknown options are forwarded to Hydra, so they are rejected by name.
 _RENAMED_OVXR_OPTIONS = {"--ovxr_pip_camera": "--ovxr_camera_feed", "--ovxr_pip_fps": "--ovxr_camera_feed_fps"}
@@ -115,6 +116,24 @@ def add_ovxr_presentation_args(parser: argparse.ArgumentParser) -> None:
         default=30.0,
         help="Maximum OVXR camera feed update rate (default: 30 Hz).",
     )
+
+
+def cuda_index_list(value: str) -> str:
+    """Validate ``--ovrtx_active_cuda_gpus`` at parse time."""
+    from ..ovxr_gpu_publication import parse_active_cuda_gpus
+
+    try:
+        parse_active_cuda_gpus(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    return value
+
+
+def ovxr_renderer_cfg(active_cuda_gpus: str | None) -> OvxrRendererCfg:
+    """Build the OVRTX configuration shared by the OVXR session and its PiP cameras."""
+    from ..ovxr_renderer import OvxrRendererCfg
+
+    return OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus)
 
 
 def validate_ovxr_presentation_args(
