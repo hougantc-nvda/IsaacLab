@@ -82,12 +82,10 @@ def _make_ovrtx_camera_render_data() -> OVRTXCameraRenderData:
 def _make_ovrtx_renderer_without_backend() -> OVRTXRenderer:
     renderer = OVRTXRenderer(OVRTXRendererCfg(), sim=SimulationContext.instance())
     renderer.backend = OVRTXBackend.__new__(OVRTXBackend)
-    renderer.backend._retained_by = None
     renderer.scene = renderer.backend
     from isaaclab_ov.stage import OvstageBackend
 
     renderer.scene.commit = OvstageBackend.commit.__get__(renderer.scene)
-    renderer.scene._commit = OvstageBackend._commit.__get__(renderer.scene)
     renderer.scene.query = OvstageBackend.query.__get__(renderer.scene)
     renderer.scene.next_camera_id = 0
     renderer.scene.clone_copies = []
@@ -1362,7 +1360,6 @@ def _make_renderer_with_backend(events: list[str], use_ovstage: bool) -> OVRTXRe
                 events.append(f"release_query:{paths}")
 
         renderer.scene = OvstageBackend.__new__(OvstageBackend)
-        renderer.scene._retained_by = None
         SimulationContext.instance()._backend_registry.insert(
             0, (OvstageBackendCfg(scene_key=renderer.cfg), renderer.scene)
         )
@@ -1390,32 +1387,6 @@ def _make_renderer_with_backend(events: list[str], use_ovstage: bool) -> OVRTXRe
     renderer._output_id_color_buffers = {"semantic_segmentation": object()}
     renderer._initialized_scene = True
     return renderer
-
-
-def test_retained_backend_and_stage_refuse_teardown_and_commits():
-    """A native pair lent to another owner cannot be detached, destroyed, reset or committed by others."""
-    from isaaclab_ov.stage import OvstageBackend
-
-    backend = OVRTXBackend.__new__(OVRTXBackend)
-    backend.renderer, backend.attached = MagicMock(), True
-    stage = OvstageBackend.__new__(OvstageBackend)
-    stage.stage, stage.ordinal = MagicMock(), 3
-    backend._retained_by = stage._retained_by = object()
-    for operation, match in (
-        (backend.detach, "detach a backend"),
-        (backend.close, "destroy a backend"),
-        (stage.commit, "commit a stage"),
-        (stage.close, "destroy or reset a stage"),
-        (stage.reset, "destroy or reset a stage"),
-    ):
-        with pytest.raises(RuntimeError, match=match):
-            operation()
-    backend.renderer.detach_ovstage.assert_not_called()
-    backend.renderer.destroy.assert_not_called()
-    stage.stage.advance_write_floor.assert_not_called()
-    # The borrowing owner publishes through the unguarded commit.
-    assert stage._commit() == 3
-    assert stage.ordinal == 4
 
 
 @pytest.mark.parametrize("use_ovstage", [False, True])
@@ -1545,7 +1516,7 @@ def test_scene_preparation_respects_physics_population_and_camera_transform_mode
         populate=load,
         stage=types.SimpleNamespace(write_attribute=write),
         query=lambda paths: contextlib.nullcontext(paths),
-        _commit=lambda: events.append("commit"),
+        commit=lambda: events.append("commit"),
         resources=contextlib.ExitStack(),
     )
     if renderer._use_ovstage:

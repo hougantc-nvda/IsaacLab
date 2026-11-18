@@ -834,8 +834,8 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
     lease = controller.acquire()
     bootstrap.publisher = lease.capture_scene_publisher()
     # Stand in for clone preparation and Stage binding of the reserved pair.
-    renderer.backend = SimpleNamespace(renderer=native, attached=True, _retained_by=renderer)
-    renderer.scene = SimpleNamespace(stage=stage, ordinal=10, _retained_by=renderer)
+    renderer.backend = SimpleNamespace(renderer=native, attached=True)
+    renderer.scene = SimpleNamespace(stage=stage, ordinal=10)
     renderer._initialized_scene = True
     controller._generation = 1
     lease._bind(native, stage, 1)

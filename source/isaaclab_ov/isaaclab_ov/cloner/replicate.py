@@ -189,7 +189,7 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
                 use_ovstage = route_owner._use_ovstage
                 share_ovstage = route_owner.backend.cfg.scene_key is None
             else:
-                # A renderer that lends its native pair gets a private Stage. Other renderers keep their ordinary route.
+                # A renderer that requires a private Stage gets one. Other renderers keep their ordinary route.
                 value = os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1" if renderer in private_stage else "0").strip()
                 if value not in {"0", "1"}:
                     raise ValueError(f"Invalid ISAAC_LAB_OVRTX_USE_OVSTAGE: {value!r}. Expected 0 or 1.")
@@ -213,7 +213,6 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
             routing.setdefault(OvstageReplicateContext, set()).update(routing.get(OvPhysxReplicateContext, ()))
 
         # Stage ownership is settled before native construction. Register the stage before its borrowers.
-        created = []
         for renderer, use_ovstage, share_ovstage in settings:
             if renderer.backend is not None:
                 continue
@@ -246,13 +245,8 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
             renderer.backend = sim.get_or_create_backend(backend_cfg)
             renderer.scene = scene if use_ovstage else renderer.backend
             renderer._use_ovstage = use_ovstage
-            created.append(renderer)
             if renderer.cfg.async_rendering and use_ovstage:
                 logger.warning("Asynchronous OVRTX rendering is unsupported with ovstage; rendering synchronously.")
-        # Reserve new private pairs only once every native backend exists, so a later failure leaves none retained.
-        for renderer in created:
-            if renderer in private_stage:
-                renderer._reserve_native_pair()
 
     def replicate(self, plan: ClonePlan, asset_prototype_ids: tuple[int, ...]) -> None:
         """Publish routed copies, environment paths and positions to native OVRTX scene owners.

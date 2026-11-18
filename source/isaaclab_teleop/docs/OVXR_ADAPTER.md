@@ -86,7 +86,7 @@ The adapter retains the renderer and Stage if lease retirement cannot establish 
 The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
 knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
 preparation and the ordinary camera and scene operations, and uses the protected extension
-points for private-OVStage reservation.
+point for private-OVStage selection.
 
 - Its `_OvxrLeaseController` owns the lease state, the thread-transfer capability, the
   per-owner operation guards and the publication order.

@@ -341,7 +341,6 @@ def test_set_gravity_writes_and_releases_ovstage_control_resources(
                 raise RuntimeError("update failed")
 
     scene = OvstageBackend.__new__(OvstageBackend)
-    scene._retained_by = None
     scene.stage = manager.backend.stage = FakeStage()
     scene.paths = FakePathDictionary()
     scene.ordinal = 2

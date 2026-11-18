@@ -259,8 +259,6 @@ class OVRTXBackend:
     def __init__(self, cfg: OVRTXBackendCfg):
         self.cfg = cfg
         self.attached = False
-        self._retained_by: object | None = None
-        """Renderer whose native pair is borrowed by another owner; teardown is refused while set."""
         self.render_products: set[str] = set()
         # Resolve the wheel's native dependency here, including callers without a viewer.
         dependency = Path(ovstage.__file__).parent / "bin/plugins/libosdCPU.so.3.6.0"
@@ -290,25 +288,13 @@ class OVRTXBackend:
         self.renderer = Renderer(native_cfg)
 
     def detach(self) -> None:
-        """Release the borrowed stage before it is rebuilt or destroyed.
-
-        Raises:
-            RuntimeError: If another owner still borrows this engine.
-        """
-        if self._retained_by is not None:
-            raise RuntimeError("Cannot detach a backend while another owner borrows it")
+        """Release the borrowed stage before it is rebuilt or destroyed."""
         if self.attached:
             self.renderer.detach_ovstage()
             self.attached = False
 
     def close(self) -> None:
-        """Destroy the engine; the simulation's backend registry releases any borrowed stage afterward.
-
-        Raises:
-            RuntimeError: If another owner still borrows this engine.
-        """
-        if self._retained_by is not None:
-            raise RuntimeError("Cannot destroy a backend while another owner borrows it")
+        """Destroy the engine; the simulation's backend registry releases any borrowed stage afterward."""
         if self.renderer is not None:
             # The SDK destroys bindings and detaches only if attached, including partial initialization.
             self.renderer.destroy()
@@ -524,7 +510,7 @@ class OVRTXRenderer(BaseRenderer):
                     tensors=cpu_cameras, is_array=False,
                 ).wait()  # fmt: skip
         if self._use_ovstage:
-            self.scene._commit()
+            self.scene.commit()
             if not self.backend.attached:
                 self.backend.renderer.attach_ovstage(self.scene.stage)
                 self.backend.attached = True
@@ -540,9 +526,6 @@ class OVRTXRenderer(BaseRenderer):
     def _requires_private_ovstage(self) -> bool:
         """Whether clone preparation must give this renderer its own OVStage."""
         return False
-
-    def _reserve_native_pair(self) -> None:
-        """Run once clone preparation has created this renderer's engine and OVStage."""
 
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""

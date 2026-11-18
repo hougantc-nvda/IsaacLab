@@ -513,10 +513,6 @@ class _OvxrLeaseController:
         self._renderer.marker_groups = self._previous_marker_groups
         self._previous_marker_groups = ()
         self.active = None
-        if self._renderer.backend is not None:
-            self._renderer.backend._retained_by = None
-        if self._renderer.scene is not None:
-            self._renderer.scene._retained_by = None
 
     def reject_ordinary_operation(self, operation: str, *, retiring: bool = False) -> None:
         """Reject ordinary OVRTX operations while an external lease is active.
@@ -525,9 +521,7 @@ class _OvxrLeaseController:
         release, because its ordinal is not rebased; only ``retiring`` operations
         (closing the renderer) are admitted so the pair can be recreated.
         """
-        if self.active is not None or (
-            self._renderer.backend is not None and self._renderer.backend._retained_by is not None
-        ):
+        if self.active is not None:
             raise RuntimeError(f"Cannot {operation} while an OvxrRenderLease is active")
         if self._poisoned and not retiring:
             raise RuntimeError(
@@ -603,8 +597,14 @@ class _OvxrLeaseController:
                 raise RuntimeError("Cannot replace the Stage of a bound renderer/scene pair")
             if num_envs != 1:
                 raise RuntimeError("The render lease requires exactly one environment")
-            if not self._renderer._use_ovstage or self._renderer.backend._retained_by is not self._renderer:
-                raise RuntimeError("The render lease requires its reserved private OVStage renderer")
+            renderer = self._renderer
+            # Clone preparation keys a private engine and OVStage by this renderer's configuration.
+            if not renderer._use_ovstage or renderer.backend.cfg.scene_key != renderer.cfg:
+                raise RuntimeError("The render lease requires its private OVStage renderer")
+            with renderer.scene.stage.get_attribute_write_floor() as floor:
+                floor.wait()
+                if int(floor.fetch()) != 0:
+                    raise RuntimeError("The render lease requires an unused private OVStage")
         return True
 
     def materialize_deferred_stage(self, lease: OvxrRenderLease, stage: Any, num_envs: int) -> bool:
@@ -627,18 +627,6 @@ class _OvxrLeaseController:
             self.stage_deferred = False
             self._generation += 1
             lease._bind(self._renderer.backend.renderer, self._renderer.scene.stage, self._generation)
-
-    def reserve_pair(self) -> None:
-        """Reserve a newly acquired private native pair during clone preparation."""
-        renderer = self._renderer
-        if renderer.backend._retained_by is not None or renderer.scene._retained_by is not None:
-            raise RuntimeError("The native pair already has a render lease")
-        with renderer.scene.stage.get_attribute_write_floor() as floor:
-            floor.wait()
-            if int(floor.fetch()) != 0:
-                raise RuntimeError("The render lease requires an unused private OVStage")
-        renderer.backend._retained_by = renderer
-        renderer.scene._retained_by = renderer
 
     def _next_ordinal(self) -> int:
         """Return ``floor + 1`` from the exact renderer-owned Stage."""
@@ -752,9 +740,6 @@ class OvxrRenderer(OVRTXRenderer):
 
     def _requires_private_ovstage(self) -> bool:
         return self._render_lease.active is not None
-
-    def _reserve_native_pair(self) -> None:
-        self._render_lease.reserve_pair()
 
     # Scene writes for the session's publisher, without this renderer's lease guards.
 

@@ -152,18 +152,12 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
         with pytest.raises(RuntimeError, match="log runtime meshes"):
             shared.log_mesh("blocked")
     assert "blocked" not in shared.meshes
-    with pytest.raises(RuntimeError, match="another owner borrows it"):
-        SimulationContext.instance().close_backend(renderer.backend)
-    with pytest.raises(RuntimeError, match="another owner borrows it"):
-        renderer.scene.reset()
     native = lease.ovrtx_renderer
     assert native is shared.backend.renderer
     assert lease.ovstage is shared.scene.stage
     lease.release()
     lease.release()
     assert not renderer._sim.vis_marker_registry.has_consumers
-    assert renderer.backend._retained_by is None
-    assert renderer.scene._retained_by is None
     native.destroy.assert_not_called()
     SimulationContext.instance().close_backend(renderer.backend)
     native.destroy.assert_called_once_with()
@@ -232,7 +226,24 @@ def test_render_lease_rejects_acquisition_after_clone_preparation(leased_rendere
     _prepare_leased_renderer(renderer, bind=False)
     with pytest.raises(RuntimeError, match="before clone preparation"):
         renderer.acquire_render_lease()
-    assert renderer.backend._retained_by is None
+    assert renderer._render_lease.active is None
+
+
+def test_leased_stage_preparation_requires_an_unused_private_stage(leased_renderer):
+    """The claimed render owner prepares only the fresh private OVStage that clone preparation created."""
+    renderer = leased_renderer
+    lease = renderer.acquire_render_lease()
+    _prepare_leased_renderer(renderer, bind=False)
+    lease.claim_owner_transfer(lease.offer_owner_transfer())
+    floor = renderer.scene.stage.get_attribute_write_floor.return_value.__enter__.return_value
+    floor.fetch.return_value = 1
+    with pytest.raises(RuntimeError, match="unused private OVStage"):
+        renderer.prepare_stage(renderer._sim.stage, 1)
+    assert not renderer._initialized_scene
+    floor.fetch.return_value = 0
+    renderer.prepare_stage(renderer._sim.stage, 1)
+    lease.validate_live()
+    lease.release()
 
 
 def test_render_lease_rejects_calibration_before_scene_access(leased_renderer, monkeypatch):
@@ -512,7 +523,6 @@ def test_render_lease_poison_blocks_publication_but_not_retirement(leased_render
         pass
     ordinal = renderer.scene.ordinal
     lease.release()
-    assert renderer.backend._retained_by is None
     assert renderer.scene.ordinal == ordinal  # The abandoned ordinal is not rebased onto a sealed floor.
     with pytest.raises(RuntimeError, match="poisoned this OVRTX/OVStage pair; recreate it"):
         renderer.render_batch((object(),))
@@ -525,8 +535,6 @@ def test_render_lease_release_rebases_ordinal_and_restores_ordinary_use(leased_r
     renderer = leased_renderer
     lease = renderer.acquire_render_lease()
     _prepare_leased_renderer(renderer)
-    with pytest.raises(RuntimeError, match="another owner borrows it"):
-        renderer.scene.commit()
     floor = renderer.scene.stage.get_attribute_write_floor.return_value.__enter__.return_value
     floor.fetch.return_value = 41
     lease.release()

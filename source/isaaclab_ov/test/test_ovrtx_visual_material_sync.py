@@ -135,7 +135,6 @@ def _renderer(*, use_ovstage: bool = False):
         from isaaclab_ov.stage import OvstageBackend
 
         renderer.scene = OvstageBackend.__new__(OvstageBackend)
-        renderer.scene._retained_by = None
         renderer.scene.stage = _OvstageRecorder(events)
         renderer.scene.paths = _PathRecorder()
         renderer.scene.ordinal = 7

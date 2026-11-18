@@ -662,7 +662,6 @@ def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkey
         cfg=OVRTXRendererCfg(log_file_path="borrower.log"),
         backend=None,
         _requires_private_ovstage=lambda: True,
-        _reserve_native_pair=Mock(),
     )
     native = SimpleNamespace(cfg=OVRTXBackendCfg(scene_key=ordinary.cfg, use_ovstage=False))
     if initialized:
@@ -697,7 +696,7 @@ def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkey
         assert ordinary.scene is ordinary.backend
     else:
         assert OvrtxReplicateContext not in routing
-    borrower._reserve_native_pair.assert_called_once_with()
-    # A later reset prepares again and must not reserve the existing pair a second time.
+    # A later reset prepares again and keeps the existing private pair.
+    created = len(registry)
     OvrtxReplicateContext.prepare(sim, {OvrtxReplicateContext: {0, 2}})
-    borrower._reserve_native_pair.assert_called_once_with()
+    assert len(registry) == created

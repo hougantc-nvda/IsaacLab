@@ -187,9 +187,6 @@ class OvstageBackend:
         self.clone_positions: np.ndarray | None = None
         self._deferred_render_copies: list[tuple[str, list[str]]] | None = None
         self._render_copy_error: Exception | None = None
-        self._retained_by: object | None = None
-        """Owner that borrows this stage. While set, :meth:`commit`, :meth:`close` and :meth:`reset` are
-        refused; the owner publishes through :meth:`_commit`."""
         self.resources = contextlib.ExitStack()
         """Release borrowers before paths and stage, in reverse registration order."""
         self.reset()
@@ -224,7 +221,7 @@ class OvstageBackend:
             self.stage, self.paths, self.clone_copies, self.clone_env_paths, self.clone_positions, ordinal=1
         )
         self.ordinal = 1
-        self._commit()
+        self.commit()
 
     def complete_render_copies(self) -> None:
         """Seal render copies at ordinal 2 after physics cloning and binding acquisition.
@@ -275,36 +272,20 @@ class OvstageBackend:
 
     def commit(self) -> int:
         """Seal pending writes and return their ordinal; all consumers share the next write ordinal."""
-        if self._retained_by is not None:
-            raise RuntimeError("Cannot commit a stage while another owner borrows it")
-        return self._commit()
-
-    def _commit(self) -> int:
-        """Seal stage initialization or an ordinary, authorized publication."""
         ordinal = self.ordinal
         self.stage.advance_write_floor(ordinal=ordinal).wait()
         self.ordinal += 1
         return ordinal
 
     def close(self) -> None:
-        """Release borrowers, then the path dictionary and stage.
-
-        Raises:
-            RuntimeError: If another owner still borrows the stage.
-        """
-        if self._retained_by is not None:
-            raise RuntimeError("Cannot destroy or reset a stage while another owner borrows it")
+        """Release borrowers, then the path dictionary and stage."""
         self._deferred_render_copies = None
         self._render_copy_error = None
         self.resources.close()
         self.stage = self.paths = None
 
     def reset(self) -> None:
-        """Recreate the native stage after all consumers detach, retaining the prepared clone operations.
-
-        Raises:
-            RuntimeError: If another owner still borrows the stage.
-        """
+        """Recreate the native stage after all consumers detach, retaining the prepared clone operations."""
         self.close()
         self.ordinal = self.next_camera_id = 0
         with contextlib.ExitStack() as resources:
