@@ -56,7 +56,7 @@ ACTUATOR_PROFILE = {
 """Newton implicit-drive settings for G1 joint groups."""
 
 
-def teleop_action_target_issue(action: torch.Tensor) -> str | None:
+def _teleop_action_target_issue(action: torch.Tensor) -> str | None:
     """Return why an incoming G1 controller action must not reach Pink/Newton.
 
     Args:
@@ -182,7 +182,7 @@ def _step_quaternion_towards(current: torch.Tensor, target: torch.Tensor, max_st
     return torch.nn.functional.normalize(torch.where(angle < 1.0e-6, target, interpolated), dim=0)
 
 
-def condition_newton_g1_action(env: ManagerBasedRLEnv, action: torch.Tensor, state: dict[str, Any]) -> torch.Tensor:
+def _condition_newton_g1_action(env: ManagerBasedRLEnv, action: torch.Tensor, state: dict[str, Any]) -> torch.Tensor:
     """Ramp both wrist targets from the current G1 poses before Pink solves IK.
 
     Each call moves the left and right wrist targets at most :data:`POSITION_MAX_STEP_M` and
@@ -192,7 +192,7 @@ def condition_newton_g1_action(env: ManagerBasedRLEnv, action: torch.Tensor, sta
 
     Args:
         env: The single-environment G1 teleoperation environment.
-        action: One G1 action in the layout described by :func:`teleop_action_target_issue`. The Pink
+        action: One G1 action in the layout described by :func:`_teleop_action_target_issue`. The Pink
             action reads its wrist poses relative to the environment origin, while the ramp seeds from
             the measured world-frame wrist poses, so environment 0's origin must be the world origin.
         state: Mutable dictionary owned by the caller; pass the same dictionary to every call of one
@@ -242,7 +242,7 @@ def condition_newton_g1_action(env: ManagerBasedRLEnv, action: torch.Tensor, sta
     return conditioned
 
 
-def apply_g1_newton_actuator_profile(robot_cfg: ArticulationCfg) -> None:
+def _apply_g1_newton_actuator_profile(robot_cfg: ArticulationCfg) -> None:
     """Apply :data:`ACTUATOR_PROFILE` to the G1 actuator groups used by teleoperation.
 
     Args:
@@ -280,7 +280,7 @@ def configure_g1_for_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> None:
     solver_cfg.nconmax = 4096
     solver_cfg.njmax = 1536
 
-    apply_g1_newton_actuator_profile(env_cfg.scene.robot)
+    _apply_g1_newton_actuator_profile(env_cfg.scene.robot)
     # Newton orders joints and bodies differently; keep the PhysX order of Kit-recorded data.
     env_cfg.scene.robot.joint_ordering = "physx"
     env_cfg.scene.robot.body_ordering = "physx"
@@ -289,8 +289,8 @@ def configure_g1_for_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> None:
     # simulator startup; the action manager imports the class when it builds the term.
     env_cfg.actions.upper_body_ik.class_type = ResolvableString(G1_BOUNDED_PINK_ACTION)
     if env_cfg.isaac_teleop is not None:
-        env_cfg.isaac_teleop.action_conditioner = condition_newton_g1_action
-        env_cfg.isaac_teleop.action_validator = teleop_action_target_issue
+        env_cfg.isaac_teleop.action_conditioner = _condition_newton_g1_action
+        env_cfg.isaac_teleop.action_validator = _teleop_action_target_issue
 
     configure_packing_table_collisions(env_cfg.scene.packing_table)
     condition_newton_steering_wheel_detail_collisions(env_cfg.scene.object)
