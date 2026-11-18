@@ -9,7 +9,6 @@ import numpy as np
 from isaaclab_ov.physics import OvPhysxCfg
 
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.physics import PhysxAutoCfg
 from isaaclab.utils import configclass, replace
 
 from isaaclab_tasks.contrib import ISAACLAB_TELEOP_AVAILABLE
@@ -200,8 +199,7 @@ class SO101CubeStackEnvCfg(stack_joint_pos_env_cfg.SO101CubeStackEnvCfg):
         self.sim.physics = preset(
             default=self.sim.physics.default,
             isaacsim_physx=isaacsim_physx,
-            # The automatic selector picks the same tuned OvPhysX config when Isaac Sim is absent.
-            physx=PhysxAutoCfg(isaacsim_physx=isaacsim_physx, ovphysx=ovphysx),
+            physx=self.sim.physics.physx,
             newton_mjwarp=self.sim.physics.newton_mjwarp,
             ovphysx=ovphysx,
         )

@@ -14,9 +14,7 @@ pytest.importorskip("isaacteleop")
 from isaacteleop.retargeting_engine.interface import ComputeContext, ExecutionEvents, ExecutionState, TensorGroup
 from isaacteleop.schema import ControllerInputState, ControllerPose, ControllerSnapshot, Point, Pose, Quaternion
 
-from isaaclab_tasks.contrib.stack.config.so101.stack_ik_abs_env_cfg import (
-    _build_so101_stack_pipeline,
-)
+from isaaclab_tasks.contrib.stack.config.so101.stack_ik_abs_env_cfg import _build_so101_stack_pipeline
 
 
 def test_so101_pipeline_tracks_engage_relative_pose_and_gripper():
