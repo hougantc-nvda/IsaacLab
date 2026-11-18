@@ -110,7 +110,8 @@ def test_live_entry_failure_closes_resources_and_reports_cause(
 
 
 @pytest.mark.parametrize("ovxr", [True, False])
-def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entry_namespace, runtime_namespace, ovxr):
+def test_input_cleanup_failure_leaves_the_xr_session_open(monkeypatch, entry_namespace, runtime_namespace, ovxr):
+    """The undrained session stays open; the environment closes, and its STOP keeps the session's pair alive."""
     from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
 
     from isaaclab.app import launch_simulation
@@ -136,30 +137,25 @@ def test_input_cleanup_failure_prevents_borrowed_owner_release(monkeypatch, entr
     monkeypatch.setattr(agent, "_resolve_env_cfg", lambda: (None, None, True))
     monkeypatch.setattr(agent, "args_cli", SimpleNamespace(using_ovxr=ovxr), raising=False)
     monkeypatch.setattr(agent, "run_teleoperation", run)
-    monkeypatch.setattr(
-        agent,
-        "launch_simulation",
-        lambda _cfg, _args, *, cleanup_context: launch_simulation(PhysicsCfg(), cleanup_context=cleanup_context),
-    )
+    monkeypatch.setattr(agent, "launch_simulation", lambda _cfg, _args: launch_simulation(PhysicsCfg()))
     with pytest.raises(RuntimeError, match="drain"):
         agent.main()
     if ovxr:
         xr.request_shutdown.assert_called_once_with()
         xr.close.assert_not_called()
     camera.close.assert_not_called()
-    env.close.assert_not_called()
-    clear.assert_not_called()
-    assert state["context"] is current
+    env.close.assert_called_once_with()
+    clear.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
     ("cleanup_stage", "has_primary_error"),
     [("xr", True), ("environment", True), ("camera", False), ("camera", True), ("signals", False)],
 )
-def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
+def test_cleanup_preserves_first_error_and_closes_the_environment_last(
     entry_namespace, runtime_namespace, cleanup_stage, has_primary_error
 ):
-    """Cleanup errors must stay visible without replacing the initial cause or risking UAF."""
+    """Cleanup errors stay visible without replacing the initial cause; the environment still closes after XR."""
     events = []
     cleanup_error = RuntimeError("cleanup failed")
     primary_error = RuntimeError("original failure")
@@ -169,7 +165,7 @@ def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
         if name == cleanup_stage:
             raise cleanup_error
 
-    xr = SimpleNamespace(close=lambda: close("xr"), async_worker_owns_environment=False)
+    xr = SimpleNamespace(close=lambda: close("xr"))
     camera = SimpleNamespace(close=lambda: close("camera"))
     env = SimpleNamespace(close=lambda: close("environment"))
     runtime_namespace["restore_ovxr_shutdown_handlers"] = lambda _: close("signals")
@@ -184,15 +180,13 @@ def test_cleanup_preserves_first_error_and_never_frees_undrained_stage(
     with pytest.raises(RuntimeError) as caught:
         exercise()
     assert caught.value is (primary_error if has_primary_error else cleanup_error)
-    assert events == (
-        ["xr", "camera", "signals"] if cleanup_stage in ("xr", "camera") else ["xr", "camera", "environment", "signals"]
-    )
+    assert events == ["xr", "camera", "environment", "signals"]
     if has_primary_error:
         assert any("cleanup failed" in note for note in primary_error.__notes__)
 
 
 def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace, runtime_namespace):
-    """A second Ctrl-C requests shutdown again instead of interrupting native cleanup."""
+    """Until the environment is closed, a second Ctrl-C requests shutdown instead of interrupting cleanup."""
     events = []
     original = signal.signal(signal.SIGINT, lambda *_args: events.append("shutdown"))
 
@@ -205,24 +199,29 @@ def test_shutdown_signal_stays_owned_until_xr_drain_finishes(entry_namespace, ru
         events.append("xr")
 
     runtime_namespace["restore_ovxr_shutdown_handlers"] = restore
+
+    def close_environment():
+        signal.raise_signal(signal.SIGINT)
+        events.append("environment")
+
     try:
         runtime_namespace["close_teleop_resources"](
-            SimpleNamespace(close=lambda: events.append("environment")),
+            SimpleNamespace(close=close_environment),
             SimpleNamespace(close=lambda: events.append("camera")),
-            entry_namespace["OvxrPresentation"](SimpleNamespace(close=close_xr, async_worker_owns_environment=False)),
+            entry_namespace["OvxrPresentation"](SimpleNamespace(close=close_xr)),
             {signal.SIGINT: original},
         )
-        assert events == ["shutdown", "xr", "camera", "environment"]
+        assert events == ["shutdown", "xr", "camera", "shutdown", "environment"]
         assert signal.getsignal(signal.SIGINT) is original
     finally:
         signal.signal(signal.SIGINT, original)
 
 
 @pytest.mark.parametrize("new_context,drain_failed", [(True, False), (False, False), (True, True)])
-def test_partial_construction_cleans_only_new_unowned_context(
+def test_partial_construction_cleans_only_the_new_context(
     monkeypatch, entry_namespace, runtime_namespace, new_context, drain_failed
 ):
-    """Failed env construction is cleaned, but preexisting/undrained contexts survive."""
+    """Failed env construction is cleaned after the XR drain, even a failed one; a preexisting context survives."""
     from isaaclab.app import launch_simulation
     from isaaclab.physics import PhysicsCfg
     from isaaclab.sim import SimulationContext
@@ -233,13 +232,10 @@ def test_partial_construction_cleans_only_new_unowned_context(
     monkeypatch.setattr(SimulationContext, "instance", lambda: state["context"])
     monkeypatch.setattr(SimulationContext, "clear_instance", clear)
     camera = SimpleNamespace(close=Mock())
-    xr = SimpleNamespace(
-        close=Mock(side_effect=RuntimeError("drain failed") if drain_failed else None),
-        async_worker_owns_environment=False,
-    )
+    xr = SimpleNamespace(close=Mock(side_effect=RuntimeError("drain failed") if drain_failed else None))
     failure = RuntimeError("environment construction failed")
     with pytest.raises(RuntimeError) as caught:
-        with launch_simulation(PhysicsCfg(), cleanup_context=False):
+        with launch_simulation(PhysicsCfg()):
             if new_context:
                 state["context"] = object()
             try:
@@ -249,6 +245,6 @@ def test_partial_construction_cleans_only_new_unowned_context(
                     None, camera, entry_namespace["OvxrPresentation"](xr), {}, previous_context=previous
                 )
     assert caught.value is failure
-    assert clear.call_count == int(new_context and not drain_failed)
+    assert clear.call_count == int(new_context)
     if not new_context:
         assert state["context"] is previous

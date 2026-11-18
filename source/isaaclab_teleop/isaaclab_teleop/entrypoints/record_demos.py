@@ -856,11 +856,7 @@ def main() -> None:
     # Create and configure environment
     env_cfg, success_term, teleop_cfg = create_environment_config(output_dir, output_file_name)
 
-    # OVXR cleanup drains the XR session before releasing the simulation context it may borrow.
-    with (
-        launch_simulation(env_cfg, args_cli, cleanup_context=not args_cli.using_ovxr),
-        contextlib.ExitStack() as cleanup,
-    ):
+    with launch_simulation(env_cfg, args_cli), contextlib.ExitStack() as cleanup:
         record_demos(env_cfg, success_term, teleop_cfg, cleanup)
 
 
