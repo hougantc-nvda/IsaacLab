@@ -1586,3 +1586,21 @@ def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(use_ovsta
     # Draining the retained buffers waits for previous writes without a CUDA stream.
     renderer._transform_writes.close()
     renderer._geometry_writes.close()
+
+
+def test_cpu_marker_updates_use_host_tensors_without_a_cuda_stream():
+    from isaaclab_ov.renderers.ovrtx_renderer import OVRTXMarkers
+
+    import isaaclab.sim as sim_utils
+    from isaaclab.markers.visualization_markers_cfg import VisualizationMarkersCfg
+
+    renderer = _make_ovrtx_renderer_without_backend()
+    renderer._use_ovstage = False
+    renderer._device = "cpu"
+    renderer.backend.renderer = MagicMock()
+    cfg = VisualizationMarkersCfg(prim_path="/Visuals/Test", markers={"sphere": sim_utils.SphereCfg(radius=0.1)})
+    markers = OVRTXMarkers(renderer, cfg)
+    markers.update(torch.tensor([[1.0, 2.0, 3.0]]), None, None, None, visible=True)
+    write = renderer.backend.renderer.bind_attribute.return_value.write
+    assert write.call_args.kwargs["cuda_stream"] is None
+    np.testing.assert_allclose(write.call_args.args[0].numpy()[0][3, :3], [1.0, 2.0, 3.0])

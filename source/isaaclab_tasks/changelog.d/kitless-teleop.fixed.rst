@@ -1,2 +1,2 @@
-* Fixed standalone OvPhysX selection for SO101 teleoperation while retaining the Kit default and
-  Newton settings. The OvPhysX selection applies the stack family's grasp contact tuning.
+* Fixed the SO101 teleoperation ``physx`` preset without Kit: it selects OvPhysX, with the grasp
+  contact tuning of the task's Isaac Sim PhysX settings, instead of Isaac Sim PhysX.

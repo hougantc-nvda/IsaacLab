@@ -72,8 +72,9 @@ session and reload the client page before reconnecting; recheck both settings.
 `--ovxr` and Kit's `--xr` select separate XR runtimes and are mutually exclusive.
 An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 
-No local window opens by default. Headset rendering still uses the GPU and works
-with `DISPLAY` unset. The teleoperation CLI does not need a `--headless` flag.
+No local window opens by default. `--ovxr_session_mode {ar,vr}` (default `ar`) selects the
+OpenXR session mode in live teleoperation and replay. Headset rendering still uses the GPU and
+works with `DISPLAY` unset.
 Renderer startup has a bounded attachment timeout; it does not bound waiting for a
 client to establish its OpenXR session. Installing Capture and resolving
 Python packages do not warm application-specific RTX shaders or Newton/Warp

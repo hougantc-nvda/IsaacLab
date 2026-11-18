@@ -295,7 +295,7 @@ def test_teleop_tasks_resolve_public_physics_selectors(physics):
     if physics == "newton_mjwarp":
         assert isinstance(cfg.sim.physics.solver_cfg, MJWarpSolverCfg)
     if physics == "ovphysx":
-        # The kitless OvPhysX selection keeps the task's Isaac Sim PhysX grasp tuning.
+        # The OvPhysX selection keeps the task's Isaac Sim PhysX grasp tuning.
         _, physx_selections = setup_preset_cli(_make_parser(), ["--task", task_name, "--physics", "isaacsim_physx"])
         physx_cfg = parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=physx_selections).sim.physics
         for name in ("bounce_threshold_velocity", "friction_correlation_distance", "solve_articulation_contact_last"):

@@ -149,8 +149,8 @@ class OvxrPresentation:
 def update_idle_presentation(env: Any, presentation: OvxrPresentation | None) -> None:
     """Service a paused scene through its presentation owner without stepping physics.
 
-    OVXR offers the current scene identity so material and marker changes can
-    publish while physics is paused.
+    OVXR offers the current scene identity so material changes can publish
+    while physics is paused.
     """
     if presentation is None:
         env.sim.render()

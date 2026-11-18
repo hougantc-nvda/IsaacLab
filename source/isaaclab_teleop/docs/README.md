@@ -144,6 +144,7 @@ rendering without blocking.
 | `sim_device` | `str` | `"cuda:0"` | Torch device for output action tensors |
 | `retargeting_execution` | `RetargetingExecutionConfig \| None` | `None` (resolved at session start to `mode="pipelined", pacing=DeadlinePacingConfig(safety_margin_s=0.025)`) | Isaac Capture retargeting execution settings; deferred so the config imports without `isaacteleop` |
 | `teleoperation_active_default` | `bool` | `False` | Whether teleoperation is active on session start |
+| `prepare_environment` | `Callable \| None` | `None` | Task-owned, idempotent preparation of the resolved environment configuration before any simulation resources |
 | `app_name` | `str` | `"IsaacLabTeleop"` | Application name for the Isaac Capture session |
 
 The 25 ms `DeadlinePacingConfig` safety margin staggers Isaac Capture's Python work behind Isaac Lab's
