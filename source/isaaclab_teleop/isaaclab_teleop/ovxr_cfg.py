@@ -67,6 +67,18 @@ class OvLibrariesXrCameraCfg:
 
 
 @configclass
+class OvLibrariesXrDesktopMirrorCfg:
+    """Owner-managed desktop window that mirrors the completed XR and camera-panel images."""
+
+    max_fps: float = 30.0
+    """Finite positive refresh cap [Hz]."""
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.max_fps) or self.max_fps <= 0.0:
+            raise ValueError("desktop mirror max_fps must be finite and positive")
+
+
+@configclass
 class OvLibrariesXrCfg:
     """Isaac Lab configuration for an Isaac Capture-owned OVXR session."""
 
@@ -96,10 +108,8 @@ class OvLibrariesXrCfg:
     """USD tracking-anchor path; an empty path uses the stage origin."""
     host_wait_render_output: bool = True
     """Whether OVXR waits for render output before returning from frame rendering."""
-    desktop_mirror_enabled: bool = False
-    """Whether to display the owner-managed desktop mirror."""
-    desktop_mirror_max_fps: float = 30.0
-    """Finite positive desktop mirror refresh cap [Hz]."""
+    desktop_mirror: OvLibrariesXrDesktopMirrorCfg | None = None
+    """Owner-managed desktop mirror; None disables it."""
     auxiliary_cameras: tuple[OvLibrariesXrCameraCfg, ...] = ()
     """Up to three uniquely named camera panels; an empty selection disables panels."""
     extra_openxr_extensions: tuple[str, ...] = ()
@@ -113,8 +123,6 @@ class OvLibrariesXrCfg:
             raise ValueError("session_mode must be 'ar' or 'vr'")
         if not math.isfinite(self.meters_per_unit) or self.meters_per_unit <= 0:
             raise ValueError("meters_per_unit must be finite and positive")
-        if not math.isfinite(self.desktop_mirror_max_fps) or self.desktop_mirror_max_fps <= 0.0:
-            raise ValueError("desktop_mirror_max_fps must be finite and positive")
         if (self.depth_near_z, self.depth_far_z) != (0.0, 0.0) and (
             not math.isfinite(self.depth_near_z)
             or not math.isfinite(self.depth_far_z)

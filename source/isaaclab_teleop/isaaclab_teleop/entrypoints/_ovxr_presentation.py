@@ -64,7 +64,7 @@ class OvxrPresentation:
         Returns:
             The prepared presentation.
         """
-        from .. import OvLibrariesXrCfg, OvLibrariesXrSession
+        from .. import OvLibrariesXrCfg, OvLibrariesXrDesktopMirrorCfg, OvLibrariesXrSession
         from ..ovxr_renderer import OvxrRendererCfg
 
         if auxiliary_cameras:
@@ -79,8 +79,11 @@ class OvxrPresentation:
                 session_mode=args.ovxr_session_mode,
                 cloudxr_env_file=args.cloudxr_env,
                 auto_launch_cloudxr=args.auto_launch_cloudxr,
-                desktop_mirror_enabled=args.ovxr_desktop_mirror,
-                desktop_mirror_max_fps=args.ovxr_desktop_mirror_fps,
+                desktop_mirror=(
+                    OvLibrariesXrDesktopMirrorCfg(max_fps=args.ovxr_desktop_mirror_fps)
+                    if args.ovxr_desktop_mirror
+                    else None
+                ),
                 auxiliary_cameras=auxiliary_cameras,
             ),
             renderer_cfg=renderer_cfg,
