@@ -173,10 +173,12 @@ def test_hand_physical_limits_are_widened_only_for_ovphysx(monkeypatch, backend,
     with use_stage(stage):
         asset = Asset(AssetBaseCfg(prim_path="/World/Robot", spawn=cfg.scene.robot.spawn))
     assert asset.cfg.spawn is not cfg.scene.robot.spawn
-    assert asset.cfg.spawn.action_cfg is not cfg.actions.upper_body_ik
+    # The spawner records hand metadata on the asset's copy, not on the environment configuration.
+    assert asset.cfg.spawn.hand_joint_limits
+    assert not cfg.scene.robot.spawn.hand_joint_limits
     asset.cfg.spawn.semantic_tags.append(("instance", "copy"))
     assert cfg.scene.robot.spawn.semantic_tags == [("class", "gr1t2")]
-    assert cfg.scene.robot.spawn.copy().action_cfg is not cfg.actions.upper_body_ik
+    assert cfg.scene.robot.spawn.copy().hand_joint_limits is not cfg.scene.robot.spawn.hand_joint_limits
     from isaaclab.envs.mdp.actions.pink_task_space_actions import PinkInverseKinematicsAction
 
     def initialize_solver(self, action_cfg, env):
@@ -189,7 +191,7 @@ def test_hand_physical_limits_are_widened_only_for_ovphysx(monkeypatch, backend,
     monkeypatch.setattr(PinkInverseKinematicsAction, "__init__", initialize_solver)
     action = GR1T2BoundedPinkIKAction(cfg.actions.upper_body_ik, SimpleNamespace(device="cpu", num_envs=1))
     assert action._hand_lower.shape == action._hand_upper.shape == (1,)
-    assert cfg.actions.upper_body_ik.hand_joint_limits is not asset.cfg.spawn.action_cfg.hand_joint_limits
+    assert cfg.actions.upper_body_ik.hand_joint_limits is not asset.cfg.spawn.hand_joint_limits
     joint = UsdPhysics.RevoluteJoint(stage.GetPrimAtPath("/World/Robot/R_thumb_distal_joint"))
     expected = (-720.0, 720.0) if backend == "ovphysx" else (-15.0, 80.0)
     assert (joint.GetLowerLimitAttr().Get(), joint.GetUpperLimitAttr().Get()) == pytest.approx(expected)
@@ -356,10 +358,9 @@ def test_robot_conditioning_authors_collision_offsets_and_deinstances_scopes():
         rigid_props=[PhysxRigidBodyCfg(max_depenetration_velocity=1.0)],
     )
     robot_cfg = SimpleNamespace(spawn=spawn)
-    action_cfg = GR1T2BoundedPinkIKActionCfg()
 
     condition_ovphysx_robot_spawn_properties(robot_cfg)
-    condition_standalone_gr1t2_stage(robot_cfg, action_cfg)
+    condition_standalone_gr1t2_stage(robot_cfg)
     spawn = robot_cfg.spawn
     spawn.func("/World/Robot", spawn)
 
