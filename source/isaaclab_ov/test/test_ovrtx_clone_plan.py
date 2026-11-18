@@ -106,7 +106,7 @@ def _make_ovrtx_renderer_without_backend() -> OVRTXRenderer:
         write_array_attribute=lambda *args, **kwargs: None,
         write_attribute=lambda *args, **kwargs: None,
     )
-    renderer._warp_device = SimpleNamespace(ordinal=0)
+    renderer._warp_device = SimpleNamespace(ordinal=0, is_cuda=True)
     renderer.scene.next_camera_id = 0
     return renderer
 
@@ -357,6 +357,7 @@ def test_create_render_data_writes_combined_stage_on_the_simulation_device(tmp_p
 
     class Device:
         ordinal = 1
+        is_cuda = True
 
         def __str__(self):
             return "cuda:1"
@@ -525,13 +526,16 @@ def test_deferred_render_copy_failure_requires_stage_reset(monkeypatch: pytest.M
     native, paths = Mock(), Mock()
     monkeypatch.setattr(stage_module, "create_ovstage", lambda _: contextlib.nullcontext(native))
     monkeypatch.setattr(ovstage, "PathDictionary", lambda _: contextlib.nullcontext(paths))
-    monkeypatch.setattr(stage_module, "populate_stage", lambda *args, **kwargs: None)
+    population = Mock()
+    monkeypatch.setattr(stage_module, "populate_stage", population)
     source = Usd.Stage.CreateInMemory()
     UsdGeom.Cube.Define(source, "/World/env_0/Body")
     backend = stage_module.OvstageBackend(stage_module.OvstageBackendCfg(defer_render_copies=True))
     backend.clone_copies = [("/World/env_0", ["/World/env_1"])]
     try:
-        backend.populate(source.ExportToString())
+        camera_desc = object()
+        backend.populate(source.ExportToString(), population_desc=camera_desc)
+        assert population.call_args.kwargs["population_desc"] is camera_desc
         backend.commit()
         with pytest.raises(RuntimeError, match="reserved render-copy ordinal"):
             backend.complete_render_copies()

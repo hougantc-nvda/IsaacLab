@@ -75,8 +75,8 @@ The adapter retains the renderer and Stage if lease retirement cannot establish 
 - Camera sensors on other renderers are supported: their initialization
   prepares every registered renderer on the application thread, and the XR
   renderer defers its Stage until the XR worker claims ownership. A camera that
-  resolves to the XR renderer itself (a camera configured with the session's
-  `OvxrRendererCfg`) is rejected while the lease is active.
+  resolves to the XR renderer itself (a non-panel camera configured with the
+  session's `OvxrRendererCfg`) is rejected while the lease is active.
 - Eager scene updates (`lazy_sensor_update=False`) skip the leased renderer; its
   scene publisher writes the same physics state at the reserved ordinal.
 - CPU simulation devices publish scene transforms, but visual-material
@@ -92,12 +92,14 @@ The adapter retains the renderer and Stage if lease retirement cannot establish 
 The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
 knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
 preparation and the ordinary camera and scene operations, and uses the protected extension
-point for private-OVStage selection.
+points for scene population, deferred camera registration and private-OVStage selection.
 
 - Its `_OvxrLeaseController` owns the lease state, the thread-transfer capability, the
   per-owner operation guards and the publication order.
+- Its `_OvxrPanelCameras` own the selected camera panels: matching their sensors, creating
+  their products, authoring native frame rates and writing their pose samples.
 - `OvxrScenePublisher.publish()` publishes each complete scene as one transaction: it skips an
-  unchanged state, reserves an ordinal, writes every component, seals
+  unchanged state, validates panel samples, reserves an ordinal, writes every component, seals
   it, and on failure poisons the pair and abandons the ordinal. Capture's publication guard
   provides the cross-thread exclusion around it.
 
@@ -115,6 +117,23 @@ ordinary renderer operations and does not start an XR session. While a consumer
 holds the lease, ordinary camera rendering, scene writes and renderer destruction
 are rejected to prevent concurrent access to the borrowed resources. Cameras with an
 ordinary `OVRTXRendererCfg` use Isaac Lab's ordinary renderer, which the lease does not affect.
+
+## Optional presentation
+
+After resolving the selected camera render products, the Lab adapter supplies
+Capture with configured `CameraPanelConsumer` and `OwnedDesktopMirror` instances
+in `OvxrSessionBinding.frame_consumers`. Each panel configuration pairs its product
+path with its placement and image bound. The mirror receives its camera choices
+separately, so it can run without headset panels.
+
+Capture runs both consumers through the same frame lifecycle. It shares CPU
+snapshots within a frame and keeps native layers alive through submission; Lab
+continues to own sensor production and scene publication. These interfaces are
+application-neutral and do not require Lab-specific scene types.
+
+The mirror uses OVUI's default Vulkan backend. Neither Lab nor Capture modifies
+`OMNIUI_BACKEND`; the mirror rejects an active non-Vulkan backend. Neither optional
+consumer is created when disabled.
 
 ## Native validation
 

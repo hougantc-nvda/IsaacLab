@@ -29,6 +29,7 @@ _RETAINED_NATIVE_PAIRS: list[tuple[Any, ...]] = []
 """Native renderer and Stage resources whose retirement was never proved; they outlive every session."""
 
 if TYPE_CHECKING:
+    from isaaclab.sensors import CameraCfg
     from isaaclab.sim import SimulationCfg
 
     from .ovxr_renderer import OvxrScenePublisher
@@ -73,7 +74,9 @@ class OvxrSessionBootstrap:
     def __init__(self, sim_cfg: SimulationCfg, renderer_cfg: OvxrRendererCfg | None = None) -> None:
         validate_ovxr_session_preparation()
         if renderer_cfg is not None and not isinstance(renderer_cfg, OvxrRendererCfg):
-            raise TypeError("OVXR renders with OvxrRendererCfg")
+            raise TypeError(
+                "OVXR renders with OvxrRendererCfg; give the session and its camera panels the same configuration"
+            )
 
         self._sim: SimulationContext | None = None
         self._renderer: OvxrRenderer | None = None
@@ -93,7 +96,8 @@ class OvxrSessionBootstrap:
             sim = SimulationContext(sim_cfg)
             # The simulation registry owns the renderer, including cloning and
             # cleanup; the XR session only borrows its exact native pair.
-            renderer = sim.get_or_create_backend(renderer_cfg or OvxrRendererCfg())
+            self._renderer_cfg = renderer_cfg or OvxrRendererCfg()
+            renderer = sim.get_or_create_backend(self._renderer_cfg)
             if not isinstance(renderer, OvxrRenderer):
                 raise TypeError(f"OvxrRendererCfg resolved to unexpected renderer {type(renderer).__name__}")
             # Camera sensors prepare every registered renderer on the application thread during
@@ -135,6 +139,17 @@ class OvxrSessionBootstrap:
         if self._bound or self._lease is None:
             raise RuntimeError("Scene publisher is available only before OVXR Stage binding")
         return self._lease.capture_scene_publisher()
+
+    def configure_auxiliary_camera(self, camera_cfg: CameraCfg, *, max_fps: float | None = None) -> None:
+        """Authorize a camera with an update cap [Hz]; ``None`` renders it with every frame of its product."""
+        self._require_open()
+        if self._bound or self._lease is None:
+            raise RuntimeError("Auxiliary camera must be configured before OVXR Stage binding")
+        # The simulation shares a renderer only between equal configurations of the same type.
+        panel_cfg = camera_cfg.renderer_cfg
+        if type(panel_cfg) is not type(self._renderer_cfg) or panel_cfg != self._renderer_cfg:
+            raise ValueError("A camera panel must use the OVXR session's renderer configuration")
+        self._lease.configure_auxiliary_camera(camera_cfg, max_fps=max_fps)
 
     def validate_environment(self, env: Any) -> None:
         """Check that a constructed environment uses the prepared simulation context.
