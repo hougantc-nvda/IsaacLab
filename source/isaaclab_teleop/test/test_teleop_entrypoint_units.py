@@ -674,17 +674,12 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
 
     monkeypatch.setattr(replay, "ManagerBasedRLEnvCfg", SimpleNamespace)
     monkeypatch.setattr(parse_cfg, "resolve_task_config", resolve)
-    if not ovxr:
-        # Replay without --ovxr starts Kit, which cannot host standalone OvPhysX.
-        with pytest.raises(ValueError, match="Invalid backend combination"):
-            namespace["_prepare_env_cfg"]("test-task", 1, None, overrides=namespace["hydra_overrides"])
-        assert resolutions == [("test-task", None, ["physics=ovphysx"])]
-        return
+    # Without --ovxr the replay is headless; standalone OvPhysX needs no Kit either way.
     prepared, success = namespace["_prepare_env_cfg"]("test-task", 1, None, overrides=namespace["hydra_overrides"])
     assert resolutions == [("test-task", None, ["physics=ovphysx"])]
     assert prepared is cfg and success is not None
     assert cfg.sim.physics is physics
-    assert namespace["args_cli"].require_kit is False
+    assert not getattr(namespace["args_cli"], "require_kit", False)
     assert not namespace["args_cli"].start_on_replay
     legacy_args = replay._build_parser().parse_args(
         ["--task", "Test", "--replay_file", "recording.mcap", "--start_on_replay"]
@@ -998,8 +993,9 @@ def test_replay_unset_task_physics_keeps_simulation_default_or_rejects_ovxr(monk
             replay._prepare_env_cfg(_UNSET_PHYSICS_TASK, 1, None, overrides=replay.hydra_overrides)
         return
     env_cfg, _success = replay._prepare_env_cfg(_UNSET_PHYSICS_TASK, 1, None, overrides=replay.hydra_overrides)
+    # No physics selection defaults to Isaac Sim PhysX, which launches Kit without a forced requirement.
     assert env_cfg.sim.physics is None
-    assert replay.args_cli.require_kit
+    assert not getattr(replay.args_cli, "require_kit", False)
 
 
 @pytest.mark.parametrize("close_while_pending", [False, True])

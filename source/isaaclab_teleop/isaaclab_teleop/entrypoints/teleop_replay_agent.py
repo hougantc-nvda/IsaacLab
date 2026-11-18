@@ -481,8 +481,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # the launcher; this selects a camera-rendering experience that provides RTX/DLSS.
     # Everywhere else we read ``args_cli.disable_external_cameras`` directly.
     args_cli.enable_cameras = not args_cli.disable_external_cameras
-    # the stage-load wait and the RTX settings use Kit APIs directly; the OVXR viewer replaces Kit
-    args_cli.require_kit = not args_cli.ovxr
+    # The task's physics, cameras and visualizers decide whether Kit runs; the stage-load wait and the RTX
+    # settings below run only when it does, so headless replay also works on kitless backends.
 
     # Resolve CLI profile names once; runtime construction receives a path or None.
     if args_cli.ovxr and args_cli.cloudxr_env is None:
@@ -1727,7 +1727,7 @@ def _run_replay_batch(env_cfg: ManagerBasedRLEnvCfg, success_term: object | None
         else:
             cloudxr_launcher = _maybe_launch_cloudxr(args_cli.cloudxr_env, args_cli.auto_launch_cloudxr)
 
-        if args_cli.require_kit and (not args_cli.disable_external_cameras or args_cli.kit_visualizer or args_cli.xr):
+        if has_kit() and (not args_cli.disable_external_cameras or args_cli.kit_visualizer or args_cli.xr):
             from isaaclab_physx.renderers.isaac_rtx_renderer_utils import apply_isaac_rtx_global_settings
 
             apply_isaac_rtx_global_settings(IsaacRtxRendererGlobalSettingsCfg(antialiasing_mode="DLSS"))

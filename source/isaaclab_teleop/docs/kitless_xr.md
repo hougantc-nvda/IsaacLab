@@ -100,7 +100,8 @@ uv run --extra ovxr python scripts/environments/teleoperation/teleop_replay_agen
 ```
 
 MCAP supplies tracker and control input; the connected headset supplies the
-view. A recorded STOP, task success/failure, or `--max_replay_duration_s` ends
+view. Without `--ovxr`, the replay runs headless on the selected kitless backend, which suits
+automated success checks. A recorded STOP, task success/failure, or `--max_replay_duration_s` ends
 the run. Playback waits for recorded START messages, including after a recorded
 RESET. Reset does not rewind recorded input. For legacy captures started locally
 without recorded START messages, add `--start_on_replay` to start automatically
