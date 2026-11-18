@@ -230,8 +230,8 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
         pass
 
     @contextlib.contextmanager
-    def launch(cfg, _args, *, cleanup_context):
-        launched.append((cfg, cleanup_context))
+    def launch(cfg, _args):
+        launched.append(cfg)
         yield
 
     def prepare(_sim_cfg, xr_cfg, renderer_cfg=None):
@@ -248,8 +248,7 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
     with pytest.raises(SessionReached):
         record_demos.main()
 
-    [(cfg, cleanup_context)] = launched
-    assert cleanup_context is False
+    [cfg] = launched
     assert cfg.scene.robot_pov_cam is not None
     [(xr_cfg, renderer_cfg)] = prepared
     assert xr_cfg.desktop_mirror is not None and xr_cfg.desktop_mirror.max_fps == 20.0

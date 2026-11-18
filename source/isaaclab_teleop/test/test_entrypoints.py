@@ -27,9 +27,8 @@ def test_live_entrypoint_preserves_resolved_camera_selection(monkeypatch):
     calls = []
 
     @contextmanager
-    def launch(env_config, args, *, cleanup_context):
+    def launch(env_config, args):
         assert env_config is config and args.using_ovxr
-        assert not cleanup_context
         calls.append("launch")
         yield
         calls.append("close")
