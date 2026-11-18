@@ -56,8 +56,10 @@ the `ovxr` selection (add `mimic` for the imitation-learning scripts) instead of
 | Annotate, generate (Mimic) | `annotate_demos.py`, `generate_dataset.py` | same commands with `physics=...` |
 | Train, play (robomimic) | `train.py`, `play.py` | same commands; `play.py` takes `physics=...` |
 
-Select the physics backend with `--physics physx` (OvPhysX without Isaac Sim) or `--physics newton_mjwarp`;
-the Mimic scripts take the same choice as `physics=...`. Isaac Sim PhysX (`isaacsim_physx`) is not available
+Select the physics backend with `--physics ovphysx` or `--physics newton_mjwarp`;
+the Mimic scripts take the same choice as `physics=...`. The automatic `physx` selector follows the usual
+Isaac Lab rule: Isaac Sim PhysX when the run needs Kit, otherwise the task's OvPhysX settings.
+Isaac Sim PhysX (`isaacsim_physx`) is not available
 without Kit. Cameras that render through Isaac Sim RTX need a kitless renderer, such as `renderer=ovrtx`,
 when a script keeps them; HDF5 replay of a task such as GR1T2, whose `robot_pov_cam` renders through
 Isaac Sim RTX, needs `--renderer ovrtx`. The OVXR session strips camera observations, so kitless HDF5
