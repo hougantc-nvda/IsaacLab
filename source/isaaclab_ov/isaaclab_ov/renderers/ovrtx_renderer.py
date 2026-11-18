@@ -1461,7 +1461,8 @@ class OVRTXMesh:
             attributes["primvars:st"] = uvs
         if dynamic:
             attributes.update(faceVertexIndices=indices, faceVertexCounts=self._face_counts)
-        stream = wp.get_stream(points.device).cuda_stream or 1
+        # CPU geometry is written from host memory without a CUDA stream.
+        stream = (wp.get_stream(points.device).cuda_stream or 1) if points.device.is_cuda else None
         for name, values in attributes.items():
             if self.renderer._use_ovstage:
                 semantic = {
@@ -1619,7 +1620,9 @@ class OVRTXMarkers:
                     [self._path], "visibility", [token], semantic=Semantic.TOKEN_STRING
                 )
             self._visible = visible
-        stream = wp.stream_from_torch(torch.cuda.current_stream(translations.device))
+        # CPU marker state is converted and written on the host without a CUDA stream.
+        stream = wp.stream_from_torch(torch.cuda.current_stream(translations.device)) if translations.is_cuda else None
+        cuda_stream = (stream.cuda_stream or 1) if stream is not None else None
         wp.launch(
             create_marker_transforms_kernel,
             len(indices),
@@ -1642,10 +1645,10 @@ class OVRTXMarkers:
                 tensors=xform_tensor_from_warp(self._transforms),
                 is_array=False,
                 semantic=ovstage.AttributeSemantic.MATRIX,
-                cuda_stream=stream.cuda_stream or 1,
+                cuda_stream=cuda_stream,
             ).wait()
         else:
-            self._binding.write(self._transforms, data_access=DataAccess.ASYNC, cuda_stream=stream.cuda_stream or 1)
+            self._binding.write(self._transforms, data_access=DataAccess.ASYNC, cuda_stream=cuda_stream)
 
     def close(self) -> None:
         """Release bindings and geometry before the renderer's native scene closes."""

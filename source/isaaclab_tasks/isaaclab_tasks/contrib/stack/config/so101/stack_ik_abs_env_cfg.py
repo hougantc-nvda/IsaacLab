@@ -191,7 +191,7 @@ class SO101CubeStackEnvCfg(stack_joint_pos_env_cfg.SO101CubeStackEnvCfg):
         # post init of parent
         super().__post_init__()
         isaacsim_physx = self.sim.physics.isaacsim_physx
-        # Match the stack family's Isaac Sim PhysX grasp tuning on the kitless OvPhysX backend.
+        # Match the stack family's Isaac Sim PhysX grasp tuning on the OvPhysX backend.
         ovphysx = OvPhysxCfg(
             bounce_threshold_velocity=isaacsim_physx.bounce_threshold_velocity,
             friction_correlation_distance=isaacsim_physx.friction_correlation_distance,

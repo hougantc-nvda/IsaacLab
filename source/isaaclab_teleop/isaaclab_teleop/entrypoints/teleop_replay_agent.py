@@ -339,7 +339,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ovxr", action="store_true", help="Present recorded motion through kitless OVXR; input stays MCAP."
     )
-    parser.add_argument("--ovxr_session_mode", choices=("ar", "vr"), default="ar")
+    parser.add_argument(
+        "--ovxr_session_mode",
+        choices=("ar", "vr"),
+        default="ar",
+        help="OVXR session mode. Defaults to 'ar'; pass 'vr' for an opaque background.",
+    )
     parser.add_argument(
         "--replay_file",
         type=str,

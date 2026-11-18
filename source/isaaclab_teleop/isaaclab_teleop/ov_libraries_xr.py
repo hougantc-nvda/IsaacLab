@@ -70,7 +70,7 @@ class OvLibrariesXrSession:
     class ExternalAnchorState(Protocol):
         """Dynamic XR-anchor policy sealed together with complete scene publications.
 
-        :class:`~isaaclab_teleop.xr_anchor_manager.XrAnchorManager` implements this protocol. It
+        ``isaaclab_teleop.xr_anchor_manager.XrAnchorManager`` implements this protocol. It
         drives the anchor when constructed for an OVXR session with ``XrCfg.anchor_prim_path`` set,
         which is when :attr:`~isaaclab_teleop.IsaacTeleopDevice.external_anchor_state` returns it.
         """

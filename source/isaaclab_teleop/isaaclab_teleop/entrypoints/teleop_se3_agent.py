@@ -424,9 +424,10 @@ def run_teleoperation(  # noqa: C901
                     f"The environment '{args_cli.task}' does not support gripper control. The device command will be"
                     " ignored."
                 )
-        except Exception as e:
-            logger.error(f"Failed to create environment: {e}")
-            return
+        except Exception:
+            # Cleanup below keeps this error; the command must not report success.
+            logger.exception("Failed to create environment")
+            raise
 
         # Flags for controlling teleoperation flow
         should_reset_recording_instance = False
@@ -506,9 +507,9 @@ def run_teleoperation(  # noqa: C901
                 ),
                 haptic_cfg=getattr(env_cfg, "haptic_feedback", None),
             )
-        except Exception as e:
-            logger.error(f"Failed to create teleop device: {e}")
-            return
+        except Exception:
+            logger.exception("Failed to create teleop device")
+            raise
 
         if presentation is not None:
             presentation.input_device = teleop_interface
