@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Focused regressions for the G1 kitless OVPhysX packing-table contract."""
+"""Focused regressions for the G1 OVPhysX packing-table contract."""
 
 import gymnasium as gym
 import pytest
@@ -15,11 +15,11 @@ from isaaclab.app import launch_simulation
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.contrib.locomanip_pick_place.fixed_base_upper_body_ik_g1_env_cfg import (
     FixedBaseUpperBodyIKG1EnvCfg,
-    prepare_fixed_base_g1_for_kitless_ovphysx,
+    prepare_fixed_base_g1_for_ovphysx,
 )
 from isaaclab_tasks.contrib.locomanip_pick_place.locomanipulation_g1_env_cfg import (
     LocomanipulationG1EnvCfg,
-    prepare_locomanipulation_g1_for_kitless_ovphysx,
+    prepare_locomanipulation_g1_for_ovphysx,
 )
 from isaaclab_tasks.contrib.packing_table import PackingTableUsdFileCfg
 
@@ -34,10 +34,10 @@ def test_fixed_base_g1_ovphysx_conditions_assets_without_mutating_default_config
     action_type = cfg.actions.upper_body_ik.class_type
     drop_term = cfg.terminations.object_dropping.func
 
-    prepare_fixed_base_g1_for_kitless_ovphysx(cfg)
+    prepare_fixed_base_g1_for_ovphysx(cfg)
     table_spawn = cfg.scene.packing_table.spawn.func
     wheel_spawn = cfg.scene.object.spawn.func
-    prepare_fixed_base_g1_for_kitless_ovphysx(cfg)
+    prepare_fixed_base_g1_for_ovphysx(cfg)
 
     assert isinstance(cfg.scene.packing_table.spawn, PackingTableUsdFileCfg)
     assert cfg.scene.object.spawn.func == default_cfg.scene.object.spawn.func
@@ -53,11 +53,11 @@ def test_fixed_base_g1_ovphysx_conditions_assets_without_mutating_default_config
 @pytest.mark.parametrize(
     ("cfg_type", "task", "prepare"),
     [
-        (LocomanipulationG1EnvCfg, _TASK, prepare_locomanipulation_g1_for_kitless_ovphysx),
+        (LocomanipulationG1EnvCfg, _TASK, prepare_locomanipulation_g1_for_ovphysx),
         (
             FixedBaseUpperBodyIKG1EnvCfg,
             "IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs",
-            prepare_fixed_base_g1_for_kitless_ovphysx,
+            prepare_fixed_base_g1_for_ovphysx,
         ),
     ],
     ids=["locomanipulation", "fixed_base"],

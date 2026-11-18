@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Sim-free tests for the G1 kitless Newton task boundary."""
+"""Sim-free tests for the G1 Newton task boundary."""
 
 import math
 from types import SimpleNamespace
@@ -14,17 +14,19 @@ from isaaclab_newton.physics import NewtonCfg
 
 from isaaclab_tasks.contrib.locomanip_pick_place.fixed_base_upper_body_ik_g1_env_cfg import (
     FixedBaseUpperBodyIKG1EnvCfg,
-    prepare_fixed_base_g1_for_kitless_newton_mjwarp,
+    prepare_fixed_base_g1_for_newton_mjwarp,
 )
-from isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_action import G1NewtonBoundedPinkInverseKinematicsAction
-from isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_newton import (
+from isaaclab_tasks.contrib.locomanip_pick_place.g1_newton_actions import (
     JOINT_LIMIT_MARGIN_RAD,
     JOINT_TARGET_MAX_STEP_RAD,
     POSITION_MAX_STEP_M,
     ROTATION_MAX_STEP_RAD,
     bound_pink_joint_targets,
-    condition_kitless_newton_g1_action,
+    condition_newton_g1_action,
     teleop_action_target_issue,
+)
+from isaaclab_tasks.contrib.locomanip_pick_place.g1_newton_bounded_pink_action import (
+    G1NewtonBoundedPinkInverseKinematicsAction,
 )
 from isaaclab_tasks.contrib.packing_table import PackingTableUsdFileCfg
 from isaaclab_tasks.contrib.steering_wheel import SteeringWheelUsdFileCfg
@@ -85,7 +87,7 @@ def test_g1_newton_contract_is_backend_scoped_and_complete() -> None:
     default_cfg = FixedBaseUpperBodyIKG1EnvCfg()
     newton_cfg = FixedBaseUpperBodyIKG1EnvCfg()
     newton_cfg.sim.physics = NewtonCfg()
-    prepare_fixed_base_g1_for_kitless_newton_mjwarp(newton_cfg)
+    prepare_fixed_base_g1_for_newton_mjwarp(newton_cfg)
 
     assert newton_cfg.sim.physics.solver_cfg.nconmax == 4096
     assert newton_cfg.sim.physics.solver_cfg.njmax == 1536
@@ -98,7 +100,7 @@ def test_g1_newton_contract_is_backend_scoped_and_complete() -> None:
         assert (actuator.stiffness, actuator.damping, actuator.armature, actuator.joint_effort_limit) == expected
     assert newton_cfg.actions.upper_body_ik.class_type._resolve() is G1NewtonBoundedPinkInverseKinematicsAction
     assert (newton_cfg.scene.robot.joint_ordering, newton_cfg.scene.robot.body_ordering) == ("physx", "physx")
-    assert newton_cfg.isaac_teleop.action_conditioner is condition_kitless_newton_g1_action
+    assert newton_cfg.isaac_teleop.action_conditioner is condition_newton_g1_action
     assert newton_cfg.isaac_teleop.action_validator is teleop_action_target_issue
     assert isinstance(newton_cfg.scene.packing_table.spawn, PackingTableUsdFileCfg)
     assert isinstance(newton_cfg.scene.object.spawn, SteeringWheelUsdFileCfg)
@@ -112,14 +114,14 @@ def test_g1_newton_contract_is_backend_scoped_and_complete() -> None:
 def test_locomanipulation_preserves_agile_policy_order_and_action_contract() -> None:
     from isaaclab_tasks.contrib.locomanip_pick_place.locomanipulation_g1_env_cfg import (
         LocomanipulationG1EnvCfg,
-        prepare_locomanipulation_g1_for_kitless_newton_mjwarp,
+        prepare_locomanipulation_g1_for_newton_mjwarp,
     )
 
     cfg = LocomanipulationG1EnvCfg()
     controller = cfg.actions.lower_body_joint_pos.copy()
     upper_body_class = cfg.actions.upper_body_ik.class_type
     cfg.sim.physics = NewtonCfg()
-    prepare_locomanipulation_g1_for_kitless_newton_mjwarp(cfg)
+    prepare_locomanipulation_g1_for_newton_mjwarp(cfg)
 
     assert cfg.scene.robot.joint_ordering == "physx"
     assert cfg.actions.lower_body_joint_pos == controller
@@ -136,7 +138,7 @@ def test_recorded_first_action_is_ramped_and_finite() -> None:
     env, left, right = _fake_env()
     action = RECORDED_FIRST_ACTION.reshape(7, 4).t().contiguous().t()
     assert not action.is_contiguous()
-    conditioned = condition_kitless_newton_g1_action(env, action, {}).flatten()
+    conditioned = condition_newton_g1_action(env, action, {}).flatten()
 
     assert teleop_action_target_issue(conditioned) is None
     assert torch.isfinite(conditioned).all()
@@ -162,17 +164,17 @@ def test_wrist_ramp_reseeds_after_termination_auto_reset() -> None:
 
     state = {}
     target = RECORDED_FIRST_ACTION.clone()
-    conditioned = condition_kitless_newton_g1_action(env, target, state)
+    conditioned = condition_newton_g1_action(env, target, state)
     for _ in range(58):
         step()
-        conditioned = condition_kitless_newton_g1_action(env, target, state)
+        conditioned = condition_newton_g1_action(env, target, state)
     # The ramp has converged near the operator's hands, far from the reset pose.
     assert float(torch.linalg.norm(conditioned[:3] - left[:3])) > 2 * POSITION_MAX_STEP_M
     # The episode terminates, then the next one terminates on its first step: its counter goes
     # 0 -> 1 -> 0 between two frames without decreasing.
     for _ in range(2):
         step(terminated=True)
-        conditioned = condition_kitless_newton_g1_action(env, target, state)
+        conditioned = condition_newton_g1_action(env, target, state)
         assert float(torch.linalg.norm(conditioned[:3] - poses[0, 0, :3])) <= POSITION_MAX_STEP_M + 1.0e-6
         assert float(torch.linalg.norm(conditioned[7:10] - poses[0, 1, :3])) <= POSITION_MAX_STEP_M + 1.0e-6
 
@@ -191,7 +193,7 @@ def test_conditioned_wrist_rotation_obeys_angular_cap(angle, axis, sign):
     target = sign * torch.cat((torch.tensor([math.cos(angle / 2)]), direction * math.sin(angle / 2)))
     action = RECORDED_FIRST_ACTION.clone()
     action[3:7] = action[10:14] = target
-    conditioned = condition_kitless_newton_g1_action(env, action, {})
+    conditioned = condition_newton_g1_action(env, action, {})
     start = torch.tensor([1.0, 0, 0, 0])
     for result in (conditioned[3:7], conditioned[10:14]):
         assert torch.isfinite(result).all()
@@ -213,7 +215,7 @@ def test_invalid_actions_fail_closed() -> None:
     missing_wrist_env, _, _ = _fake_env()
     missing_wrist_env.scene = {}
     with pytest.raises(RuntimeError, match="could not resolve the task-selected G1 wrist poses"):
-        condition_kitless_newton_g1_action(missing_wrist_env, RECORDED_FIRST_ACTION, {})
+        condition_newton_g1_action(missing_wrist_env, RECORDED_FIRST_ACTION, {})
 
 
 @pytest.mark.parametrize("nonfinite", [False, True])

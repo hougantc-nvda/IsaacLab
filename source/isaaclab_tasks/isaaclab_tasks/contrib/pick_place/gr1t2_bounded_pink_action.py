@@ -18,7 +18,7 @@ from isaaclab.envs.mdp.actions.pink_task_space_actions import PinkInverseKinemat
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
-    from .gr1t2_kitless_action_cfg import GR1T2KitlessPinkInverseKinematicsActionCfg
+    from .gr1t2_bounded_pink_action_cfg import GR1T2BoundedPinkIKActionCfg
 
 
 def bound_ik_joint_targets(
@@ -91,26 +91,26 @@ def constrain_hand_joint_targets(
     return torch.maximum(torch.minimum(constrained, upper), lower)
 
 
-class GR1T2KitlessPinkInverseKinematicsAction(PinkInverseKinematicsAction):
-    """Pink action that owns the GR1T2 kitless target-stability boundary.
+class GR1T2BoundedPinkIKAction(PinkInverseKinematicsAction):
+    """Pink action that owns the GR1T2 target-stability boundary.
 
     Kit realizes the hand's PhysX mimic constraints and sanitizes the raw asset.
-    The kitless task removes those hard constraints before physics parsing, so
+    Standalone-backend preparation removes those hard constraints before physics parsing, so
     this term reproduces their target relation in software and bounds hand
     targets. OVPhysX widens physical hand limits; Newton retains them. It also
     bounds cold-start IK demands against measured state to avoid a first-step
     drive impulse.
     """
 
-    cfg: GR1T2KitlessPinkInverseKinematicsActionCfg
+    cfg: GR1T2BoundedPinkIKActionCfg
 
-    def __init__(self, cfg: GR1T2KitlessPinkInverseKinematicsActionCfg, env: ManagerBasedEnv) -> None:
+    def __init__(self, cfg: GR1T2BoundedPinkIKActionCfg, env: ManagerBasedEnv) -> None:
         super().__init__(cfg, env)
 
-        from .pickplace_gr1t2_env_cfg import GR1T2KitlessUsdFileCfg
+        from .pickplace_gr1t2_env_cfg import GR1T2ConditionedUsdFileCfg
 
         spawn_cfg = self._asset.cfg.spawn
-        if isinstance(spawn_cfg, GR1T2KitlessUsdFileCfg) and spawn_cfg.action_cfg is not None:
+        if isinstance(spawn_cfg, GR1T2ConditionedUsdFileCfg) and spawn_cfg.action_cfg is not None:
             # Asset construction copies spawn settings before conditioning the USD. Read
             # its result here, rather than coupling independently copied environment configs.
             cfg.hand_joint_limits = dict(spawn_cfg.action_cfg.hand_joint_limits)
