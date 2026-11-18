@@ -44,6 +44,7 @@ This file has been modified from the original robomimic version to integrate wit
 """
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
@@ -69,6 +70,7 @@ from robomimic.utils.log_utils import DataLogger, PrintLogger
 from torch.utils.data import DataLoader
 
 from isaaclab.app import launch_simulation
+from isaaclab.utils.version import has_kit
 
 import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.contrib.locomanip_pick_place  # noqa: F401
@@ -443,6 +445,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # run training inside a headless Isaac Sim runtime, which validation rollouts in Isaac Lab environments need
-    with launch_simulation(None):
+    # run training inside a headless Isaac Sim runtime, which validation rollouts in Isaac Lab environments need;
+    # without Isaac Sim there is no runtime to launch, and training itself reads only the dataset
+    with launch_simulation(None) if has_kit() else contextlib.nullcontext():
         main(args)
