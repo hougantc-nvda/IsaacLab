@@ -211,6 +211,71 @@ class OvxrSessionBootstrap:
         finally:
             self._restore_terminal_mode_sentinel()
 
+    def configure_view_partitions(self, camera_paths: tuple[str, ...], ledger: Any) -> None:
+        """Keep tracking markers in the eye views and task geometry/lights visible to every camera.
+
+        Call once on the render owner after binding, under the lease's owner lane. Only the
+        private presentation Stage changes; the application USD and ordinary renderers do not.
+        """
+        self._require_open()
+        if not self._bound or self._sim is None or self._lease is None:
+            raise RuntimeError("View partitions require a bound OVXR environment")
+        self._lease.validate_live()
+        import ovstage
+        from isaaclab_ov.renderers.ovrtx_renderer import _resolve_env_light_partitions
+        from isaaclab_ov.stage import _handle_raw_id
+
+        renderer = self._sim.get_or_create_backend(self._renderer_cfg)
+        scene = renderer.scene
+        usd_stage = self._sim.stage
+        light_paths = list(_resolve_env_light_partitions(usd_stage, scene.clone_env_paths, copies=scene.clone_copies))
+        settings_path = str(usd_stage.GetMetadata("renderSettingsPrimPath") or "/Render/IsaacLabSettings")
+        # OVStage TOKEN_ID uses zero for the empty token (common, unpartitioned geometry).
+        writes = [
+            (
+                scene.clone_env_paths,
+                "primvars:omni:scenePartition",
+                np.zeros(len(scene.clone_env_paths), dtype=np.uint64),
+            ),
+            (light_paths, "omni:scenePartition", np.zeros(len(light_paths), dtype=np.uint64)),
+            (
+                camera_paths,
+                "omni:scenePartition",
+                np.full(len(camera_paths), _handle_raw_id(scene.paths.intern_token("viewer")), dtype=np.uint64),
+            ),
+            (
+                [settings_path],
+                "omni:rtx:scenePartitioning:showAllPartitionsByDefault",
+                np.array([False], dtype=np.bool_),
+            ),
+        ]
+        ordinal = ledger.reserve()
+        try:
+            for prim_paths, attribute, values in writes:
+                if not prim_paths:
+                    continue
+                with scene.query(prim_paths) as query:
+                    scene.stage.write_attribute(
+                        query,
+                        attribute,
+                        ordinal=ordinal,
+                        tensors=values,
+                        is_array=False,
+                        semantic=(
+                            ovstage.AttributeSemantic.NONE
+                            if values.dtype == np.bool_
+                            else ovstage.AttributeSemantic.TOKEN_ID
+                        ),
+                    ).wait()
+            ledger.publish(ordinal)
+        except BaseException as error:
+            # Startup interruption also must resolve the reservation before Stage retirement.
+            try:
+                ledger.abandon(ordinal)
+            except BaseException as abandon_error:
+                error.add_note(f"View-partition initialization cleanup also failed: {abandon_error!r}")
+            raise
+
     def offer_render_owner_transfer(self) -> object:
         """Offer the exact unbound OVXR lease before Stage binding."""
         self._require_open()
