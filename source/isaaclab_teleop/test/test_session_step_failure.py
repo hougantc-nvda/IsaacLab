@@ -257,18 +257,23 @@ class TestStepFailureDiagnosis:
             assert lifecycle.step() is None
         assert lifecycle._pending_reset
 
-    def test_ovxr_session_pipeline_failure_also_bounds_restart_rate(self):
-        lifecycle = _make_failing_lifecycle(ValueError("persistent pipeline error"))
+    def test_ovxr_pipeline_failure_is_terminal_on_borrowed_handles(self):
+        """A borrowed OVXR XrSession keeps its attached action sets, so the failure ends the session."""
+        error = ValueError("persistent pipeline error")
+        lifecycle = _make_failing_lifecycle(error)
         lifecycle._external_oxr_handles_provider = lambda: object()
+        session = lifecycle._session
         with (
-            patch.object(TeleopSessionLifecycle, "_kit_xr_session_is_active", return_value=False),
+            patch.object(TeleopSessionLifecycle, "_kit_xr_session_is_active", return_value=True),
             patch.object(lifecycle, "_build_external_inputs", return_value=None),
+            patch.object(lifecycle, "_try_start_session") as try_start,
+            pytest.raises(ValueError, match="persistent pipeline error") as raised,
         ):
-            assert lifecycle.step() is None
-        assert lifecycle._restart_holdoff_until > time.monotonic()
-        with patch.object(lifecycle, "_try_start_session") as try_start:
-            for _ in range(5):
-                assert lifecycle.step() is None
+            lifecycle.step()
+        assert raised.value is error
+        session.__exit__.assert_called_once()
+        assert lifecycle._session is None
+        assert lifecycle._restart_holdoff_until == 0.0
         try_start.assert_not_called()
 
     def test_pipeline_error_with_active_xr_sets_holdoff(self):
