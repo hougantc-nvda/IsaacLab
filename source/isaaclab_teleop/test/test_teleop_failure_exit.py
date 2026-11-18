@@ -86,12 +86,15 @@ def test_live_entry_failure_closes_resources_and_reports_cause(
     cfg = SimpleNamespace(isaac_teleop=SimpleNamespace(teleoperation_active_default=False))
     if not use_capture:
         cfg = SimpleNamespace()  # Native inputs must not read Capture-only configuration.
-    if stage == "haptics":
-        with pytest.raises(RuntimeError) as caught:
+    if stage != "input":
+        # Startup failures propagate after cleanup, so the command exits non-zero.
+        with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as caught:
             entry_namespace["run_teleoperation"](cfg, getattr(cfg, "isaac_teleop", None), use_isaac_teleop=use_capture)
         assert caught.value is failure
+        if stage != "haptics":
+            assert f"Failed to create {'environment' if stage == 'environment' else 'teleop device'}" in caplog.text
     else:
-        # Environment, device and loop failures keep the upstream log-and-return exit.
+        # A live-loop failure keeps the upstream log-and-return exit.
         with caplog.at_level(logging.ERROR):
             entry_namespace["run_teleoperation"](cfg, getattr(cfg, "isaac_teleop", None), use_isaac_teleop=use_capture)
         assert f"{stage} failed" in caplog.text

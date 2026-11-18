@@ -38,7 +38,8 @@ def prepare_ovxr_launch(env_cfg: Any, task: str, num_envs: int) -> Any:
         viewers = [viewers]
     backends = [
         backend
-        for viewer in viewers if viewer is not None
+        for viewer in viewers
+        if viewer is not None
         for backend in (viewer.backend if isinstance(viewer.backend, list) else [viewer.backend])
     ]
     reject_ovxr_runtime_conflicts(backends, ())
