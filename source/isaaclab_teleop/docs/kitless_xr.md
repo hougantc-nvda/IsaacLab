@@ -36,10 +36,11 @@ uv sync --python 3.12 --locked --extra ovxr
 
 The runtime commands below use this prepared `ovxr` selection.
 
-The live and MCAP workflows are implemented in `isaaclab_teleop.entrypoints`.
+The live, recording and MCAP workflows are implemented in `isaaclab_teleop.entrypoints`.
 The command-line entrypoints load registered downstream tasks before parsing
 and restore the caller's arguments on return. The scripts under
-`scripts/environments/teleoperation/` delegate to these package entrypoints.
+`scripts/environments/teleoperation/` and `scripts/tools/record_demos.py` delegate to
+these package entrypoints.
 
 ## Live teleoperation
 
@@ -73,8 +74,8 @@ session and reload the client page before reconnecting; recheck both settings.
 An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 
 No local window opens by default. `--ovxr_session_mode {ar,vr}` (default `ar`) selects the
-OpenXR session mode in live teleoperation and replay. Headset rendering still uses the GPU and
-works with `DISPLAY` unset.
+OpenXR session mode in live teleoperation, recording and replay. Headset rendering still
+uses the GPU and works with `DISPLAY` unset.
 Renderer startup has a bounded attachment timeout; it does not bound waiting for a
 client to establish its OpenXR session. Installing Capture and resolving
 Python packages do not warm application-specific RTX shaders or Newton/Warp
@@ -109,7 +110,23 @@ includes any lazy first-step physics initialization. Deadlines are checked
 between steps. Application render-call timing statistics are unavailable when
 OVXR owns rendering independently.
 
+## Demonstration recording
+
+```bash
+uv run --extra ovxr isaaclab teleop record \
+    --task IsaacContrib-Stack-Cube-SO101-IK-Abs-v0 \
+    --device cpu --physics ovphysx --ovxr \
+    --dataset_file ./datasets/so101_stack.hdf5 --num_demos 5
+```
+
+`record --ovxr` writes HDF5 demonstrations through the same OVXR session as live
+teleoperation, with the same `--ovxr_session_mode` and `--ovxr_step_hz` options;
+`--ovxr_step_hz` replaces the `--step_hz` limit. Recording starts with the client's Play
+control. Resets between attempts keep the kitless simulator instead of rebuilding it, as in
+MCAP replay. Instructions are logged because no Kit window opens. Add `--mcap_record_path`
+to also capture the session's tracker and control input for MCAP replay. Without Isaac Sim,
+`replay_demos.py` replays the HDF5 file on the backend selected with `--physics`.
+
 HDF5 recording for the humanoid kitless tasks still requires Kit/Isaac Sim because the
 recording loop does not apply their action-conditioning and tracking-readiness policies.
-Tasks without those policies can continue recording with Newton. HDF5 recording does
-not use the OVXR presentation path described here.
+Tasks without those policies can continue recording with Newton.

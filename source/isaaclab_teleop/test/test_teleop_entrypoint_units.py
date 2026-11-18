@@ -172,12 +172,12 @@ def run_live_workflow(monkeypatch):
 
 def test_teleop_se3_agent_yields_only_when_ovxr_is_idle(monkeypatch):
     """A paused kitless loop must yield without slowing Kit or active physics frames."""
-    from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
+    from isaaclab_teleop.entrypoints import _ovxr_runtime
 
     sleeps = []
     monkeypatch.setattr(time, "sleep", sleeps.append)
     monkeypatch.setattr(time, "perf_counter", lambda: 10.003)
-    yield_idle = agent._pace_ovxr_control_loop
+    yield_idle = _ovxr_runtime.pace_ovxr_control_loop
 
     timing = {"iteration_started_s": 10.0, "action_period_s": 0.02}
     yield_idle(using_ovxr=False, action_applied=False, **timing)
@@ -396,6 +396,240 @@ def test_live_prestart_signal_cancels_input_and_preserves_cleanup(run_live_workf
         run_live_workflow(env, SimpleNamespace(enter=lambda: signal.raise_signal(signal.SIGTERM)), session)
     session.start_render_worker.assert_not_called()
     assert events == ["xr-close", "shutdown", "env-close"]
+    assert {sig: signal.getsignal(sig) for sig in original} == original
+
+
+@pytest.fixture
+def run_record_workflow(monkeypatch):
+    """Run the imported recorder with ``--ovxr`` and finite input, renderer, and simulation endpoints."""
+    import contextlib
+
+    pytest.importorskip("isaaccapture.ovxr_session_manager")
+    import isaaclab_teleop
+    from isaaclab_teleop.entrypoints import record_demos
+
+    def run(env, session, events, *arguments, make=None, create_device=None):
+        camera = SimpleNamespace(
+            bind=lambda _env: contextlib.nullcontext(),
+            refresh=lambda: None,
+            close=lambda: events.append("camera-close"),
+        )
+
+        def prepare(*_args, **_kwargs):
+            events.append("xr-prepare")
+            return session
+
+        def make_env(*_args, **_kwargs):
+            events.append("make")
+            return SimpleNamespace(unwrapped=env)
+
+        session.external_oxr_handles = lambda: None
+        session.async_worker_owns_environment = False
+        vars(session).setdefault("close", lambda: events.append("xr-close"))
+        env.unwrapped = env
+        monkeypatch.setattr(
+            record_demos,
+            "args_cli",
+            record_demos._build_parser().parse_args(["--task", "Test", "--ovxr", *arguments]),
+            raising=False,
+        )
+        monkeypatch.setattr(record_demos, "has_kit", lambda: False)
+        monkeypatch.setattr(record_demos, "time", SimpleNamespace(perf_counter=lambda: 0.0, time=time.time))
+        monkeypatch.setattr(record_demos.gym, "make", make or make_env)
+        monkeypatch.setattr(record_demos, "create_teleop_device", create_device)
+        monkeypatch.setattr(isaaclab_teleop, "create_haptic_feedback_driver", lambda *_args: None)
+        monkeypatch.setattr(isaaclab_teleop.XrCameraFeedSession, "prepare", lambda *_args, **_kwargs: camera)
+        monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
+        cfg = SimpleNamespace(sim=object())
+        with contextlib.ExitStack() as cleanup:
+            record_demos.record_demos(cfg, None, isaaclab_teleop.IsaacTeleopCfg(), cleanup)
+
+    return run
+
+
+def test_record_ovxr_loop_follows_live_presentation_and_shutdown_order(run_record_workflow):
+    """Recording prepares OVXR first, fences input on reset publication, never renders, and drains XR first."""
+    events = []
+    frames = []
+    steps = []
+    reset_attempts = 0
+    device_options = {}
+
+    class Device:
+        session_cleanup_failed = False
+        target_frame_prim_path = "/World/Robot"
+        xr_render_anchor_path = "/World/XRAnchor"
+        external_anchor_state = None
+        required_openxr_extensions = ("XR_ext",)
+
+        def __enter__(self):
+            events.append("device-enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("device-exit")
+            return False
+
+        def reset(self):
+            events.append("device-reset")
+
+        def notify_reset(self):
+            events.append("device-notify-reset")
+
+        def advance(self, *, target_T_world):
+            frames.append(target_T_world)
+            events.append("advance")
+            return None if len(frames) == 3 else torch.ones(1, 2)
+
+        @property
+        def last_control_events(self):
+            return SimpleNamespace(is_active=True, should_reset=len(frames) == 2)
+
+    def create_device(_cfg, **kwargs):
+        events.append("device")
+        device_options.update(kwargs)
+        return Device()
+
+    def request(identity, *, force=False):
+        nonlocal reset_attempts
+        events.append(("publish", identity, force))
+        if force and identity[0] == 2:
+            # Decline the operator reset epoch twice: once after the reset, once at the input fence.
+            reset_attempts += 1
+            if reset_attempts < 3:
+                return None
+        return 1
+
+    def step(actions):
+        steps.append(actions)
+        events.append("step")
+        done = torch.tensor([len(steps) == 3])
+        return {}, None, done, torch.tensor([False]), {}
+
+    session = SimpleNamespace(
+        shutdown_requested=False,
+        start_render_worker=lambda _env, **kwargs: events.append(("worker-start", kwargs["timeout_s"])) or True,
+        request_render=request,
+        get_target_frame_T_world=lambda path: (path, len(steps)),
+        wait_for_shutdown=lambda seconds: events.append(("wait", seconds)) or False,
+    )
+    fail = pytest.fail
+    env = SimpleNamespace(
+        num_envs=1,
+        step_dt=0.02,
+        cfg=SimpleNamespace(),
+        scene=SimpleNamespace(env_prim_paths=["/World/envs/env_0"], physics_backend="ovphysx"),
+        sim=SimpleNamespace(
+            visualizers=(),
+            is_running=lambda: len(frames) < 4,
+            is_stopped=lambda: False,
+            get_physics_step_count=lambda: len(steps),
+            render=lambda: fail("OVXR owns rendering; the control thread must not render"),
+            reset=lambda: fail("A stage leased to OVXR must not be rebuilt"),
+        ),
+        recorder_manager=SimpleNamespace(
+            reset=lambda: events.append("recorder-reset"), exported_successful_episode_count=0
+        ),
+        reset=lambda: events.append("env-reset"),
+        step=step,
+        close=lambda: events.append("env-close"),
+    )
+    original = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    run_record_workflow(env, session, events, "--mcap_record_path", "session.mcap", create_device=create_device)
+
+    assert events == [
+        "xr-prepare",
+        "make",
+        "device",
+        "device-enter",
+        ("worker-start", 180.0),
+        "env-reset",
+        "device-reset",
+        ("publish", (1, 0), True),
+        "advance",
+        "step",
+        ("publish", (1, 1), False),
+        "advance",
+        "step",
+        "recorder-reset",
+        "env-reset",
+        "device-reset",
+        "device-notify-reset",
+        ("publish", (2, 2), True),
+        ("publish", (2, 2), True),
+        ("wait", 0.02),
+        ("publish", (2, 2), True),
+        "advance",
+        ("publish", (2, 2), False),
+        ("wait", 0.02),
+        "advance",
+        "step",
+        "device-notify-reset",
+        ("publish", (3, 3), True),
+        "device-exit",
+        "xr-close",
+        "camera-close",
+        "env-close",
+    ]
+    assert frames == [("/World/Robot", 0), ("/World/Robot", 1), ("/World/Robot", 2), ("/World/Robot", 2)]
+    assert device_options["cloudxr_env_file"] is None and device_options["auto_launch_cloudxr"] is False
+    assert device_options["use_kit_xr_bridge"] is False
+    assert device_options["external_oxr_handles_provider"] is session.external_oxr_handles
+    assert device_options["mcap_record_path"] == "session.mcap"
+    assert {sig: signal.getsignal(sig) for sig in original} == original
+
+
+@pytest.mark.parametrize("failure_at", ["environment", "device", "signal"])
+def test_record_ovxr_startup_failure_drains_xr_before_releasing_the_environment(
+    run_record_workflow, caplog, failure_at
+):
+    """Startup failures propagate after cleanup; a pre-start signal cancels the render worker."""
+    from unittest.mock import Mock
+
+    events = []
+    failure = RuntimeError(f"{failure_at} failed")
+
+    class Device:
+        session_cleanup_failed = False
+
+        def __enter__(self):
+            events.append("device-enter")
+            signal.raise_signal(signal.SIGTERM)
+
+        def __exit__(self, *_args):
+            events.append("device-exit")
+            return False
+
+    env = SimpleNamespace(
+        scene=SimpleNamespace(env_prim_paths=["/World/envs/env_0"]),
+        sim=SimpleNamespace(visualizers=()),
+        cfg=SimpleNamespace(),
+        close=lambda: events.append("env-close"),
+    )
+    session = SimpleNamespace(
+        start_render_worker=Mock(side_effect=AssertionError("worker started after cancelled input")),
+        request_shutdown=lambda: events.append("shutdown"),
+    )
+    original = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    expected = KeyboardInterrupt if failure_at == "signal" else RuntimeError
+    with pytest.raises(expected) as caught:
+        run_record_workflow(
+            env,
+            session,
+            events,
+            make=Mock(side_effect=failure) if failure_at == "environment" else None,
+            create_device=Mock(side_effect=failure) if failure_at == "device" else Mock(return_value=Device()),
+        )
+    if failure_at == "signal":
+        session.start_render_worker.assert_not_called()
+        assert events == ["xr-prepare", "make", "device-enter", "xr-close", "camera-close", "env-close"]
+    else:
+        assert caught.value is failure
+        assert f"Failed to create {'environment' if failure_at == 'environment' else 'teleop device'}" in caplog.text
+        if failure_at == "environment":
+            assert events == ["xr-prepare", "xr-close", "camera-close"]
+        else:
+            assert events == ["xr-prepare", "make", "xr-close", "camera-close", "env-close"]
     assert {sig: signal.getsignal(sig) for sig in original} == original
 
 

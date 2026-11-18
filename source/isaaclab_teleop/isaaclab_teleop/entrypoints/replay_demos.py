@@ -18,6 +18,7 @@ from isaaclab.cli import load_external_tasks
 from isaaclab.envs.utils._manual_success import _prepare_success_term
 from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.string import string_to_callable
+from isaaclab.utils.version import has_kit
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import resolve_task_config, setup_preset_cli
@@ -82,8 +83,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         sys.argv = [sys.argv[0], *argv]
     parser = _build_parser()
     args_cli, hydra_args = setup_preset_cli(parser)
-    # the pause/resume keyboard is a Kit input device, so the Kit runtime is required
-    args_cli.require_kit = True
+    # Installs with Isaac Sim keep the Kit runtime. Without it, replay runs on the kitless
+    # backend selected with --physics; the pause/resume keys work with any visualizer.
+    args_cli.require_kit = has_kit()
 
     # Call an external callback if requested.
     if args_cli.external_callback:
