@@ -176,6 +176,21 @@ def test_native_gpu_selection_survives_close_and_partial_startup(monkeypatch, in
     assert calls[len(before) :] == ["redirect", "renderer"]
 
 
+def test_unset_selection_conflict_names_the_simulation_device(monkeypatch):
+    """An unset selection resolves from the simulation device; the rejection says so before native startup."""
+    monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
+    monkeypatch.setattr(ovrtx_renderer_module.wp, "get_cuda_device_count", lambda: 2)
+    monkeypatch.setattr(ovrtx_renderer_module, "redirect_shader_cache", lambda _config: None)
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", lambda _config: types.SimpleNamespace(destroy=lambda: None))
+    explicit = OVRTXBackendCfg(device="cpu", active_cuda_gpus="1", use_ovstage=False, read_gpu_transforms=True)
+    OVRTXBackend(explicit).close()
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", lambda _config: pytest.fail("constructed a renderer"))
+    with pytest.raises(ValueError, match="simulation device 'cpu', since active_cuda_gpus is unset") as raised:
+        OVRTXBackend(replace(explicit, active_cuda_gpus=None))
+    assert "already uses (1,)" in str(raised.value)
+    assert "must resolve to the same GPUs" in str(raised.value)
+
+
 @pytest.mark.parametrize(
     "settings, with_physics, use_ovstage, shared_physics",
     [
