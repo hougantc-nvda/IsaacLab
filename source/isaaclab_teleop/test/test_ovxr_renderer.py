@@ -11,6 +11,7 @@ preparation are real.
 
 import contextlib
 import importlib.util
+import inspect
 import types
 from unittest.mock import MagicMock
 
@@ -166,6 +167,64 @@ def test_render_lease_borrows_registry_pair_and_blocks_shared_users(leased_rende
     native.destroy.assert_not_called()
     SimulationContext.instance().close_backend(renderer.backend)
     native.destroy.assert_called_once_with()
+
+
+# Every public OVRTXRenderer operation has a declared behavior while the session holds the lease, so a
+# new public operation fails the coverage test until OvxrRenderer guards it or it is listed here.
+_LEASE_REJECTED_OPERATIONS = {
+    "create_render_data": lambda renderer: renderer.create_render_data(
+        CameraRenderSpec(_make_camera_cfg(["rgb"]), "cpu", 2, ("/World/envs/env_0/Camera",), 2)
+    ),
+    "update_camera": lambda renderer: renderer.update_camera(object(), None, None, None),
+    "update_camera_intrinsics": lambda renderer: renderer.update_camera_intrinsics(object(), None, None),
+    "log_mesh": lambda renderer: renderer.log_mesh("blocked"),
+    "render_batch": lambda renderer: renderer.render_batch((object(),)),
+    "close": lambda renderer: renderer.close(),
+}
+# The session's scene publisher owns these writes; ordinary calls return without writing.
+_LEASE_DEFERRED_OPERATIONS = ("update_transforms", "update_geometries")
+# OvxrRenderer adapts these to the lease instead of rejecting them.
+_LEASE_ADAPTED_OPERATIONS = ("prepare_stage", "visual_material_writer")
+# These read renderer metadata, act only on render data that the rejected ``create_render_data``
+# produces, delegate to a rejected operation (``render``), or are the base no-op ``initialize``.
+_LEASE_NEUTRAL_OPERATIONS = (
+    "supported_output_types",
+    "set_outputs",
+    "prepare_capture",
+    "read_output",
+    "drain_pending_renders",
+    "reset",
+    "render",
+    "cleanup",
+    "initialize",
+)
+
+
+def test_every_public_ovrtx_operation_has_a_lease_policy(leased_renderer, monkeypatch):
+    from isaaclab_teleop.ovxr_renderer import OvxrRenderer
+
+    public = {name for name, _ in inspect.getmembers(OVRTXRenderer) if not name.startswith("_")}
+    declared = [
+        *_LEASE_REJECTED_OPERATIONS,
+        *_LEASE_DEFERRED_OPERATIONS,
+        *_LEASE_ADAPTED_OPERATIONS,
+        *_LEASE_NEUTRAL_OPERATIONS,
+    ]
+    assert len(declared) == len(set(declared))
+    assert public == set(declared)
+    for name in (*_LEASE_REJECTED_OPERATIONS, *_LEASE_DEFERRED_OPERATIONS, *_LEASE_ADAPTED_OPERATIONS):
+        assert name in vars(OvxrRenderer), f"OvxrRenderer does not override {name}"
+
+    renderer = leased_renderer
+    lease = renderer.acquire_render_lease()
+    _prepare_leased_renderer(renderer)
+    for name, operation in _LEASE_REJECTED_OPERATIONS.items():
+        with pytest.raises(RuntimeError, match="while an OvxrRenderLease is active"):
+            operation(renderer)
+    for name in _LEASE_DEFERRED_OPERATIONS:
+        monkeypatch.setattr(OVRTXRenderer, name, lambda _self, name=name: pytest.fail(f"leased {name} wrote"))
+        getattr(renderer, name)()
+    lease.release()
 
 
 def test_render_lease_rejects_acquisition_after_clone_preparation(leased_renderer):
