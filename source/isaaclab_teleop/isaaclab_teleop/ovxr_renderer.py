@@ -212,9 +212,13 @@ class OvxrScenePublisher:
     each complete physics state through :meth:`publish`, one transaction per scene:
 
     1. Skip a state that needs no publication (see :meth:`publication_required`).
-    2. Run the session's preparation, such as capturing the inputs that the seal publishes.
+    2. Run the simulation's visualization-marker callbacks, then the session's preparation, such as
+       capturing the inputs that the seal publishes.
     3. Reserve an ordinal, write every scene component at it, and seal it.
     4. If the write or seal fails, poison the pair, abandon the ordinal and re-raise.
+
+    :meth:`~isaaclab.sim.SimulationContext.update_visualizers` runs the marker callbacks only for
+    marker-capable visualizers, so without one, step 2 is what moves debug markers before they are drawn.
 
     Call :meth:`publish` under the application's publication guard, which the render owner also holds
     around every operation in :meth:`OvxrRenderLease.ovstage_owner_lane`, so that scene writes and
@@ -275,7 +279,8 @@ class OvxrScenePublisher:
                 :meth:`publication_required`.
             ordinals: Stage ordinal ledger with ``reserve()``, ``publish(ordinal)`` and
                 ``abandon(ordinal)``, such as Isaac Capture's ``StageOrdinalLedger``.
-            prepare: Called once a publication is required, before an ordinal is reserved.
+            prepare: Called once a publication is required, after the marker callbacks and before an
+                ordinal is reserved.
             seal: Seals the written ordinal. Defaults to ``ordinals.publish``.
             force: Publish even when the state needs no publication, for example for an
                 independently changed XR anchor.
@@ -295,6 +300,8 @@ class OvxrScenePublisher:
             controller = self._controller
             if not force and not controller.producer_publication_required(self._lease, physics_step_id):
                 return None
+            # Callbacks only update marker state, so a failure here leaves the pair publishable.
+            controller.dispatch_marker_callbacks()
             if prepare is not None:
                 prepare()
             controller.require_publishable(self._lease)
@@ -548,6 +555,10 @@ class _OvxrLeaseController:
             or self._marker_revision() != self._published_marker_revision
             or (writer is not None and writer.has_pending_updates)
         )
+
+    def dispatch_marker_callbacks(self) -> None:
+        """Run the simulation's visualization-marker callbacks so the next scene write draws current markers."""
+        self._renderer._sim.vis_marker_registry.dispatch_callbacks()
 
     def _marker_revision(self) -> int | None:
         """Revision of the simulation's marker groups that this renderer draws, or ``None`` without markers.

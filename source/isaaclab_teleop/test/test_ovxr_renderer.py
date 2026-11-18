@@ -637,3 +637,58 @@ def test_public_markers_reach_leased_renderer_without_an_ordinary_visualizer(lea
     )
     unused.visualize(translations=[[0.0, 0.0, 1.0]])
     assert not registry.get_groups()
+
+
+def test_publication_runs_debug_marker_callbacks_without_an_ordinary_visualizer(leased_renderer, monkeypatch):
+    """Debug-vis callbacks move their markers before each required write, as a visualizer tick would."""
+    from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+    from isaaclab.sim import SphereCfg
+
+    renderer = leased_renderer
+    registry = renderer._sim.vis_marker_registry
+    assert not renderer._sim.visualizers
+    observed = []
+
+    class NativeMarkers:
+        def __init__(self, _renderer, _cfg):
+            pass
+
+        def update(self, translations, orientations, scales, indices, *, visible):
+            observed.append(translations.tolist())
+
+        def close(self):
+            pass
+
+    class Goal:
+        """A command term's debug visualization: markers follow state the environment step changes."""
+
+        def __init__(self):
+            self.position = [0.0, 0.0, 1.0]
+            self.calls = 0
+            self.markers = VisualizationMarkers(
+                VisualizationMarkersCfg(prim_path="/Visuals/Goal", markers={"goal": SphereCfg(radius=0.01)})
+            )
+
+        def _debug_vis_callback(self, _event):
+            self.calls += 1
+            self.markers.visualize(translations=[self.position])
+
+    monkeypatch.setattr(ovrtx_renderer_module, "OVRTXMarkers", NativeMarkers)
+    goal = Goal()
+    registry.add_debug_vis_callback(goal)
+    lease = renderer.acquire_render_lease()
+    try:
+        publisher = lease.capture_scene_publisher()
+        _prepare_leased_renderer(renderer)
+        ledger = _Ledger(31)
+        assert publisher.publish("step-1", ledger) is not None
+        assert observed[-1] == [[0.0, 0.0, 1.0]]
+        goal.position = [0.25, 0.0, 1.0]
+        assert publisher.publish("step-2", ledger) is not None
+        assert observed[-1] == [[0.25, 0.0, 1.0]]
+        calls = goal.calls
+        # A state that needs no write runs no callbacks, so the callbacks cannot force publications.
+        assert publisher.publish("step-2", ledger) is None
+        assert goal.calls == calls
+    finally:
+        lease.release()
