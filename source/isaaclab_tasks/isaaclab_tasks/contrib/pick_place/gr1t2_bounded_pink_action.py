@@ -107,14 +107,13 @@ class GR1T2BoundedPinkIKAction(PinkInverseKinematicsAction):
     def __init__(self, cfg: GR1T2BoundedPinkIKActionCfg, env: ManagerBasedEnv) -> None:
         super().__init__(cfg, env)
 
-        from .pickplace_gr1t2_env_cfg import GR1T2ConditionedUsdFileCfg
-
+        # Asset construction copies its spawn configuration before conditioning the USD, and the
+        # conditioning spawner records the hand metadata on that copy. Read it from the asset.
         spawn_cfg = self._asset.cfg.spawn
-        if isinstance(spawn_cfg, GR1T2ConditionedUsdFileCfg) and spawn_cfg.action_cfg is not None:
-            # Asset construction copies spawn settings before conditioning the USD. Read
-            # its result here, rather than coupling independently copied environment configs.
-            cfg.hand_joint_limits = dict(spawn_cfg.action_cfg.hand_joint_limits)
-            cfg.hand_mimic_relations = dict(spawn_cfg.action_cfg.hand_mimic_relations)
+        recorded_limits = getattr(spawn_cfg, "hand_joint_limits", None)
+        if recorded_limits is not None:
+            cfg.hand_joint_limits = dict(recorded_limits)
+            cfg.hand_mimic_relations = dict(spawn_cfg.hand_mimic_relations)
 
         for name, value in (
             ("max_ik_joint_delta_rad", cfg.max_ik_joint_delta_rad),

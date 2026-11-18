@@ -276,10 +276,8 @@ def test_prepared_task_spawn_callbacks_survive_public_config_roundtrip(monkeypat
                     == "convexDecomposition"
                 )
             else:
-                limits = authored.cfg.spawn.action_cfg.hand_joint_limits["R_thumb_distal_joint"]
+                limits = authored.cfg.spawn.hand_joint_limits["R_thumb_distal_joint"]
                 assert limits == pytest.approx((-0.2617993878, 1.3962634016))
-        if "GR1T2" in task_name:
-            assert cfg.scene.robot.spawn.action_cfg is cfg.actions.upper_body_ik
         raise ConstructionReached
 
     monkeypatch.setattr(sim_utils, "find_matching_prim_paths", lambda path: [path])
