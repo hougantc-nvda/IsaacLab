@@ -18,7 +18,7 @@ class PickPlaceGR1T2MimicEnvCfg(PickPlaceGR1T2EnvCfg, MimicEnvCfg):
 
     class_type: type | str = "{DIR}.pickplace_gr1t2_mimic_env:PickPlaceGR1T2MimicEnv"
     sim: SimulationCfg = SimulationCfg(physics=PhysxCfg())
-    """Isaac Sim PhysX only: the Mimic environment does not run the teleoperation task's kitless
+    """Isaac Sim PhysX only: the Mimic environment does not run the teleoperation task's standalone
     backend preparation, so the inherited ``ovphysx``/``newton_mjwarp`` selectors are not offered."""
 
     def __post_init__(self):

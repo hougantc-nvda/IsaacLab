@@ -657,7 +657,7 @@ def test_teleop_launcher_prepares_humanoid_backends(monkeypatch, task_name, phys
     ovxr = () if physics == "isaacsim_physx" else ("--ovxr",)
     agent = _load_teleop_agent(monkeypatch, "--task", task_name, "--physics", physics, *ovxr)
     env_cfg, _teleop_cfg, _use_isaac_teleop = agent._resolve_env_cfg()
-    assert env_cfg._prepared_kitless_backend == (None if physics == "isaacsim_physx" else physics)
+    assert env_cfg._prepared_physics_backend == (None if physics == "isaacsim_physx" else physics)
 
 
 def test_task_action_hook_validates_before_and_after_conditioning(monkeypatch):

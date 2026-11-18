@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""G1 action and actuator boundaries for kitless Newton teleoperation."""
+"""G1 action and actuator boundaries for Newton teleoperation."""
 
 from __future__ import annotations
 
@@ -43,9 +43,10 @@ HAND_TARGET_MAX_MAGNITUDE_RAD = 6.5
 _WRIST_RAMP_KEYS = ("left_pos", "left_quat", "right_pos", "right_quat")
 
 G1_BOUNDED_PINK_ACTION = (
-    "isaaclab_tasks.contrib.locomanip_pick_place.g1_kitless_action:G1NewtonBoundedPinkInverseKinematicsAction"
+    "isaaclab_tasks.contrib.locomanip_pick_place.g1_newton_bounded_pink_action:"
+    "G1NewtonBoundedPinkInverseKinematicsAction"
 )
-"""Action term that :func:`configure_g1_for_kitless_newton` selects for the upper body."""
+"""Action term that :func:`configure_g1_for_newton` selects for the upper body."""
 
 ACTUATOR_PROFILE = {
     "waist": {"stiffness": 500.0, "damping": 50.0, "armature": 0.10, "joint_effort_limit": 250.0},
@@ -181,9 +182,7 @@ def _step_quaternion_towards(current: torch.Tensor, target: torch.Tensor, max_st
     return torch.nn.functional.normalize(torch.where(angle < 1.0e-6, target, interpolated), dim=0)
 
 
-def condition_kitless_newton_g1_action(
-    env: ManagerBasedRLEnv, action: torch.Tensor, state: dict[str, Any]
-) -> torch.Tensor:
+def condition_newton_g1_action(env: ManagerBasedRLEnv, action: torch.Tensor, state: dict[str, Any]) -> torch.Tensor:
     """Ramp both wrist targets from the current G1 poses before Pink solves IK.
 
     Each call moves the left and right wrist targets at most :data:`POSITION_MAX_STEP_M` and
@@ -261,8 +260,8 @@ def apply_g1_newton_actuator_profile(robot_cfg: ArticulationCfg) -> None:
             setattr(actuator, key, value)
 
 
-def configure_g1_for_kitless_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> None:
-    """Configure the controller, asset and solver for kitless Newton.
+def configure_g1_for_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> None:
+    """Configure the controller, asset and solver for Newton.
 
     Args:
         env_cfg: The G1 environment configuration with a Newton MJWarp physics selection, modified
@@ -277,7 +276,7 @@ def configure_g1_for_kitless_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> No
 
     solver_cfg = getattr(getattr(env_cfg.sim, "physics", None), "solver_cfg", None)
     if solver_cfg is None:
-        raise RuntimeError("G1 kitless Newton stabilization requires an MJWarp solver config")
+        raise RuntimeError("G1 Newton stabilization requires an MJWarp solver config")
     solver_cfg.nconmax = 4096
     solver_cfg.njmax = 1536
 
@@ -290,7 +289,7 @@ def configure_g1_for_kitless_newton(env_cfg: FixedBaseUpperBodyIKG1EnvCfg) -> No
     # simulator startup; the action manager imports the class when it builds the term.
     env_cfg.actions.upper_body_ik.class_type = ResolvableString(G1_BOUNDED_PINK_ACTION)
     if env_cfg.isaac_teleop is not None:
-        env_cfg.isaac_teleop.action_conditioner = condition_kitless_newton_g1_action
+        env_cfg.isaac_teleop.action_conditioner = condition_newton_g1_action
         env_cfg.isaac_teleop.action_validator = teleop_action_target_issue
 
     configure_packing_table_collisions(env_cfg.scene.packing_table)

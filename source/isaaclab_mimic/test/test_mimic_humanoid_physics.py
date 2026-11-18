@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Humanoid Mimic and SDG tasks keep Isaac Sim PhysX; their environments skip kitless preparation."""
+"""Humanoid Mimic and SDG tasks keep Isaac Sim PhysX; their environments skip standalone backend preparation."""
 
 import pytest
 

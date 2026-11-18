@@ -327,7 +327,7 @@ def test_teleop_tasks_resolve_public_physics_selectors(monkeypatch, task_name, p
 
     def inspect_before_simulation(self, cfg, *args, **kwargs):
         self._is_closed = True
-        assert cfg._prepared_kitless_backend == (physics if physics in ("ovphysx", "newton_mjwarp") else None)
+        assert cfg._prepared_physics_backend == (physics if physics in ("ovphysx", "newton_mjwarp") else None)
         raise ConstructionReached
 
     monkeypatch.setattr(ManagerBasedRLEnv, "__init__", inspect_before_simulation)
@@ -360,7 +360,7 @@ def test_humanoid_preparation_preserves_caller_changes_and_rejects_backend_switc
 
     cfg = parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=[f"physics={physics}"])
     controlled_joints = list(cfg.actions.upper_body_ik.pink_controlled_joint_names)
-    string_to_callable(cfg.kitless_preparation[physics])(cfg)
+    string_to_callable(cfg.backend_preparation[physics])(cfg)
     cfg.isaac_teleop.require_initial_bimanual_hand_tracking = (
         not cfg.isaac_teleop.require_initial_bimanual_hand_tracking
     )
@@ -400,7 +400,7 @@ def test_humanoid_preparation_preserves_caller_changes_and_rejects_backend_switc
 
     monkeypatch.setattr(ManagerBasedRLEnv, "__init__", inspect_before_simulation)
     for prepared in (cfg, cfg.copy()):
-        string_to_callable(prepared.kitless_preparation[physics])(prepared)
+        string_to_callable(prepared.backend_preparation[physics])(prepared)
         serialized = prepared.to_dict()
         assert serialized["haptic_feedback"] == haptics
         if "GR1T2" in task_name:
@@ -426,6 +426,40 @@ def test_humanoid_preparation_resolves_directly_built_configs():
     prepare_humanoid_teleop_environment(cfg)
     assert type(cfg.sim.physics) is PhysxCfg
     assert type(cfg.scene.robot_pov_cam.renderer_cfg) is IsaacRtxRendererCfg
+
+
+@pytest.mark.parametrize("kit", [False, True])
+def test_humanoid_preparation_resolves_the_physx_preset_like_the_simulation(monkeypatch, kit):
+    """``physics=physx`` prepares OvPhysX without Kit, as SimulationContext would later resolve it."""
+    from isaaclab_ov.physics import OvPhysxCfg
+    from isaaclab_physx.physics import PhysxCfg
+
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_tasks.contrib import teleop_physics_cfg
+    from isaaclab_tasks.utils import parse_env_cfg
+
+    cfg = parse_env_cfg(
+        "IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs", device="cpu", num_envs=1, overrides=["physics=physx"]
+    )
+    monkeypatch.setattr(teleop_physics_cfg, "has_kit", lambda: kit)
+    teleop_physics_cfg.prepare_humanoid_teleop_environment(cfg)
+    assert type(cfg.sim.physics) is (PhysxCfg if kit else OvPhysxCfg)
+    assert cfg._prepared_physics_backend == (None if kit else "ovphysx")
+
+
+def test_humanoid_preparation_rejects_an_unsupported_backend():
+    """A backend without task preparation fails instead of being treated as Kit PhysX."""
+    from isaaclab_newton.physics import NewtonCfg, XPBDSolverCfg
+
+    from isaaclab_tasks.contrib.locomanip_pick_place.fixed_base_upper_body_ik_g1_env_cfg import (
+        FixedBaseUpperBodyIKG1EnvCfg,
+    )
+    from isaaclab_tasks.contrib.teleop_physics_cfg import prepare_humanoid_teleop_environment
+
+    cfg = FixedBaseUpperBodyIKG1EnvCfg()
+    cfg.sim.physics = NewtonCfg(solver_cfg=XPBDSolverCfg())
+    with pytest.raises(ValueError, match="supports Kit PhysX, OvPhysX and Newton with MJWarp"):
+        prepare_humanoid_teleop_environment(cfg)
 
 
 def _spawn_task_roundtrip_fixture(path, _cfg, **_kwargs):
@@ -477,7 +511,7 @@ def test_prepared_task_spawn_callbacks_survive_public_config_roundtrip(monkeypat
     cfg = parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=[f"physics={physics}"])
     for asset in (cfg.scene.robot, cfg.scene.packing_table, cfg.scene.object):
         asset.spawn.func = _spawn_task_roundtrip_fixture
-    string_to_callable(cfg.kitless_preparation[physics])(cfg)
+    string_to_callable(cfg.backend_preparation[physics])(cfg)
     cfg.sim.dt = 0.003
     serialized = to_dict(cfg)
     if "GR1T2" in task_name:
@@ -486,7 +520,7 @@ def test_prepared_task_spawn_callbacks_survive_public_config_roundtrip(monkeypat
         restored = cfg.copy()
     else:
         restored = parse_env_cfg(task_name, device="cpu", num_envs=1, overrides=[f"physics={physics}"])
-        string_to_callable(restored.kitless_preparation[physics])(restored)
+        string_to_callable(restored.backend_preparation[physics])(restored)
     update_from_dict(restored, serialized)
     if "GR1T2" in task_name:
         assert cfg.actions.upper_body_ik.hand_target_margin_rad == 0.123
