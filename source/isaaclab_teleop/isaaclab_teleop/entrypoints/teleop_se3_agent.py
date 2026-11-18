@@ -57,7 +57,9 @@ from ._ovxr_runtime import (
     RENDERER_ATTACH_TIMEOUT_S,
     OvxrShutdownSignals,
     close_teleop_resources,
+    hold_teleop_frame,
     pace_ovxr_control_loop,
+    warn_rejected_teleop_frame,
 )
 
 logger = logging.getLogger(__name__)
@@ -273,10 +275,7 @@ def _apply_teleop_frame(env, action, issue: str | None, haptic_driver, *, render
     Returns whether an action was applied and whether the environment auto-reset.
     """
     if issue is not None:
-        if render:
-            env.sim.render()
-        if haptic_driver is not None:
-            haptic_driver.stop()
+        hold_teleop_frame(env, haptic_driver, render=render)
         return False, False
     # process actions
     actions = action.repeat(env.num_envs, 1)
@@ -531,12 +530,7 @@ def run_teleoperation(  # noqa: C901
                             )
                             if issue is not None:
                                 skipped_tracking_frames += 1
-                                if skipped_tracking_frames <= 5 or skipped_tracking_frames % 200 == 0:
-                                    logger.warning(
-                                        "Rendering without a physics step for unsafe teleop frame (%s); skipped=%d",
-                                        issue,
-                                        skipped_tracking_frames,
-                                    )
+                                warn_rejected_teleop_frame(issue, skipped_tracking_frames)
 
                         reset_applied = should_reset_recording_instance or auto_reset
                         if reset_applied:
