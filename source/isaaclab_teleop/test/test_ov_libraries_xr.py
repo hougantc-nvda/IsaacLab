@@ -532,7 +532,7 @@ def test_headless_attach_does_not_import_the_desktop_mirror(xr_module, monkeypat
     host, _bootstrap, _env = _make_host(xr_module, monkeypatch)
     monkeypatch.setitem(sys.modules, "isaaccapture.ovxr_session_manager.owned_mirror", None)
     monkeypatch.setitem(sys.modules, "isaaccapture.ovxr_session_manager.desktop_mirror", None)
-    assert not host._cfg.desktop_mirror_enabled
+    assert host._cfg.desktop_mirror is None
     binding = host.attach_on_render_thread(host.offer_render_owner_transfer())
     assert binding.frame_consumers == ()
 
@@ -823,8 +823,7 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
         bootstrap,
         xr_module.OvLibrariesXrCfg(
             extra_openxr_extensions=("XR_EXT_debug_utils",),
-            desktop_mirror_enabled=True,
-            desktop_mirror_max_fps=20.0,
+            desktop_mirror=xr_module.OvLibrariesXrDesktopMirrorCfg(max_fps=20.0),
             auxiliary_cameras=(
                 xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
             )
@@ -1098,10 +1097,10 @@ def test_bootstrap_construction_failure_restores_terminal_mode(bootstrap_context
 
 
 def test_desktop_mirror_rate_must_be_positive_and_finite(xr_module):
-    with pytest.raises(ValueError, match="desktop_mirror_max_fps"):
-        xr_module.OvLibrariesXrCfg(desktop_mirror_max_fps=0.0)
-    with pytest.raises(ValueError, match="desktop_mirror_max_fps"):
-        xr_module.OvLibrariesXrCfg(desktop_mirror_max_fps=float("nan"))
+    with pytest.raises(ValueError, match="desktop mirror max_fps"):
+        xr_module.OvLibrariesXrDesktopMirrorCfg(max_fps=0.0)
+    with pytest.raises(ValueError, match="desktop mirror max_fps"):
+        xr_module.OvLibrariesXrDesktopMirrorCfg(max_fps=float("nan"))
 
 
 def test_auxiliary_camera_config_is_preconfigured(xr_module, monkeypatch):
@@ -1209,7 +1208,7 @@ def test_counter_rate_uses_application_counter_and_resets_cleanly(xr_module):
 def test_disabled_desktop_mirror_does_not_collect_or_format_status(xr_module):
     session = xr_module.OvLibrariesXrSession(
         _FakeBootstrap(),
-        xr_module.OvLibrariesXrCfg(desktop_mirror_enabled=False),
+        xr_module.OvLibrariesXrCfg(desktop_mirror=None),
     )
     session._owner = SimpleNamespace(report_host_timing=lambda: pytest.fail("unexpected mirror work"))
 

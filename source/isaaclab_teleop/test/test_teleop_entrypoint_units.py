@@ -1311,7 +1311,7 @@ def test_ovxr_mirror_cli_reaches_session_construction(monkeypatch, entrypoint, f
 
     def prepare(_sim, xr_cfg, *_args, **_kwargs):
         assert isinstance(xr_cfg, isaaclab_teleop.OvLibrariesXrCfg)
-        received.append(xr_cfg.desktop_mirror_enabled)
+        received.append(xr_cfg.desktop_mirror is not None)
         raise PreparationReached
 
     monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
@@ -1328,7 +1328,7 @@ def test_ovxr_mirror_cli_reaches_session_construction(monkeypatch, entrypoint, f
         with pytest.raises(PreparationReached):
             module._run_replay_batch(cfg, None, ())
     assert received == [expected]
-    assert isaaclab_teleop.OvLibrariesXrCfg().desktop_mirror_enabled is False
+    assert isaaclab_teleop.OvLibrariesXrCfg().desktop_mirror is None
 
 
 @pytest.mark.parametrize(
@@ -1455,8 +1455,8 @@ def test_ovxr_pip_cli_reaches_session_construction(monkeypatch, entrypoint, plac
 
     assert calls == [("keep", ("head_cam",)), "launch", "prepare"]
     [(xr_cfg, renderer_cfg)] = prepared
-    assert xr_cfg.desktop_mirror_enabled is False
-    assert xr_cfg.desktop_mirror_max_fps == 20.0
+    # The mirror rate applies only once ``--ovxr_desktop_mirror`` enables the mirror.
+    assert xr_cfg.desktop_mirror is None
     [camera] = xr_cfg.auxiliary_cameras
     # Configclasses copy their fields, so the panel holds a copy of the scene sensor configuration.
     assert camera.name == "head_cam" and camera.camera_cfg.prim_path == config.scene.head_cam.prim_path

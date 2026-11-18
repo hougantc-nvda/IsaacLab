@@ -1,6 +1,7 @@
 * Added optional OVXR camera panels and a desktop mirror as application-configured
   Isaac Capture frame consumers using completed render products, with OVUI's default
-  Vulkan backend for the mirror. :class:`~isaaclab_teleop.OvLibrariesXrCameraCfg` selects a panel.
+  Vulkan backend for the mirror. :class:`~isaaclab_teleop.OvLibrariesXrCameraCfg` selects a panel, and
+  :class:`~isaaclab_teleop.OvLibrariesXrDesktopMirrorCfg` enables the mirror.
   Selected cameras render through the session's :class:`~isaaclab_teleop.OvxrRendererCfg` renderer,
   each with its own native update rate.
 * Added ``--ovxr_desktop_mirror`` to enable the local window in OVXR live and MCAP replay.
