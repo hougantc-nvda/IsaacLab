@@ -338,10 +338,20 @@ class IsaacTeleopCfg:
     The callable receives ``(env, action, state)``. The launcher retains the
     state dictionary across active frames and clears it on pause or reset.
     State updates from a frame that fails validation after conditioning are discarded.
+
+    .. note::
+
+        This hook is experimental and may change or be removed in a future release, for example once
+        the task's action term conditions its own targets.
     """
     action_validator: Callable[[Any], str | None] | None = None
     """Optional task-owned fail-closed action validator.
 
     Return ``None`` for a valid action or a concise reason to render without a
     physics step. Validation runs both before and after conditioning.
+
+    .. note::
+
+        This hook is experimental and may change or be removed in a future release, for example once
+        the task's action term validates its own targets.
     """
