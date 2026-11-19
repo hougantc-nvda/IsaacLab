@@ -21,6 +21,7 @@ from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
+import ovstage
 from isaaclab_ov.renderers import OVRTXRenderer, OVRTXRendererCfg
 from isaaclab_ov.renderers.visual_materials import OVRTXVisualMaterialWriter
 
@@ -603,7 +604,8 @@ class _OvxrLeaseController:
                 raise RuntimeError("The render lease requires its private OVStage renderer")
             with renderer.scene.stage.get_attribute_write_floor() as floor:
                 floor.wait()
-                if int(floor.fetch()) != 0:
+                # A new OVStage is sealed through the minimum ordinal; any published write raises the floor.
+                if int(floor.fetch()) != ovstage.ORDINAL_MIN:
                     raise RuntimeError("The render lease requires an unused private OVStage")
         return True
 
@@ -635,7 +637,7 @@ class _OvxrLeaseController:
         with self._renderer.scene.stage.get_attribute_write_floor() as floor_query:
             floor_query.wait()
             floor = int(floor_query.fetch())
-        if floor >= (1 << 64) - 1:
+        if floor >= ovstage.ORDINAL_MAX:
             raise RuntimeError("OVStage ordinal range is exhausted")
         return floor + 1
 
