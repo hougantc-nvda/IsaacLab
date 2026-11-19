@@ -97,7 +97,7 @@ class OvLibrariesXrCfg:
     camera_paths: tuple[str, ...] = _DEFAULT_OVXR_CAMERA_PATHS
     """Exactly two non-empty USD camera paths, ordered left eye then right eye."""
     create_render_products: bool = True
-    """Whether to declare and configure the selected stereo rendering prims."""
+    """Whether OVXR authors the stereo render products; the eye cameras are then declared for it."""
     meters_per_unit: float = 1.0
     """Finite positive scene scale [m per USD unit]."""
     depth_near_z: float = 0.0

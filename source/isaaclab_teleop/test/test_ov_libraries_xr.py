@@ -324,15 +324,31 @@ def test_runtime_render_prims_have_the_declared_paths_and_types(xr_module):
     env = SimpleNamespace(unwrapped=SimpleNamespace(scene=SimpleNamespace(stage=stage)))
     xr_module._declare_ovxr_runtime_prims(env, xr_module.OvLibrariesXrCfg())
 
+    # OVXR authors its render products, render vars and render settings; only the eye cameras are declared.
     assert stage.definitions == [
         ("/OVXRGeneratedCameras/OVXR_LeftEyeCamera", "Camera"),
         ("/OVXRGeneratedCameras/OVXR_RightEyeCamera", "Camera"),
-        ("/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0_OVXR_Left", "RenderProduct"),
-        ("/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0_OVXR_Right", "RenderProduct"),
-        ("/Render/Vars/LdrColor", "RenderVar"),
-        ("/Render/Vars/XRDepth", "RenderVar"),
-        ("/Render/OmniverseGlobalRenderSettings", "RenderSettings"),
     ]
+
+
+def test_stage_ordinal_ledger_uses_signed_ordinal_bounds(xr_module):
+    """A new Stage is sealed through the minimum ordinal, and the maximum is never reserved."""
+    import ovstage
+
+    stage = SimpleNamespace(floor=ovstage.ORDINAL_MIN)
+    stage.get_attribute_write_floor = lambda: contextlib.nullcontext(
+        SimpleNamespace(wait=lambda: None, fetch=lambda: stage.floor)
+    )
+    ledger = xr_module._StageOrdinalLedger(stage)
+    assert ledger.reserve() == ovstage.ORDINAL_MIN + 1
+
+    stage.floor = ovstage.ORDINAL_MAX
+    with pytest.raises(RuntimeError, match="exhausted"):
+        xr_module._StageOrdinalLedger(stage).reserve()
+
+    stage.floor = ovstage.ORDINAL_MAX + 1
+    with pytest.raises(RuntimeError, match="invalid write floor"):
+        xr_module._StageOrdinalLedger(stage)
 
 
 def test_runtime_render_prim_declaration_preserves_disabled_and_fails_on_conflict(xr_module):

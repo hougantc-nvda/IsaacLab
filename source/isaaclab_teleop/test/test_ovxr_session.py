@@ -220,6 +220,7 @@ def ovxr_simulation(monkeypatch):
     pytest.importorskip("isaaccapture.ovxr_session_manager")
     pytest.importorskip("ovphysx")
     import isaaclab_ov.stage as stage_module
+    import ovstage
     from isaaclab_ov.cloner import OvrtxReplicateContext
     from isaaclab_ov.physics import OvPhysxCfg
     from isaaclab_ov.renderers import ovrtx_renderer as ovrtx_renderer_module
@@ -237,7 +238,7 @@ def ovxr_simulation(monkeypatch):
     native, stage, paths = MagicMock(), MagicMock(), MagicMock()
     native.destroy.side_effect = lambda: events.append("native-destroy")
     floor = stage.get_attribute_write_floor.return_value.__enter__.return_value
-    floor.fetch.return_value = 0
+    floor.fetch.return_value = ovstage.ORDINAL_MIN  # A new OVStage is sealed through the minimum ordinal.
     stage.advance_write_floor.side_effect = lambda *, ordinal: SimpleNamespace(
         wait=lambda: setattr(floor.fetch, "return_value", ordinal)
     )
