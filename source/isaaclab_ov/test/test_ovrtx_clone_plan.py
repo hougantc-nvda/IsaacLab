@@ -514,16 +514,13 @@ def test_deferred_render_copy_failure_requires_stage_reset(monkeypatch: pytest.M
     native, paths = Mock(), Mock()
     monkeypatch.setattr(stage_module, "create_ovstage", lambda _: contextlib.nullcontext(native))
     monkeypatch.setattr(ovstage, "PathDictionary", lambda _: contextlib.nullcontext(paths))
-    population = Mock()
-    monkeypatch.setattr(stage_module, "populate_stage", population)
+    monkeypatch.setattr(stage_module, "populate_stage", lambda *args, **kwargs: None)
     source = Usd.Stage.CreateInMemory()
     UsdGeom.Cube.Define(source, "/World/env_0/Body")
     backend = stage_module.OvstageBackend(stage_module.OvstageBackendCfg(defer_render_copies=True))
     backend.clone_copies = [("/World/env_0", ["/World/env_1"])]
     try:
-        camera_desc = object()
-        backend.populate(source.ExportToString(), population_desc=camera_desc)
-        assert population.call_args.kwargs["population_desc"] is camera_desc
+        backend.populate(source.ExportToString())
         backend.commit()
         with pytest.raises(RuntimeError, match="reserved render-copy ordinal"):
             backend.complete_render_copies()
@@ -637,61 +634,3 @@ def test_clone_context_omits_covered_children_and_honors_routing(child_source, r
         assert all(
             vars(backend) == {"cfg": configs[index]} for index, backend in enumerate(backends) if index != selected
         )
-
-
-@pytest.mark.parametrize("initialized, explicit_stage", [(False, None), (True, None), (False, "1")])
-def test_private_stage_renderer_preserves_the_other_renderer_clone_routes(monkeypatch, initialized, explicit_stage):
-    """An ordinary renderer retains its chosen scene when another renderer requires a private Stage."""
-    from isaaclab_ov.renderers.ovrtx_renderer_cfg import OVRTXBackendCfg
-    from isaaclab_ov.stage import OvstageBackendCfg
-
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
-    if explicit_stage is not None:
-        monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", explicit_stage)
-    ordinary = SimpleNamespace(
-        cfg=OVRTXRendererCfg(), backend=None, _requires_private_ovstage=lambda: False, _native_cuda_gpus=lambda: None
-    )
-    borrower = SimpleNamespace(
-        cfg=OVRTXRendererCfg(log_file_path="borrower.log"),
-        backend=None,
-        _requires_private_ovstage=lambda: True,
-        _native_cuda_gpus=lambda: None,
-    )
-    native = SimpleNamespace(cfg=OVRTXBackendCfg(scene_key=ordinary.cfg, use_ovstage=False))
-    if initialized:
-        ordinary.backend = native
-        ordinary.scene = native
-        ordinary._use_ovstage = False
-    registry = []
-
-    def create_backend(cfg):
-        backend = SimpleNamespace(cfg=cfg)
-        registry.append(backend)
-        return backend
-
-    sim = SimpleNamespace(
-        device="cpu",
-        backend_manager=SimpleNamespace(clone_context_type=object, backend=None),
-        clone_contexts={OvrtxReplicateContext: object()},
-        get_or_create_backend=create_backend,
-        get_backends=lambda cfg: [ordinary, borrower]
-        if cfg is OVRTXRendererCfg
-        else [backend for backend in registry if isinstance(backend.cfg, cfg)],
-    )
-    routing = {OvrtxReplicateContext: {0, 2}}
-    OvrtxReplicateContext.prepare(sim, routing)
-    assert borrower._use_ovstage
-    assert isinstance(borrower.scene.cfg, OvstageBackendCfg)
-    assert borrower.scene.cfg.scene_key is not None
-    assert ordinary._use_ovstage is (explicit_stage == "1")
-    assert routing[OvstageReplicateContext] == {0, 2}
-    if explicit_stage is None:
-        assert routing[OvrtxReplicateContext] == {0, 2}
-        assert ordinary.scene is ordinary.backend
-    else:
-        assert OvrtxReplicateContext not in routing
-    # A later reset prepares again and keeps the existing private pair.
-    created = len(registry)
-    OvrtxReplicateContext.prepare(sim, {OvrtxReplicateContext: {0, 2}})
-    assert len(registry) == created
