@@ -65,9 +65,14 @@ End-of-replay termination:
     4. **Wall-clock ``--max_replay_duration_s`` safety cap**, for
        recordings that produce neither a STOP, a success, nor a failure
        within the configured window.
+    5. **The end of the recorded hand data**, with
+       ``--require_hand_replay_data``. The retargeting graph holds its
+       last action once the recording ends; the run ends there instead
+       of stepping that held action, and counts as a success when the
+       recording delivered changing actions.
 
     With ``--num_replays N > 1`` each run is independently terminated by
-    one of the four signals above; the agent then rebuilds the
+    one of the signals above; the agent then rebuilds the
     :class:`IsaacTeleopDevice` (reopening the MCAP at frame 0) and runs
     again. The USD stage is loaded only once.
 
@@ -363,6 +368,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Start automatically at startup and after RESET for legacy captures without recorded START messages.",
     )
     parser.add_argument(
+        "--require_hand_replay_data",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "End the run at the end of the recorded two-hand data instead of stepping the held last action,"
+            " and report it as a success when the recording delivered changing actions. For replay"
+            " acceptance checks that do not depend on the task's success condition."
+        ),
+    )
+    parser.add_argument(
         "--num_success_steps",
         type=int,
         default=1,
@@ -549,6 +564,8 @@ class _RunStats:
     # Defaults to ``{}`` so a run that never reached the active loop
     # produces a missing-but-not-None ``"gpu_stats"`` slot.
     gpu_stats: dict = field(default_factory=dict)
+    input_exhausted: bool = False  # the recorded hand data ended (``--require_hand_replay_data``)
+    replay_complete: bool = False  # ... after it delivered changing actions
 
     def to_dict(self, run_index: int) -> dict:
         return {
@@ -562,6 +579,8 @@ class _RunStats:
             "cpu_frame_time_ms": _compute_frame_stats(self.active_frame_times_ms),
             "fps": _compute_fps_stats(self.active_frame_times_ms),
             "gpu_stats": self.gpu_stats,
+            "input_exhausted": self.input_exhausted,
+            "replay_complete": self.replay_complete,
         }
 
 
@@ -1212,6 +1231,21 @@ def _handle_reset(env: gym.Env, teleop_interface: "IsaacTeleopDevice", *, hard_s
     teleop_interface.notify_reset()
 
 
+def _finish_at_end_of_hand_data(stats: _RunStats, changing_actions: int) -> None:
+    """Classify a run that reached the end of its recorded hand data."""
+    stats.input_exhausted = True
+    if changing_actions:
+        stats.replay_complete = True
+        stats.outcome = "success"
+        print(
+            f"Replay complete at the end of the recorded hand data after {stats.active_iterations} active steps;"
+            " the held action is not applied."
+        )
+    else:
+        stats.outcome = "failure"
+        print("The recorded hand data ended before any changing action was applied.")
+
+
 def _process_success_condition(
     env: gym.Env,
     success_term: object | None,
@@ -1421,6 +1455,11 @@ def _run_single_replay(  # noqa: C901
         teleop_active = False
         teleop_was_active = False  # only terminate on STOP after a real START
         success_step_count = 0
+        # End-of-recording acceptance (``--require_hand_replay_data``).
+        require_hand_data = getattr(args_cli, "require_hand_replay_data", False)
+        hands_seen = False
+        previous_action: torch.Tensor | None = None
+        changing_actions = 0
         replay_start_s = time.monotonic()
         # First time we run env.step on this replay; used to bound the
         # active duration that drives mean-FPS. Stays None until a sample
@@ -1456,6 +1495,14 @@ def _run_single_replay(  # noqa: C901
                         continue
                     action = _advance_replay_input(teleop_interface, presentation)
                     ctrl = poll_control_events(teleop_interface)
+
+                    if require_hand_data:
+                        presence = teleop_interface.hand_tracking_presence
+                        if presence == (True, True):
+                            hands_seen = True
+                        elif hands_seen and presence == (False, False):
+                            _finish_at_end_of_hand_data(stats, changing_actions)
+                            break
 
                     # Track active state from the replayed _teleop_control
                     # channel. ``ctrl.is_active`` follows the same shape
@@ -1537,6 +1584,10 @@ def _run_single_replay(  # noqa: C901
                     iter_start_s = time.perf_counter()
                     if active_start_s is None:
                         active_start_s = iter_start_s
+                    if require_hand_data:
+                        if previous_action is None or not torch.equal(previous_action, action):
+                            changing_actions += 1
+                        previous_action = action.clone()
                     actions = action.repeat(env.num_envs, 1)
                     sampling_active[0] = True
                     try:

@@ -526,3 +526,75 @@ def test_replay_renderer_startup_shares_the_cold_start_bound():
     )
     replay._start_replay_presentation("env", presentation)
     assert waits == [RENDERER_ATTACH_TIMEOUT_S]
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_required_hand_data_ends_the_run_at_the_end_of_the_recording(monkeypatch, required):
+    """With the option, the run ends when both recorded hands disappear and the held action is not stepped."""
+    import torch
+    from isaaclab_teleop import IsaacTeleopCfg
+    from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
+
+    recorded_frames = 3
+    frames = []
+
+    class Device:
+        last_control_events = SimpleNamespace(is_active=True, should_reset=False)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def reset(self):
+            pass
+
+        def advance(self):
+            # The retargeting graph holds the last recorded action after the recording ends.
+            frames.append(len(frames))
+            return torch.full((1,), float(min(len(frames), recorded_frames)))
+
+        @property
+        def hand_tracking_presence(self):
+            present = len(frames) <= recorded_frames
+            return present, present
+
+    steps = []
+
+    def step(actions):
+        steps.append(float(actions[0, 0]))
+        return None, None, torch.tensor([False]), torch.tensor([False]), {}
+
+    env = SimpleNamespace(
+        num_envs=1,
+        scene=SimpleNamespace(physics_backend="ovphysx", env_prim_paths=["/World/envs/env_0"]),
+        sim=SimpleNamespace(device="cpu", render=lambda: None, is_running=lambda: len(frames) < 6),
+        reset=lambda: None,
+        step=step,
+    )
+    monkeypatch.setattr(replay, "has_kit", lambda: False)
+    monkeypatch.setattr(
+        replay, "NvmlGpuStatsProvider", lambda: SimpleNamespace(sample=lambda: None, summary=lambda: {})
+    )
+    monkeypatch.setattr(
+        replay,
+        "args_cli",
+        SimpleNamespace(
+            device="cpu",
+            replay_file="recording.mcap",
+            start_on_replay=False,
+            enable_debug_visualization=False,
+            max_replay_duration_s=10.0,
+            num_success_steps=1000,
+            require_hand_replay_data=required,
+        ),
+        raising=False,
+    )
+    stats = replay._run_single_replay(env, IsaacTeleopCfg(), None, run_index=1, total_runs=2, teleop_interface=Device())
+    if required:
+        assert steps == [1.0, 2.0, 3.0]
+        assert (stats.outcome, stats.input_exhausted, stats.replay_complete) == ("success", True, True)
+    else:
+        assert steps == [1.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+        assert (stats.outcome, stats.input_exhausted, stats.replay_complete) == ("incomplete", False, False)
