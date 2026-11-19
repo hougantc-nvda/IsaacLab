@@ -924,12 +924,13 @@ def _spawn_and_condition(prim_path: str, cfg: GR1T2ConditionedUsdFileCfg, *args,
 
     # Collision meshes below instanceable ``collisions`` scopes are
     # immutable proxies. De-instance those scopes so the parser-visible
-    # collision prims can receive the OVPhysX contact offsets.
-    for child in Usd.PrimRange(prim):
+    # collision prims can receive the OVPhysX contact offsets. Both loops
+    # edit the stage, so they iterate over a snapshot of the prims.
+    for child in list(Usd.PrimRange(prim)):
         if child.GetName() == "collisions" and child.IsInstanceable():
             child.SetInstanceable(False)
 
-    for child in Usd.PrimRange(prim):
+    for child in list(Usd.PrimRange(prim)):
         _author_standalone_contact_offsets(child)
         inertia = child.GetAttribute("physics:diagonalInertia")
         if inertia and inertia.HasValue():
