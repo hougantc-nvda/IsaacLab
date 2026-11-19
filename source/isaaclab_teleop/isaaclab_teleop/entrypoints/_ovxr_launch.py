@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -38,13 +37,11 @@ def prepare_ovxr_launch(env_cfg: Any, task: str, num_envs: int, *, keep: tuple[s
         The configuration without camera sensors other than ``keep``.
 
     Raises:
-        ValueError: If ``num_envs`` is not 1, ``ISAAC_LAB_OVRTX_USE_OVSTAGE`` is set to a value
-            other than ``1``, or the task needs Kit physics (see :func:`require_kitless_physics`).
+        ValueError: If ``num_envs`` is not 1, or the task needs Kit physics
+            (see :func:`require_kitless_physics`).
     """
     if num_envs != 1:
         raise ValueError("--ovxr currently requires --num_envs 1")
-    if os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1").strip() != "1":
-        raise ValueError("--ovxr requires OVStage (ISAAC_LAB_OVRTX_USE_OVSTAGE=1)")
     viewers = env_cfg.sim.visualizer_cfgs
     if not isinstance(viewers, list):
         viewers = [viewers]

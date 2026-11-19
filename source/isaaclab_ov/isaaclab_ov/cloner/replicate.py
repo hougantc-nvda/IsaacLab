@@ -176,43 +176,32 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
         renderers = sim.get_backends(OVRTXRendererCfg)
         if not renderers:
             return
-        private_stage = [renderer for renderer in renderers if renderer._requires_private_ovstage()]
-        ordinary = next((r for r in renderers if r.backend is not None and r not in private_stage), None)
-        settings = []
-        for renderer in renderers:
-            route_owner = renderer
-            if renderer.backend is None:
-                route_owner = None if renderer in private_stage else ordinary
-            if route_owner is not None:
-                # Late ordinary cameras retain the route selected before native construction.
-                use_ovstage = route_owner._use_ovstage
-                share_ovstage = route_owner.backend.cfg.scene_key is None
-            else:
-                # A renderer that requires a private Stage gets one. Other renderers keep their ordinary route.
-                value = os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1" if renderer in private_stage else "0").strip()
-                if value not in {"0", "1"}:
-                    raise ValueError(f"Invalid ISAAC_LAB_OVRTX_USE_OVSTAGE: {value!r}. Expected 0 or 1.")
-                share_ovstage = os.environ.get("ISAAC_LAB_SHARE_OVSTAGE") == "1"
-                use_ovstage = share_ovstage or value == "1"
-            if share_ovstage and sim.backend_manager.clone_context_type is not OvPhysxReplicateContext:
+        initialized = next((renderer for renderer in renderers if renderer.backend is not None), None)
+        if initialized is not None:
+            use_ovstage = initialized._use_ovstage
+            share_ovstage = initialized.backend.cfg.scene_key is None
+        else:
+            # Default to native OVRTX cloning to preserve camera-task throughput on both physics backends.
+            # Keep sharing opt-in until OVPhysX cold binding and shared-stage update performance are fixed.
+            with_ovphysx = sim.backend_manager.clone_context_type is OvPhysxReplicateContext
+            value = os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "0").strip()
+            if value not in {"0", "1"}:
+                raise ValueError(f"Invalid ISAAC_LAB_OVRTX_USE_OVSTAGE: {value!r}. Expected 0 or 1.")
+            share_ovstage = os.environ.get("ISAAC_LAB_SHARE_OVSTAGE") == "1"
+            use_ovstage = share_ovstage or value == "1"
+            if share_ovstage and not with_ovphysx:
                 raise ValueError("Shared OVStage cloning requires OVPhysX.")
-            if renderer in private_stage and (not use_ovstage or share_ovstage):
-                raise RuntimeError("This renderer requires a private rendering OVStage")
-            if share_ovstage and sim.backend_manager.backend is not None and sim.backend_manager.backend.owns_scene:
-                raise RuntimeError("Configure OVRTX cameras before the first OVPhysX reset to share its OVStage.")
-            settings.append((renderer, use_ovstage, share_ovstage))
-        if any(use_stage for _, use_stage, _ in settings):
-            routing.setdefault(OvstageReplicateContext, set()).update(routing.get(OvrtxReplicateContext, ()))
-            # Mixed consumers need copies in both native scene owners.
-            if all(use_stage for _, use_stage, _ in settings):
-                routing.pop(OvrtxReplicateContext, None)
-                sim.clone_contexts.pop(OvrtxReplicateContext, None)
-        if any(shared for _, _, shared in settings):
-            # Keep the physics route so the existing planner builds native clone recipes.
-            routing.setdefault(OvstageReplicateContext, set()).update(routing.get(OvPhysxReplicateContext, ()))
+        if share_ovstage and sim.backend_manager.backend is not None and sim.backend_manager.backend.owns_scene:
+            raise RuntimeError("Configure OVRTX cameras before the first OVPhysX reset to share its OVStage.")
+        if use_ovstage:
+            if share_ovstage:
+                # Keep the physics route so the existing planner builds native clone recipes.
+                routing.setdefault(OvstageReplicateContext, set()).update(routing.get(OvPhysxReplicateContext, ()))
+            routing.setdefault(OvstageReplicateContext, set()).update(routing.pop(OvrtxReplicateContext, ()))
+            sim.clone_contexts.pop(OvrtxReplicateContext, None)
 
         # Stage ownership is settled before native construction. Register the stage before its borrowers.
-        for renderer, use_ovstage, share_ovstage in settings:
+        for renderer in renderers:
             if renderer.backend is not None:
                 continue
             read_gpu_transforms = os.environ.get("ISAAC_LAB_OVRTX_READ_GPU_TRANSFORMS", "1").strip()
@@ -224,14 +213,13 @@ class OvrtxReplicateContext(cloner.ReplicateContext):
                 scene_key=None if share_ovstage else renderer.cfg,
                 log_file_path=renderer.cfg.log_file_path,
                 log_level=renderer.cfg.log_level,
-                active_cuda_gpus=renderer._native_cuda_gpus(),
                 use_ovstage=use_ovstage,
                 read_gpu_transforms=read_gpu_transforms == "1",
                 device=sim.device,
             )
             if share_ovstage and any(other.cfg != backend_cfg for other in sim.get_backends(OVRTXBackendCfg)):
                 raise ValueError(
-                    "A shared OVStage requires one OVRTX engine; use the same native logging/transform/GPU settings."
+                    "A shared OVStage requires one OVRTX engine; use the same native logging/transform settings."
                 )
             scene = None
             if use_ovstage:

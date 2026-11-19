@@ -374,9 +374,10 @@ class OvLibrariesXrSession:
         try:
             for camera in cfg.camera_feeds:
                 bootstrap.configure_auxiliary_camera(camera.camera_cfg, max_fps=camera.max_fps)
-            # Process-global settings change only after preparation succeeds. The native
-            # renderer is created later with the environment, so they still precede it.
+            # Process-global settings change only after preparation succeeds, and they precede
+            # the native renderer, which the session creates next.
             ovxr.apply_renderer_settings(cfg.renderer_settings.strip())
+            bootstrap.create_native_pair()
             session = cls(bootstrap, cfg)
             sim = bootstrap.simulation_context
             # Retire XR before every Isaac Lab STOP listener and the native backends close. The closure

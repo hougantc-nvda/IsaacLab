@@ -558,14 +558,6 @@ class OVRTXRenderer(BaseRenderer):
         """Whether :meth:`create_render_data` leaves the camera's product for later registration."""
         return False
 
-    def _requires_private_ovstage(self) -> bool:
-        """Whether clone preparation must give this renderer its own OVStage."""
-        return False
-
-    def _native_cuda_gpus(self) -> str | None:
-        """Native rendering GPUs, such as ``"0,1"``, or ``None`` to render on the simulation device."""
-        return None
-
     def _render_product_device_id(self) -> int | None:
         """CUDA index that render products request, or ``None`` for OVRTX's automatic assignment."""
         return self._warp_device.ordinal if self._warp_device.is_cuda else None

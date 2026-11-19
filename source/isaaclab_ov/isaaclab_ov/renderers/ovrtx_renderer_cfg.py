@@ -68,7 +68,7 @@ class OVRTXBackendCfg(BackendCfg):
 
     A CPU simulation without a selection uses native GPU selection. The first native initialization
     fixes the selection for the process; a later backend that requests another one is rejected.
-    Clone preparation copies this from the renderer's ``_native_cuda_gpus`` extension point;
+    Clone preparation leaves this unset; an owner that creates the backend itself sets it.
     :class:`OVRTXRendererCfg` itself has no GPU selection.
     """
 

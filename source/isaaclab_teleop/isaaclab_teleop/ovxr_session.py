@@ -128,6 +128,12 @@ class OvxrSessionBootstrap:
         assert self._sim is not None
         return self._sim
 
+    def create_native_pair(self) -> None:
+        """Create the session's OVStage and OVRTX engine, after renderer settings and before the environment."""
+        self._require_open()
+        assert self._lease is not None
+        self._lease.create_native_pair()
+
     @property
     def closed(self) -> bool:
         """Whether the lease and its retained publication resources retired successfully."""
@@ -221,7 +227,7 @@ class OvxrSessionBootstrap:
         """Keep tracking markers in the eye views and task geometry/lights visible to every camera.
 
         Call once on the render owner after binding, under the lease's owner lane. Only the
-        private presentation Stage changes; the application USD and ordinary renderers do not.
+        session's presentation Stage changes; the application USD and ordinary renderers do not.
         """
         self._require_open()
         if not self._bound or self._sim is None or self._lease is None:

@@ -162,7 +162,6 @@ def test_recording_ovxr_checks_launch_before_preparing_and_owns_context_cleanup(
 
     import isaaclab.app
 
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(sys, "argv", ["record_demos.py"])
     monkeypatch.setattr(record_demos, "args_cli", None, raising=False)
     record_demos._parse_args([
@@ -224,7 +223,6 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
 
     from isaaclab.sim import SimulationContext
 
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(sys, "argv", ["record_demos.py"])
     monkeypatch.setattr(record_demos, "args_cli", None, raising=False)
     record_demos._parse_args([

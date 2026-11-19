@@ -19,20 +19,9 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.parametrize(
-    ("kitless", "selection", "expected", "reject", "with_preparation"),
-    [
-        (True, None, None, False, False),
-        (True, " 1 ", " 1 ", False, True),
-        (True, "0", "0", True, True),
-        (True, "invalid", "invalid", True, True),
-        (False, None, None, False, True),
-    ],
-)
-def test_teleop_ovxr_validates_external_stage_without_changing_environment(
-    monkeypatch, kitless, selection, expected, reject, with_preparation
-):
-    """The task resolver preserves the process setting and rejects incompatible explicit modes before launch."""
+@pytest.mark.parametrize(("kitless", "with_preparation"), [(True, False), (True, True), (False, True)])
+def test_teleop_resolver_validates_the_launch_and_runs_the_task_preparation(monkeypatch, kitless, with_preparation):
+    """The task resolver validates the launch once and runs the task's preparation hook when it has one."""
     from types import SimpleNamespace
 
     from isaaclab_teleop import (
@@ -48,11 +37,6 @@ def test_teleop_ovxr_validates_external_stage_without_changing_environment(
     from isaaclab_tasks.utils import hydra
 
     monkeypatch.setattr(hydra, "enumerate_task_presets", lambda _task: None)
-    name = "ISAAC_LAB_OVRTX_USE_OVSTAGE"
-    if selection is None:
-        monkeypatch.delenv(name, raising=False)
-    else:
-        monkeypatch.setenv(name, selection)
     preparations = []
     from isaaclab_ov.physics import OvPhysxCfg
 
@@ -64,7 +48,7 @@ def test_teleop_ovxr_validates_external_stage_without_changing_environment(
             prepare_environment=(lambda selected: preparations.append(selected)) if with_preparation else None,
         ),
     )
-    scans = []
+    validations = []
     from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
 
     namespace = {
@@ -79,7 +63,7 @@ def test_teleop_ovxr_validates_external_stage_without_changing_environment(
         "sys": sys,
         "ManagerBasedRLEnvCfg": SimpleNamespace,
         "resolve_task_config": lambda *_args, **_kwargs: (config, None),
-        "validate_launch": lambda *_args: (scans.append(os.environ.get(name)) or ((), ())),
+        "validate_launch": lambda *_args: (validations.append(_args) or ((), ())),
         "args_cli": SimpleNamespace(
             task="Test",
             device="cpu",
@@ -96,16 +80,9 @@ def test_teleop_ovxr_validates_external_stage_without_changing_environment(
     }
     for key, value in namespace.items():
         monkeypatch.setattr(agent, key, value, raising=False)
-    if reject:
-        with pytest.raises(ValueError, match="requires.*OVStage"):
-            agent._resolve_env_cfg()
-        assert scans == []
-    else:
-        agent._resolve_env_cfg()
-        assert scans == [expected]
-    assert os.environ.get(name) == expected
-
-    assert preparations == ([config] if with_preparation and not reject else [])
+    agent._resolve_env_cfg()
+    assert len(validations) == 1
+    assert preparations == ([config] if with_preparation else [])
 
 
 @pytest.fixture
@@ -823,7 +800,6 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
 
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
@@ -867,7 +843,6 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
     assert legacy_args.start_on_replay
     assert not hasattr(namespace["args_cli"], "physics")
     assert prepared_configs == [cfg]
-    assert "ISAAC_LAB_OVRTX_USE_OVSTAGE" not in os.environ
 
 
 def test_require_hand_replay_data_option_is_off_by_default_and_documents_synchronous_retargeting():
@@ -898,7 +873,6 @@ def test_kitless_replay_without_ovxr_rejects_a_task_target_frame(monkeypatch, ki
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
     monkeypatch.setattr(replay, "hydra_overrides", None, raising=False)
     replay._parse_args()
@@ -1496,7 +1470,6 @@ def _run_ovxr_camera_feed_workflow(monkeypatch, entrypoint, layout, flags, calls
     with suppress(ModuleNotFoundError):
         monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
     monkeypatch.setattr(SimulationContext, "instance", lambda: None)
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
     pip = ["--ovxr_camera_feed", "head_cam"] if pip_camera else []
     arguments = ["--task", "Test", "--ovxr", "--cloudxr_env", "none", *pip, *flags]
     if entrypoint == "live":
@@ -1676,8 +1649,6 @@ def test_task_preparation_precedes_ovxr_simulation_context(monkeypatch, entrypoi
     monkeypatch.setattr(SimulationContext, "instance", lambda: None)
     monkeypatch.setattr(ovxr_session, "SimulationContext", ContextAllocation)
     monkeypatch.setitem(sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=lambda _settings: None))
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     arguments = ["--task", "Test", "--ovxr", "--cloudxr_env", "none"]
     if entrypoint == "live":
         monkeypatch.setattr(module, "has_kit", lambda: False)
@@ -1748,7 +1719,6 @@ def test_ovxr_omitted_launch_options_match_documented_defaults(monkeypatch):
 
 
 def test_live_ovxr_rejects_unset_task_physics_before_launch(monkeypatch):
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     agent = _load_teleop_agent(monkeypatch, "--task", _UNSET_PHYSICS_TASK, "--ovxr")
     _unset_task_physics(monkeypatch, agent)
     with pytest.raises(ValueError, match=_UNSET_PHYSICS_OVXR_ERROR):
@@ -1765,7 +1735,6 @@ def test_replay_unset_task_physics_keeps_simulation_default_or_rejects_ovxr(monk
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
     monkeypatch.setattr(replay, "hydra_overrides", None, raising=False)
     replay._parse_args()

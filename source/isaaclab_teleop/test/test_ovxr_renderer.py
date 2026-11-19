@@ -81,8 +81,6 @@ def _simulation_registry(monkeypatch):
 
     from isaaclab.renderers import RenderContext
 
-    for name in ("ISAAC_LAB_OVRTX_USE_OVSTAGE", "ISAAC_LAB_SHARE_OVSTAGE"):
-        monkeypatch.delenv(name, raising=False)
     registry = []
     sim = types.SimpleNamespace(
         device="cpu",
@@ -114,7 +112,6 @@ def leased_renderer(monkeypatch):
     """Exercise real deferred resource acquisition with native SDK endpoints doubled."""
     import isaaclab_ov.stage as stage_module
 
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
     native, stage, paths = MagicMock(), MagicMock(), MagicMock()
     floor = stage.get_attribute_write_floor.return_value.__enter__.return_value
@@ -135,12 +132,14 @@ def leased_renderer(monkeypatch):
 
 
 def _prepare_leased_renderer(renderer, *, bind=True):
-    """Prepare clones and, with ``bind``, the Stage on a render owner that claimed the transfer."""
+    """Create the lease's pair, prepare clones and, with ``bind``, the Stage on the claimed render owner."""
     from isaaclab_ov.cloner import OvrtxReplicateContext
 
+    lease = renderer._render_lease.active
+    if lease is not None:
+        lease.create_native_pair()
     OvrtxReplicateContext.prepare(renderer._sim, {})
     if bind:
-        lease = renderer._render_lease.active
         if lease is not None:
             lease.claim_owner_transfer(lease.offer_owner_transfer())
         renderer.prepare_stage(renderer._sim.stage, 1)
@@ -258,15 +257,89 @@ def test_render_lease_rejects_acquisition_after_clone_preparation(leased_rendere
     assert renderer._render_lease.active is None
 
 
-def test_leased_stage_preparation_requires_an_unused_private_stage(leased_renderer):
-    """The claimed render owner prepares only the fresh private OVStage that clone preparation created."""
+def test_lease_creates_its_pair_and_clone_preparation_adopts_it(leased_renderer):
+    """The session's pair exists before clone preparation, which keeps it and routes every OVRTX copy to OVStage."""
+    from isaaclab_ov.cloner import OvrtxReplicateContext, OvstageReplicateContext
+    from isaaclab_ov.renderers import OVRTXRendererCfg
+
+    renderer = leased_renderer
+    sim = renderer._sim
+    lease = renderer.acquire_render_lease()
+    assert renderer.backend is renderer.scene is None
+    lease.create_native_pair()
+    backend, scene = renderer.backend, renderer.scene
+    assert renderer._use_ovstage and backend.cfg.use_ovstage and not backend.attached
+    assert backend.cfg.scene_key == renderer.cfg and scene.cfg.scene_key == backend.cfg
+    lease.create_native_pair()
+    assert renderer.backend is backend and renderer.scene is scene
+
+    # An ordinary renderer in the same process follows the session onto an OVStage of its own.
+    ordinary = sim.get_or_create_backend(OVRTXRendererCfg(log_file_path="ordinary.log"))
+    sim.clone_contexts[OvrtxReplicateContext] = object()
+    routing = {OvrtxReplicateContext: {0, 2}}
+    OvrtxReplicateContext.prepare(sim, routing)
+    assert routing == {OvstageReplicateContext: {0, 2}}
+    assert OvrtxReplicateContext not in sim.clone_contexts
+    assert renderer.backend is backend and renderer.scene is scene
+    assert ordinary._use_ovstage and ordinary.scene is not scene
+    # A reset prepares again and keeps both pairs.
+    ordinary_scene = ordinary.scene
+    OvrtxReplicateContext.prepare(sim, {OvrtxReplicateContext: {0, 2}})
+    assert renderer.scene is scene and ordinary.scene is ordinary_scene
+    lease.release()
+
+
+def test_native_pair_creation_failure_leaves_the_lease_retryable(leased_renderer, monkeypatch):
+    """A failed engine start assigns nothing; the same lease can create the pair once the cause is gone."""
+    renderer = leased_renderer
+    lease = renderer.acquire_render_lease()
+    construct = ovrtx_renderer_module.Renderer
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", MagicMock(side_effect=RuntimeError("native start failed")))
+    with pytest.raises(RuntimeError, match="native start failed"):
+        lease.create_native_pair()
+    assert renderer.backend is renderer.scene is None and not renderer._use_ovstage
+    monkeypatch.setattr(ovrtx_renderer_module, "Renderer", construct)
+    lease.create_native_pair()
+    assert renderer.backend is not None and renderer._use_ovstage
+    lease.release()
+
+
+def test_released_unprepared_lease_can_be_acquired_again(leased_renderer):
+    """A pair an earlier lease created and never prepared serves the next lease on the same renderer."""
+    renderer = leased_renderer
+    lease = renderer.acquire_render_lease()
+    lease.create_native_pair()
+    backend, scene = renderer.backend, renderer.scene
+    lease.release()
+    lease = renderer.acquire_render_lease()
+    lease.create_native_pair()
+    assert renderer.backend is backend and renderer.scene is scene
+    lease.release()
+
+
+def test_leased_stage_preparation_requires_the_pair_the_lease_creates(leased_renderer):
+    """Without the session's pair, clone preparation builds an ordinary one, which the lease refuses."""
+    from isaaclab_ov.cloner import OvrtxReplicateContext
+
+    renderer = leased_renderer
+    lease = renderer.acquire_render_lease()
+    OvrtxReplicateContext.prepare(renderer._sim, {})
+    lease.claim_owner_transfer(lease.offer_owner_transfer())
+    with pytest.raises(RuntimeError, match="create_native_pair"):
+        renderer.prepare_stage(renderer._sim.stage, 1)
+    assert not renderer._initialized_scene
+    lease.release()
+
+
+def test_leased_stage_preparation_requires_an_unused_stage(leased_renderer):
+    """The claimed render owner prepares only the fresh OVStage that the lease created."""
     renderer = leased_renderer
     lease = renderer.acquire_render_lease()
     _prepare_leased_renderer(renderer, bind=False)
     lease.claim_owner_transfer(lease.offer_owner_transfer())
     floor = renderer.scene.stage.get_attribute_write_floor.return_value.__enter__.return_value
     floor.fetch.return_value = ovstage.ORDINAL_MIN + 1
-    with pytest.raises(RuntimeError, match="unused private OVStage"):
+    with pytest.raises(RuntimeError, match="unused OVStage"):
         renderer.prepare_stage(renderer._sim.stage, 1)
     assert not renderer._initialized_scene
     floor.fetch.return_value = ovstage.ORDINAL_MIN
@@ -592,15 +665,6 @@ def test_render_lease_release_rebases_ordinal_and_restores_ordinary_use(leased_r
     assert renderer.scene.ordinal == 42
     renderer.update_transforms()
     renderer.update_geometries()
-
-
-@pytest.mark.parametrize(
-    ("variable", "value"), [("ISAAC_LAB_OVRTX_USE_OVSTAGE", "0"), ("ISAAC_LAB_SHARE_OVSTAGE", "1")]
-)
-def test_render_lease_rejects_explicit_stage_opt_out(leased_renderer, monkeypatch, variable, value):
-    monkeypatch.setenv(variable, value)
-    with pytest.raises(RuntimeError, match="OVSTAGE=1|private rendering OVStage"):
-        leased_renderer.acquire_render_lease()
 
 
 def test_render_lease_defers_application_thread_stage_until_owner_transfer(leased_renderer):
@@ -1035,18 +1099,50 @@ def _make_ovxr_renderer_without_backend(cfg: OvxrRendererCfg) -> OvxrRenderer:
 
 
 @pytest.mark.parametrize(
-    ("active_cuda_gpus", "excluded"), [(None, False), ("0", False), ("0,1", False), ("1", True), ("1,2", True)]
+    ("device", "active_cuda_gpus", "rejected"),
+    [
+        ("cuda:0", None, False),
+        ("cuda:0", "0", False),
+        ("cuda:0", "0,1", True),
+        ("cuda:0", "1", True),
+        ("cuda:0", "1,2", True),
+        ("cpu", None, False),
+        ("cpu", "0", True),
+    ],
 )
-def test_rendering_gpus_excluding_the_simulation_gpu_require_the_session_lease(active_cuda_gpus, excluded):
-    """Only the leased pair's private OVStage stages simulation data for other GPUs; reject it unleased."""
+def test_rendering_gpus_other_than_the_simulation_gpu_require_the_session_lease(
+    monkeypatch, device, active_cuda_gpus, rejected
+):
+    """Without the lease, clone preparation builds the engine on the simulation GPU; reject any other selection."""
     renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus))
-    renderer._device = "cuda:0"
-    assert renderer._native_cuda_gpus() == active_cuda_gpus
-    if excluded:
-        with pytest.raises(ValueError, match="require the OVXR session's lease"):
-            renderer._requires_private_ovstage()
+    renderer._device = device
+    # Warp reports ordinal -1 for the CPU.
+    renderer._warp_device = types.SimpleNamespace(is_cuda=device != "cpu", ordinal=0 if device != "cpu" else -1)
+    prepared = []
+    monkeypatch.setattr(
+        ovrtx_renderer_module.OVRTXRenderer, "prepare_stage", lambda self, stage, num_envs: prepared.append(num_envs)
+    )
+    if rejected:
+        with pytest.raises(ValueError, match="requires the OVXR session's lease"):
+            renderer.prepare_stage(None, 1)
+        assert prepared == []
     else:
-        assert renderer._requires_private_ovstage() is False
+        renderer.prepare_stage(None, 1)
+        assert prepared == [1]
+
+
+def test_lease_applies_the_rendering_gpu_selection_to_the_engine_it_creates(leased_renderer, monkeypatch):
+    """The session passes its selection straight to the backend it creates; clone preparation is not involved."""
+    monkeypatch.setattr(ovrtx_renderer_module.wp, "get_cuda_device_count", lambda: 2)
+    renderer = SimulationContext.instance().get_or_create_backend(OvxrRendererCfg(active_cuda_gpus="1"))
+    lease = renderer.acquire_render_lease()
+    lease.create_native_pair()
+    try:
+        assert renderer.backend.cfg.active_cuda_gpus == "1"
+        assert renderer.backend.cfg.use_ovstage and renderer._use_ovstage
+        assert renderer.scene.cfg.scene_key == renderer.backend.cfg
+    finally:
+        lease.release()
 
 
 def test_split_gpu_renderer_renders_only_camera_panels(monkeypatch):
@@ -1273,6 +1369,9 @@ def test_geometry_is_staged_on_the_first_rendering_gpu_when_rendering_excludes_t
         assert device == expected
         raise Reached
 
+    # Rendering away from the simulation GPU needs the session's lease; stand in for a claimed one.
+    renderer._render_lease.active = object()
+    monkeypatch.setattr(renderer._render_lease, "prepare_stage", lambda num_envs: True)
     # Stage preparation creates the buffers first; native allocation is outside this check.
     monkeypatch.setattr(ovxr_renderer_module, "_GeometryPublicationBuffers", reach)
     with pytest.raises(Reached):

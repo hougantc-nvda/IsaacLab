@@ -79,6 +79,7 @@ def _make_env_and_bootstrap(task: str, device: str, active_cuda_gpus: str | None
     )
     bootstrap = OvxrSessionBootstrap(cfg.sim, OvxrRendererCfg(active_cuda_gpus=active_cuda_gpus))
     try:
+        bootstrap.create_native_pair()
         env = gym.make(task, cfg=cfg).unwrapped
         from isaaclab.envs import ManagerBasedRLEnv
 
@@ -223,7 +224,6 @@ def _run_native_subprocess(task: str, device: str, transfer: bool, active_cuda_g
             "transfer" if transfer else "same-thread",
             active_cuda_gpus or "-",
         ],
-        env={**os.environ, "ISAAC_LAB_OVRTX_USE_OVSTAGE": "1"},
         capture_output=True,
         text=True,
         timeout=180,
