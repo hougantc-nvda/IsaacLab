@@ -46,7 +46,7 @@ retirement during a shutdown, it detaches the leased renderer and OVStage from
 the simulation's backends, keeps them alive until the process exits, logs an
 error and raises, so teardown destroys neither under a live render owner.
 
-The lease currently requires one environment and a private rendering OVStage.
+The lease currently requires one environment, and the session renders on its own OVStage.
 Ownership transfer is single-use. Failed retirement must preserve resources;
 a failed drain is not successful shutdown. Importing `OvLibrariesXrSession` requires a Capture release with OVXR
 session support; see [Installing kitless XR](kitless_xr_source.md). The
@@ -93,7 +93,7 @@ The adapter retains the renderer and Stage if lease retirement cannot establish 
 The ordinary renderer remains in `isaaclab_ov.renderers.ovrtx_renderer` and has no XR
 knowledge. `isaaclab_teleop.ovxr_renderer.OvxrRenderer` subclasses it: it overrides Stage
 preparation and the ordinary camera and scene operations, and uses the protected extension
-points for scene population, deferred camera registration and private-OVStage selection.
+points for scene population and deferred camera registration.
 
 - Its `_OvxrLeaseController` owns the lease state, the thread-transfer capability, the
   per-owner operation guards and the publication order.
@@ -109,7 +109,7 @@ This enables the existing marker backend even without an ordinary visualizer and
 tracking markers participate in scene publication. The registration and registry subscription retire
 with the lease.
 
-On the private presentation Stage, the bootstrap selects the `viewer` partition for the
+On the session's presentation Stage, the bootstrap selects the `viewer` partition for the
 eye cameras and disables all-partition viewing. Task geometry and environment lights,
 including native copies, are common to the eye and sensor views; tracking markers remain
 in `viewer`. Sensor images therefore exclude tracking markers without changing the
@@ -117,13 +117,18 @@ application USD or ordinary OVRTX rendering defaults.
 
 The lease classes are internal to `isaaclab_teleop`.
 
-Acquiring a lease selects a private rendering OVStage without changing process
-environment variables. An explicit OVStage disable or shared-stage selection is
-rejected. Without an active lease, the controller permits
+Acquiring a lease reserves the renderer. After the session applies its renderer
+settings, and before the environment is built, it creates its own rendering OVStage
+and the OVRTX engine that attaches to it, through the simulation's backend registry.
+Clone preparation then finds the renderer initialized and routes the scene copies to
+that Stage.
+Without an active lease, the controller permits
 ordinary renderer operations and does not start an XR session. While a consumer
 holds the lease, ordinary camera rendering, scene writes and renderer destruction
 are rejected to prevent concurrent access to the borrowed resources. Cameras with an
-ordinary `OVRTXRendererCfg` use Isaac Lab's ordinary renderer, which the lease does not affect.
+ordinary `OVRTXRendererCfg` keep Isaac Lab's ordinary renderer object, but in a process
+with an OVXR session they follow it onto an OVStage of their own, where OVRTX renders
+synchronously.
 
 ## Optional presentation
 

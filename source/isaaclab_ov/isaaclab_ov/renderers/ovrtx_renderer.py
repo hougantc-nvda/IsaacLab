@@ -521,10 +521,6 @@ class OVRTXRenderer(BaseRenderer):
         """Whether :meth:`create_render_data` leaves the camera's product for later registration."""
         return False
 
-    def _requires_private_ovstage(self) -> bool:
-        """Whether clone preparation must give this renderer its own OVStage."""
-        return False
-
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""
         object_paths = self._sdp.backend.transform_paths

@@ -128,6 +128,12 @@ class OvxrSessionBootstrap:
         assert self._sim is not None
         return self._sim
 
+    def create_native_pair(self) -> None:
+        """Create the session's OVStage and OVRTX engine, after renderer settings and before the environment."""
+        self._require_open()
+        assert self._lease is not None
+        self._lease.create_native_pair()
+
     @property
     def closed(self) -> bool:
         """Whether the lease and its retained publication resources retired successfully."""
