@@ -1117,6 +1117,9 @@ def _prepare_env_cfg(
     It also checks the launch before any runtime starts. With ``--ovxr`` it also
     removes camera sensors and rejects a launch that needs more than one
     environment, a stage path other than OVStage, Kit or a local visualizer.
+    Without ``--ovxr`` it rejects a launch without Kit for a task that sets
+    :attr:`~isaaclab_teleop.IsaacTeleopCfg.target_frame_prim_path`, because only
+    Kit or the OVXR session reads that frame.
 
     Args:
         task: Registered task name to load the env config for.
@@ -1155,6 +1158,13 @@ def _prepare_env_cfg(
     configs, kit_sources = validate_launch(env_cfg, vars(args_cli).copy())
     if args_cli.ovxr:
         reject_ovxr_runtime_conflicts(configs, kit_sources)
+    elif not kit_sources and env_cfg.isaac_teleop is not None and env_cfg.isaac_teleop.target_frame_prim_path:
+        raise ValueError(
+            f"Task '{task}' sets isaac_teleop.target_frame_prim_path"
+            f" ({env_cfg.isaac_teleop.target_frame_prim_path!r}), which a replay without Kit can read only"
+            " through the OVXR session. Add --ovxr, or replay this task with Kit (for example with Isaac Sim"
+            " PhysX)."
+        )
     if env_cfg.isaac_teleop is not None and env_cfg.isaac_teleop.prepare_environment is not None:
         env_cfg.isaac_teleop.prepare_environment(env_cfg)
     return env_cfg, success_term

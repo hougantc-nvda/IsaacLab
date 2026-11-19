@@ -692,6 +692,44 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
 
 
 @pytest.mark.parametrize(
+    ("kitless", "ovxr", "rejected"), [(True, False, True), (True, True, False), (False, False, False)]
+)
+def test_kitless_replay_without_ovxr_rejects_a_task_target_frame(monkeypatch, kitless, ovxr, rejected):
+    """Only Kit or the OVXR session reads the task's target frame, so a headless kitless replay stops before launch."""
+    import isaaclab_teleop
+    from isaaclab_ov.physics import OvPhysxCfg
+    from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
+
+    from isaaclab.sim import SimulationCfg
+
+    from isaaclab_tasks.utils import parse_cfg
+
+    argv = ["teleop_replay_agent.py", "--task", "Test", "--replay_file", "recording.mcap"]
+    if ovxr:
+        argv.append("--ovxr")
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
+    monkeypatch.setattr(replay, "args_cli", None, raising=False)
+    monkeypatch.setattr(replay, "hydra_overrides", None, raising=False)
+    replay._parse_args()
+    cfg = SimpleNamespace(
+        # An unset physics selection runs Isaac Sim PhysX, which needs Kit.
+        sim=SimulationCfg(physics=OvPhysxCfg() if kitless else None),
+        scene=SimpleNamespace(num_envs=1),
+        isaac_teleop=isaaclab_teleop.IsaacTeleopCfg(target_frame_prim_path="{ENV_REGEX_NS}/Robot/base"),
+        terminations=SimpleNamespace(),
+    )
+    monkeypatch.setattr(replay, "ManagerBasedRLEnvCfg", SimpleNamespace)
+    monkeypatch.setattr(parse_cfg, "resolve_task_config", lambda *_args, **_kwargs: (cfg, None))
+    if rejected:
+        with pytest.raises(ValueError, match=r"'test-task' sets isaac_teleop\.target_frame_prim_path.*--ovxr.*Kit"):
+            replay._prepare_env_cfg("test-task", 1, None, overrides=replay.hydra_overrides)
+    else:
+        prepared, _success = replay._prepare_env_cfg("test-task", 1, None, overrides=replay.hydra_overrides)
+        assert prepared is cfg
+
+
+@pytest.mark.parametrize(
     "backend,viewer,hard_reset",
     [
         ("ovphysx", False, False),
