@@ -34,14 +34,16 @@ simulation context, which dispatches STOP before Isaac Lab releases cameras,
 renderers, the native OVRTX engine and the OVStage, so the worker drains and
 the lease is released first. The listener closes a session that is still open
 only if it handed out no OpenXR handles. A STOP while the simulation runs (a
-hard reset or a physics re-warm) raises.
+hard reset or a physics re-warm) raises and leaves the session open.
 
 If startup fails before the worker takes ownership, the caller closes the
-environment after releasing the lease. If input retirement fails, request
+environment after releasing the lease. Closing the session waits for a worker
+that is still attaching the scene, because attachment cannot be cancelled and
+reads the environment. If input retirement fails, request
 shutdown and leave the session open. Whenever the STOP listener cannot prove
-retirement, it detaches the leased renderer and OVStage from the simulation's
-backends, keeps them alive until the process exits and raises, so teardown
-destroys neither under a live render owner.
+retirement during a shutdown, it detaches the leased renderer and OVStage from
+the simulation's backends, keeps them alive until the process exits, logs an
+error and raises, so teardown destroys neither under a live render owner.
 
 The lease currently requires one environment and a private rendering OVStage.
 Ownership transfer is single-use. Failed retirement must preserve resources;

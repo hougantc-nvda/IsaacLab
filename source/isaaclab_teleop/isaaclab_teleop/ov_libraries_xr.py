@@ -59,11 +59,12 @@ class OvLibrariesXrSession:
     therefore drains and the render lease is released before cameras, renderers, the native OVRTX engine
     and the OVStage close. The listener closes a session that is still open only if it handed out no
     OpenXR handles, since only the host can confirm that their input borrowers stopped. A STOP while the
-    simulation runs, from a hard reset or a physics re-warm, raises instead.
+    simulation runs, from a hard reset or a physics re-warm, raises instead and leaves the session open:
+    the raise ends that dispatch before anything is released.
 
-    When the listener cannot prove retirement, it keeps the leased renderer and OVStage alive for the
-    rest of the process and raises, so the simulation's teardown destroys neither under a live render
-    owner. The pair cannot be reused; recreate the session in a new process.
+    When the listener cannot prove retirement during a shutdown, it keeps the leased renderer and OVStage
+    alive for the rest of the process and raises, so the simulation's teardown destroys neither under a
+    live render owner. The pair cannot be reused; recreate the session in a new process.
     """
 
     @runtime_checkable
@@ -163,9 +164,11 @@ class OvLibrariesXrSession:
         Raises:
             RuntimeError: If the session is closed or already started, or ``env`` does not reuse the
                 prepared simulation context, has no completed stage or not exactly one environment,
-                or selects a different simulation device or physics time step.
+                selects a different simulation device or physics time step, or already has a prim of
+                another type at a configured OVXR prim path.
             TypeError: If ``external_anchor_state`` does not implement :class:`ExternalAnchorState`.
-            ValueError: If ``max_blank_frames`` is not a nonnegative integer.
+            ValueError: If ``max_blank_frames`` is not a nonnegative integer, or a configured OVXR prim
+                path is not absolute or is requested with two types.
         """
         self._require_open()
         if self._owner is not None:
@@ -173,8 +176,10 @@ class OvLibrariesXrSession:
         if isinstance(max_blank_frames, bool) or not isinstance(max_blank_frames, int) or max_blank_frames < 0:
             raise ValueError("max_blank_frames must be a non-negative integer")
         _require_external_anchor_state(external_anchor_state)
-        # Reject an inconsistent environment before the worker claims the lease.
+        # Reject an inconsistent environment or configuration before the worker claims the single-use
+        # transfer and authors the OVXR prims.
         self._bootstrap.validate_environment(env)
+        _resolve_ovxr_runtime_prims(env, self._cfg)
         from isaaccapture.ovxr_session_manager.ovxr_session import (
             OvxrSession,
             OvxrSessionConfig,
@@ -238,17 +243,48 @@ class OvLibrariesXrSession:
         Failed retirement leaves the session open, and closing the environment then keeps the
         leased renderer and OVStage alive. Stop all input borrowers before calling, including after
         worker failure.
+
+        A render worker that is still attaching the scene cannot be cancelled and uses the environment,
+        so this call waits for the attachment to end, however long it takes. When the retirement
+        completed despite a worker failure, only the first call raises that failure.
         """
         if self._closed:
             return
         self._close_started = True
-        if self._owner is None:
-            self._bootstrap.close()
-        else:
-            self._owner.close()
+        try:
+            if self._owner is None:
+                self._bootstrap.close()
+            else:
+                self._close_owner()
+        except BaseException:
+            # Isaac Capture raises a latched worker error from every close. A completed retirement is
+            # final, so report that error once.
+            self._closed = self.retirement_complete
+            raise
         if not self.retirement_complete:
             raise RuntimeError("OVXR retirement is unproved; retaining its borrowed renderer and Stage")
         self._closed = True
+
+    def _close_owner(self) -> None:
+        """Close Isaac Capture's owner, outlasting its bounded join while the render worker attaches.
+
+        Isaac Capture stops joining its worker after 30 s. Returning then would let the host close the
+        environment and simulation that an attaching worker still reads.
+        """
+        waiting = False
+        while True:
+            try:
+                self._owner.close()
+                return
+            except TimeoutError:
+                if self._owner.render_worker_bootstrap_ready or not _render_worker_alive(self._owner):
+                    raise
+            if not waiting:
+                waiting = True
+                logger.warning(
+                    "The OVXR render worker is still attaching the scene, which cannot be interrupted;"
+                    " waiting for it to finish before the simulation closes."
+                )
 
     def request_shutdown(self) -> None:
         """Request orderly OVXR shutdown."""
@@ -326,22 +362,25 @@ class OvLibrariesXrSession:
     def _retire_on_simulation_stop(self, sim: SimulationContext) -> None:
         """Close the session before the simulation releases its cameras, renderers and native backends.
 
-        Runs once. If retirement fails or is refused while the lease is still held, the bootstrap keeps
-        the leased pair alive (see the class description) before the error propagates.
+        Retires once, and not at all after a retirement that already completed. If retirement fails or
+        is refused while the lease is still held, the bootstrap keeps the leased pair alive (see the class
+        description) before the error propagates.
 
         Raises:
             RuntimeError: If the simulation is still running, the session handed out OpenXR handles
                 but was never closed, or its retirement is unproved.
         """
-        if self._closed or self._stop_handled:
+        if self._closed or self._stop_handled or self.retirement_complete:
             return
+        if not sim.is_stopped():
+            # This raise ends the reset's STOP dispatch before any listener releases the renderer, so
+            # the pair stays usable and a later shutdown can still retire the session.
+            raise RuntimeError(
+                "The simulation stopped physics while running (a hard reset or physics re-warm), which"
+                " releases the OVXR renderer; close the OVXR session first"
+            )
         self._stop_handled = True
         try:
-            if not sim.is_stopped():
-                raise RuntimeError(
-                    "The simulation stopped physics while running (a hard reset or physics re-warm), which"
-                    " releases the OVXR renderer; close the OVXR session first"
-                )
             if self._handles_lent and not self._close_started:
                 raise RuntimeError(
                     "The simulation is closing while XR input may still borrow the OVXR session; stop its input"
@@ -363,10 +402,21 @@ class OvLibrariesXrSession:
             raise RuntimeError("OVXR session is not started")
 
 
-def _declare_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> None:
-    """Declare type-only OVXR prims for the application Stage's lifetime."""
+def _render_worker_alive(owner: Any) -> bool:
+    """Whether the render worker of Isaac Capture's session owner is still running."""
+    worker_id = owner.render_worker_native_thread_id
+    return worker_id is not None and any(thread.native_id == worker_id for thread in threading.enumerate())
+
+
+def _resolve_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> dict[str, str]:
+    """Return the type of every type-only OVXR prim to declare, by path, without authoring anything.
+
+    Raises:
+        RuntimeError: If the environment has no Stage, or a path already has a prim of another type.
+        ValueError: If a path is not absolute or is requested with two types.
+    """
     if not cfg.create_render_products:
-        return
+        return {}
 
     unwrapped = getattr(env, "unwrapped", env)
     stage = unwrapped.scene.stage
@@ -395,7 +445,16 @@ def _declare_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> None:
             raise RuntimeError(
                 f"OVXR runtime prim {path!r} already has incompatible type {existing_type!r}; expected {type_name!r}"
             )
-        stage.DefinePrim(path, type_name)
+    return expected_types
+
+
+def _declare_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> None:
+    """Declare type-only OVXR prims for the application Stage's lifetime."""
+    declarations = _resolve_ovxr_runtime_prims(env, cfg)
+    if declarations:
+        stage = getattr(env, "unwrapped", env).scene.stage
+        for path, type_name in declarations.items():
+            stage.DefinePrim(path, type_name)
 
 
 class _StageOrdinalLedger(StageOrdinalLedger):

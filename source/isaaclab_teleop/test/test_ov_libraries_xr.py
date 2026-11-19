@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import contextlib
 import importlib
+import logging
 import subprocess
 import sys
 import threading
@@ -581,7 +582,10 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
     session = xr_module.OvLibrariesXrSession(
         bootstrap, xr_module.OvLibrariesXrCfg(extra_openxr_extensions=("XR_EXT_debug_utils",))
     )
-    env = SimpleNamespace(close=lambda: calls.append(("environment-close",)))
+    env = SimpleNamespace(
+        scene=SimpleNamespace(stage=SimpleNamespace(GetPrimAtPath=lambda _path: None)),
+        close=lambda: calls.append(("environment-close",)),
+    )
     assert session.start_render_worker(
         env, required_openxr_extensions=("XR_EXT_hand_tracking",), max_blank_frames=0, timeout_s=4.0
     )
@@ -792,6 +796,22 @@ def test_start_rejects_invalid_bootstrap_count_before_owner_creation(xr_module, 
     session = xr_module.OvLibrariesXrSession(bootstrap, xr_module.OvLibrariesXrCfg())
     with pytest.raises(ValueError, match="max_blank_frames must be a non-negative integer"):
         session.start_render_worker(SimpleNamespace(), max_blank_frames=count)
+    assert bootstrap.events == []
+
+
+def test_start_rejects_conflicting_runtime_prims_before_owner_creation(xr_module, monkeypatch):
+    """A rejected OVXR prim declaration never reaches the single-use owner transfer or authors a prim."""
+    external = importlib.import_module("isaaccapture.ovxr_session_manager.ovxr_session")
+    monkeypatch.setattr(external, "OvxrSession", lambda *_args, **_kwargs: pytest.fail("created an XR owner"))
+    existing = SimpleNamespace(IsValid=lambda: True, GetTypeName=lambda: "Xform")
+    stage = SimpleNamespace(
+        GetPrimAtPath=lambda _path: existing,
+        DefinePrim=lambda *_args: pytest.fail("authored an OVXR prim"),
+    )
+    bootstrap = _FakeBootstrap()
+    session = xr_module.OvLibrariesXrSession(bootstrap, xr_module.OvLibrariesXrCfg())
+    with pytest.raises(RuntimeError, match="incompatible type"):
+        session.start_render_worker(SimpleNamespace(scene=SimpleNamespace(stage=stage)))
     assert bootstrap.events == []
 
 
@@ -1030,7 +1050,7 @@ def test_capture_worker_retires_post_claim_attachment_failure(
         raise RuntimeError("producer storage did not retire")
 
     monkeypatch.setattr(bootstrap, "bind_environment", fail_attachment)
-    monkeypatch.setattr(xr_module, "_declare_ovxr_runtime_prims", lambda *_args: None)
+    monkeypatch.setattr(xr_module, "_resolve_ovxr_runtime_prims", lambda *_args: {})
     # Native creation is never reached; provider validation still executes before
     # the real Capture worker performs the failing attachment and cleanup.
     native_context = SimpleNamespace(
@@ -1089,3 +1109,100 @@ def test_host_owned_session_requires_proven_retirement(xr_module) -> None:
     session._owner.retirement_complete = True
     session.close()
     assert session.retirement_complete
+
+
+def test_close_waits_for_a_render_worker_that_is_still_attaching(xr_module, monkeypatch, caplog) -> None:
+    """Isaac Capture's bounded join expires during the uninterruptible attach; close must outlast it."""
+    external = importlib.import_module("isaaccapture.ovxr_session_manager.ovxr_session")
+    attach_may_finish = threading.Event()
+    events = []
+
+    class Pump:
+        @staticmethod
+        def validate_provider() -> None:
+            pass
+
+        def attach(self, _capability) -> None:
+            attach_may_finish.wait()
+            events.append("attached")
+
+        def request_exit(self) -> None:
+            pass
+
+        def retry_runtime_stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            events.append("retired")
+
+    # Run Capture's real session owner and worker; only its native frame pump is replaced.
+    monkeypatch.setattr(external, "OvxrFramePump", lambda *_args, **_kwargs: Pump())
+    monkeypatch.setattr(external, "_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 0.05)
+    session = xr_module.OvLibrariesXrSession(_FakeBootstrap(), xr_module.OvLibrariesXrCfg(create_render_products=False))
+    with pytest.raises(TimeoutError, match="did not become ready"):
+        session.start_render_worker(SimpleNamespace(), timeout_s=0.05)
+    # The attachment ends only after several of Capture's joins have expired.
+    release = threading.Timer(0.3, attach_may_finish.set)
+    release.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger=xr_module.logger.name):
+            session.close()
+        events.append("closed")
+    finally:
+        attach_may_finish.set()
+        release.join()
+    assert events == ["attached", "retired", "closed"]
+    assert session.retirement_complete
+    assert [record.getMessage() for record in caplog.records].count(
+        "The OVXR render worker is still attaching the scene, which cannot be interrupted;"
+        " waiting for it to finish before the simulation closes."
+    ) == 1
+
+
+@pytest.mark.parametrize("bootstrap_ready", [True, False])
+def test_close_does_not_wait_for_an_attached_or_ended_render_worker(xr_module, bootstrap_ready) -> None:
+    """Only a live attaching worker extends the wait; a stuck retirement or a latched timeout still raises."""
+    failure = TimeoutError("OVXR session worker did not stop")
+    closes = []
+
+    def close() -> None:
+        closes.append("close")
+        raise failure
+
+    session = xr_module.OvLibrariesXrSession(_FakeBootstrap(), xr_module.OvLibrariesXrCfg())
+    ended_worker = threading.Thread(target=lambda: None)
+    ended_worker.start()
+    ended_worker.join()
+    session._owner = SimpleNamespace(
+        close=close,
+        retirement_complete=False,
+        render_worker_bootstrap_ready=bootstrap_ready,
+        # An attached worker is the calling thread here; a worker that ended before attaching is not alive.
+        render_worker_native_thread_id=threading.get_native_id() if bootstrap_ready else ended_worker.native_id,
+    )
+    with pytest.raises(TimeoutError) as raised:
+        session.close()
+    assert raised.value is failure
+    assert closes == ["close"]
+    assert not session.retirement_complete
+
+
+def test_close_reports_a_worker_failure_once_after_complete_retirement(xr_module) -> None:
+    """Isaac Capture raises a latched worker error from every close, including after it retired everything."""
+    failure = RuntimeError("OVXR begin_frame failed")
+    closes = []
+
+    def close() -> None:
+        closes.append("close")
+        raise failure
+
+    session = xr_module.OvLibrariesXrSession(_FakeBootstrap(), xr_module.OvLibrariesXrCfg())
+    session._owner = SimpleNamespace(close=close, retirement_complete=True)
+    with pytest.raises(RuntimeError) as raised:
+        session.close()
+    assert raised.value is failure
+    session.close()
+    assert closes == ["close"]
+    assert session.retirement_complete
+    with pytest.raises(RuntimeError, match="OVXR session is closed"):
+        session.request_render("step")

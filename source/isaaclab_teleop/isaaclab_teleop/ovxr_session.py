@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import logging
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -20,7 +21,12 @@ from isaaclab.sim import SimulationContext
 
 from .ovxr_renderer import OvxrRenderer, OvxrRendererCfg, OvxrRenderLease
 
+logger = logging.getLogger(__name__)
+
 _TERMINAL_MODE_SENTINEL = "ISAAC_LAUNCHED_FROM_TERMINAL"
+
+_RETAINED_NATIVE_PAIRS: list[tuple[Any, ...]] = []
+"""Native renderer and Stage resources whose retirement was never proved; they outlive every session."""
 
 if TYPE_CHECKING:
     from isaaclab.sim import SimulationCfg
@@ -66,6 +72,8 @@ class OvxrSessionBootstrap:
 
     def __init__(self, sim_cfg: SimulationCfg, renderer_cfg: OvxrRendererCfg | None = None) -> None:
         validate_ovxr_session_preparation()
+        if renderer_cfg is not None and not isinstance(renderer_cfg, OvxrRendererCfg):
+            raise TypeError("OVXR renders with OvxrRendererCfg")
 
         self._sim: SimulationContext | None = None
         self._renderer: OvxrRenderer | None = None
@@ -85,8 +93,6 @@ class OvxrSessionBootstrap:
             sim = SimulationContext(sim_cfg)
             # The simulation registry owns the renderer, including cloning and
             # cleanup; the XR session only borrows its exact native pair.
-            if renderer_cfg is not None and not isinstance(renderer_cfg, OvxrRendererCfg):
-                raise TypeError("OVXR renders with OvxrRendererCfg")
             renderer = sim.get_or_create_backend(renderer_cfg or OvxrRendererCfg())
             if not isinstance(renderer, OvxrRenderer):
                 raise TypeError(f"OvxrRendererCfg resolved to unexpected renderer {type(renderer).__name__}")
@@ -290,8 +296,8 @@ class OvxrSessionBootstrap:
         a live or unproved render owner may still use the pair. The simulation then closes the
         ``OVRTXBackend`` and ``OvstageBackend`` that own it. Moving the native renderer out of the
         former and the Stage's resources out of the latter leaves both ``close()`` methods nothing to
-        destroy; this bootstrap, which the session and Isaac Capture's worker both reference, holds them
-        instead. Once detached, the pair no longer validates as the renderer's live pair, so the render
+        destroy; a module-level list holds them instead, so they also outlive this bootstrap and its
+        session. Once detached, the pair no longer validates as the renderer's live pair, so the render
         owner cannot use it again and releases nothing; it stays alive until the process exits.
         """
         if self._retained_pair or self._renderer is None:
@@ -309,6 +315,12 @@ class OvxrSessionBootstrap:
             retained.extend((scene.resources, scene.stage, scene.paths))
             scene.resources = contextlib.ExitStack()
         self._retained_pair = tuple(retained)
+        if self._retained_pair:
+            _RETAINED_NATIVE_PAIRS.append(self._retained_pair)
+            logger.error(
+                "OVXR retirement was not proved: keeping the leased OVRTX renderer and OVStage alive until the"
+                " process exits. They cannot be reused; recreate the session in a new process."
+            )
 
     def _require_open(self) -> None:
         if self._closed:

@@ -158,7 +158,7 @@ class _UnusedContext:
     current = None
 
     def __init__(self, _cfg):
-        type(self).current = self
+        pytest.fail("created a simulation context")
 
     @classmethod
     def instance(cls):
@@ -179,8 +179,11 @@ class _CaptureOwner:
         self.bootstrap = bootstrap
         self.events = events
         self.failure = None
+        self.fails_after_retirement = False
         self.closes = 0
         self.retirement_complete = False
+        # The worker attached, so a join that times out is a retirement that did not finish.
+        self.render_worker_bootstrap_ready = True
 
     def external_oxr_handles(self):
         return "handles"
@@ -188,10 +191,13 @@ class _CaptureOwner:
     def close(self):
         self.closes += 1
         self.events.append("xr-drain")
-        if self.failure is not None:
+        if self.failure is not None and not self.fails_after_retirement:
             raise self.failure
         self.bootstrap.close()
         self.retirement_complete = True
+        if self.failure is not None:
+            # Isaac Capture raises a latched worker error although its worker retired everything.
+            raise self.failure
 
 
 @pytest.fixture
@@ -216,6 +222,7 @@ def ovxr_simulation(monkeypatch):
     for name in ("ISAAC_LAB_OVRTX_USE_OVSTAGE", "ISAAC_LAB_SHARE_OVSTAGE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
+    monkeypatch.setattr(ovxr_session, "_RETAINED_NATIVE_PAIRS", [])
     events = []
     native, stage, paths = MagicMock(), MagicMock(), MagicMock()
     native.destroy.side_effect = lambda: events.append("native-destroy")
@@ -303,25 +310,65 @@ def test_simulation_stop_retirement_runs_once(ovxr_simulation):
     state.native.destroy.assert_called_once_with()
 
 
-@pytest.mark.parametrize("refusal", ["worker", "running", "input"])
-def test_unproved_simulation_stop_retirement_keeps_the_native_pair(ovxr_simulation, refusal):
-    """A drain that fails or cannot run keeps the leased engine and OVStage alive through teardown."""
+def test_simulation_stop_while_running_leaves_the_session_open_and_its_pair_usable(ovxr_simulation):
+    """A hard reset with the session open is refused without quarantining the pair or consuming the retirement."""
     from isaaclab.physics import PhysicsEvent
+    from isaaclab.sim import SimulationContext
+
+    state = ovxr_simulation
+    # A hard Newton reset or an OvPhysX re-warm dispatches STOP while the simulation runs.
+    state.sim.play()
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="while running"):
+            state.sim.backend_manager.dispatch_event(PhysicsEvent.STOP)
+    assert state.owner.closes == 0
+    assert state.bootstrap._retained_pair == ()
+    assert "camera-cleanup" not in state.events
+    state.bootstrap._lease.validate_live()
+    # The later shutdown still retires the session and destroys the pair normally.
+    SimulationContext.clear_instance()
+    assert state.owner.closes == 1
+    assert state.session.retirement_complete and state.bootstrap.closed
+    state.native.destroy.assert_called_once_with()
+    assert "stage-close" in state.events
+
+
+def test_simulation_stop_is_clean_after_a_reported_worker_failure_with_complete_retirement(ovxr_simulation):
+    """The worker failure reaches the host once; the teardown that follows a complete retirement reports nothing."""
+    from isaaclab.sim import SimulationContext
+
+    state = ovxr_simulation
+    failure = state.owner.failure = RuntimeError("OVXR begin_frame failed")
+    state.owner.fails_after_retirement = True
+    with pytest.raises(RuntimeError) as caught:
+        state.session.close()
+    assert caught.value is failure
+    assert state.session.retirement_complete and state.bootstrap.closed
+    state.session.close()
+    SimulationContext.clear_instance()
+    assert state.owner.closes == 1
+    assert state.bootstrap._retained_pair == ()
+    state.native.destroy.assert_called_once_with()
+    assert "stage-close" in state.events
+
+
+@pytest.mark.parametrize("refusal", ["worker", "input"])
+def test_unproved_simulation_stop_retirement_keeps_the_native_pair(ovxr_simulation, refusal, caplog):
+    """A drain that fails or cannot run keeps the leased engine and OVStage alive through teardown."""
+    import logging
+
+    from isaaclab_teleop import ovxr_session
+
     from isaaclab.sim import SimulationContext
 
     state = ovxr_simulation
     failure = None
     if refusal == "worker":
         failure = state.owner.failure = TimeoutError("OVXR session worker did not stop")
-    elif refusal == "running":
-        # A hard Newton reset or an OvPhysX re-warm dispatches STOP while the simulation runs.
-        state.sim.play()
-        with pytest.raises(RuntimeError, match="while running"):
-            state.sim.backend_manager.dispatch_event(PhysicsEvent.STOP)
     else:
         # XR input borrowed the session's OpenXR handles and the host never confirmed they stopped.
         assert state.session.external_oxr_handles() == "handles"
-    with pytest.raises(RuntimeError) as caught:
+    with caplog.at_level(logging.ERROR, logger=ovxr_session.logger.name), pytest.raises(RuntimeError) as caught:
         SimulationContext.clear_instance()
     assert SimulationContext.instance() is None
     if refusal == "worker":
@@ -336,3 +383,6 @@ def test_unproved_simulation_stop_retirement_keeps_the_native_pair(ovxr_simulati
     state.native.detach_ovstage.assert_not_called()
     assert "stage-close" not in state.events
     assert state.native in state.bootstrap._retained_pair and state.stage in state.bootstrap._retained_pair
+    assert sum("keeping the leased OVRTX renderer and OVStage alive" in r.getMessage() for r in caplog.records) == 1
+    # The process also holds the pair, so it survives the session and its bootstrap being dropped.
+    assert any(pair is state.bootstrap._retained_pair for pair in ovxr_session._RETAINED_NATIVE_PAIRS)
