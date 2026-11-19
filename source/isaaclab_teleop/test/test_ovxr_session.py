@@ -249,7 +249,8 @@ def ovxr_simulation(monkeypatch):
     try:
         renderer = sim.get_or_create_backend(OvxrRendererCfg())
         renderer._sdp = SimpleNamespace(backend=SimpleNamespace(transform_paths=[]), get_geometry_points=lambda: {})
-        # Clone preparation creates the private pair; this thread then claims and binds it as the render owner.
+        # The lease created the pair and clone preparation routes the copies; this thread then claims and
+        # binds the pair as the render owner.
         OvrtxReplicateContext.prepare(sim, {})
         lease = bootstrap.claim_render_owner_transfer(bootstrap.offer_render_owner_transfer())
         renderer.prepare_stage(sim.stage, 1)

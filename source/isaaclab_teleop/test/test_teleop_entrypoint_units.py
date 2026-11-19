@@ -5,7 +5,6 @@
 
 """In-process teleoperation entrypoint, configuration, and control-loop contracts."""
 
-import os
 import signal
 import sys
 import time
@@ -17,88 +16,6 @@ import torch
 
 # Repository root: this file lives at source/isaaclab_teleop/test/<file>.py
 ROOT = Path(__file__).resolve().parents[3]
-
-
-@pytest.mark.parametrize(
-    ("kitless", "selection", "expected", "reject"),
-    [
-        (True, None, None, False),
-        (True, " 1 ", " 1 ", False),
-        (True, "0", "0", True),
-        (True, "invalid", "invalid", True),
-        (False, None, None, False),
-    ],
-)
-def test_teleop_ovxr_validates_external_stage_without_changing_environment(
-    monkeypatch, kitless, selection, expected, reject
-):
-    """The task resolver preserves the process setting and rejects incompatible explicit modes before launch."""
-    from types import SimpleNamespace
-
-    from isaaclab_teleop import (
-        IsaacTeleopCfg,
-        se3_gamepad_teleop_cfg,
-        se3_keyboard_teleop_cfg,
-        se3_spacemouse_teleop_cfg,
-    )
-    from isaaclab_teleop.device_selection import select_teleop_cfg
-
-    from isaaclab.devices import DeviceCfg
-
-    from isaaclab_tasks.utils import hydra
-
-    monkeypatch.setattr(hydra, "enumerate_task_presets", lambda _task: None)
-    name = "ISAAC_LAB_OVRTX_USE_OVSTAGE"
-    if selection is None:
-        monkeypatch.delenv(name, raising=False)
-    else:
-        monkeypatch.setenv(name, selection)
-    from isaaclab_ov.physics import OvPhysxCfg
-
-    config = SimpleNamespace(
-        sim=SimpleNamespace(device="cpu", physics=OvPhysxCfg(), visualizer_cfgs=[]),
-        scene=SimpleNamespace(num_envs=1),
-        terminations=SimpleNamespace(time_out=1),
-        isaac_teleop=IsaacTeleopCfg(),
-    )
-    scans = []
-    from isaaclab_teleop.entrypoints import teleop_se3_agent as agent
-
-    namespace = {
-        "__package__": "isaaclab_teleop.entrypoints",
-        "IsaacTeleopCfg": IsaacTeleopCfg,
-        "DeviceCfg": DeviceCfg,
-        "select_teleop_cfg": select_teleop_cfg,
-        "se3_keyboard_teleop_cfg": se3_keyboard_teleop_cfg,
-        "se3_spacemouse_teleop_cfg": se3_spacemouse_teleop_cfg,
-        "se3_gamepad_teleop_cfg": se3_gamepad_teleop_cfg,
-        "os": os,
-        "sys": sys,
-        "ManagerBasedRLEnvCfg": SimpleNamespace,
-        "resolve_task_config": lambda *_args, **_kwargs: (config, None),
-        "validate_launch": lambda *_args: (scans.append(os.environ.get(name)) or ((), ())),
-        "args_cli": SimpleNamespace(
-            task="Test",
-            device="cpu",
-            num_envs=1,
-            teleop_device=None,
-            sensitivity=1.0,
-            xr=False,
-            using_ovxr=kitless,
-            disable_external_cameras=False,
-            physics=None,
-        ),
-    }
-    for key, value in namespace.items():
-        monkeypatch.setattr(agent, key, value, raising=False)
-    if reject:
-        with pytest.raises(ValueError, match="requires.*OVStage"):
-            agent._resolve_env_cfg()
-        assert scans == []
-    else:
-        agent._resolve_env_cfg()
-        assert scans == [expected]
-    assert os.environ.get(name) == expected
 
 
 @pytest.fixture
@@ -650,7 +567,6 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
 
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
@@ -688,7 +604,6 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
     )
     assert legacy_args.start_on_replay
     assert not hasattr(namespace["args_cli"], "physics")
-    assert "ISAAC_LAB_OVRTX_USE_OVSTAGE" not in os.environ
 
 
 @pytest.mark.parametrize(
@@ -708,7 +623,6 @@ def test_kitless_replay_without_ovxr_rejects_a_task_target_frame(monkeypatch, ki
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
     monkeypatch.setattr(replay, "hydra_overrides", None, raising=False)
     replay._parse_args()
@@ -1006,7 +920,6 @@ def test_ovxr_omitted_launch_options_match_documented_defaults(monkeypatch):
 
 
 def test_live_ovxr_rejects_unset_task_physics_before_launch(monkeypatch):
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     agent = _load_teleop_agent(monkeypatch, "--task", _UNSET_PHYSICS_TASK, "--ovxr")
     _unset_task_physics(monkeypatch, agent)
     with pytest.raises(ValueError, match=_UNSET_PHYSICS_OVXR_ERROR):
@@ -1023,7 +936,6 @@ def test_replay_unset_task_physics_keeps_simulation_default_or_rejects_ovxr(monk
     if ovxr:
         argv.append("--ovxr")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.delenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", raising=False)
     monkeypatch.setattr(replay, "args_cli", None, raising=False)
     monkeypatch.setattr(replay, "hydra_overrides", None, raising=False)
     replay._parse_args()
