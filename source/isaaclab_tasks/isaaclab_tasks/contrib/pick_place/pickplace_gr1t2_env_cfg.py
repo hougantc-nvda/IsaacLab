@@ -840,9 +840,20 @@ def _stabilize_gr1t2_for_newton_mjwarp(env_cfg: ManagerBasedRLEnvCfg) -> None:
         hand.armature = 0.02
         hand.joint_effort_limit = 20.0
 
-    solver_cfg = env_cfg.sim.physics.solver_cfg
+    physics = env_cfg.sim.physics
+    solver_cfg = physics.solver_cfg
     solver_cfg.nconmax = 4096
     solver_cfg.njmax = 1536
+    # On MuJoCo's own contacts the resting steering wheel rocks indefinitely, and replays of one
+    # recording diverge. Newton's collision pipeline brings it to rest; implicit integration over
+    # two substeps makes the robot repeat as well.
+    from isaaclab_newton.physics import NewtonCollisionPipelineCfg, NewtonShapeCfg
+
+    solver_cfg.use_mujoco_contacts = False
+    solver_cfg.integrator = "implicitfast"
+    physics.num_substeps = 2
+    physics.collision_cfg = NewtonCollisionPipelineCfg()
+    physics.default_shape_cfg = NewtonShapeCfg()
     condition_newton_steering_wheel_detail_collisions(env_cfg.scene.object)
 
 

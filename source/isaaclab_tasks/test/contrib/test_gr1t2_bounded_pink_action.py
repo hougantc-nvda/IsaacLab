@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from isaaclab_newton.physics import NewtonCfg
+from isaaclab_newton.physics import NewtonCfg, NewtonCollisionPipelineCfg, NewtonShapeCfg
 from isaaclab_ov.physics import OvPhysxCfg
 
 from pxr import Usd, UsdGeom, UsdPhysics
@@ -98,6 +98,12 @@ def test_newton_contract_is_backend_scoped_and_complete(config_type):
     assert newton_cfg.scene.robot.actuators["right-hand"].joint_names_expr == ["R_.*"]
     assert newton_cfg.sim.physics.solver_cfg.nconmax == 4096
     assert newton_cfg.sim.physics.solver_cfg.njmax == 1536
+    # The resting wheel settles only on Newton's collision pipeline with implicit integration.
+    physics = newton_cfg.sim.physics
+    assert (physics.solver_cfg.use_mujoco_contacts, physics.solver_cfg.integrator) == (False, "implicitfast")
+    assert physics.num_substeps == 2
+    assert isinstance(physics.collision_cfg, NewtonCollisionPipelineCfg)
+    assert isinstance(physics.default_shape_cfg, NewtonShapeCfg)
     assert (newton_cfg.scene.robot.joint_ordering, newton_cfg.scene.robot.body_ordering) == ("physx", "physx")
     assert newton_cfg.isaac_teleop.require_initial_bimanual_hand_tracking is True
     assert isinstance(newton_cfg.actions.upper_body_ik, GR1T2BoundedPinkIKActionCfg)

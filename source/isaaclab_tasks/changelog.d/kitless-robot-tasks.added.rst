@@ -2,7 +2,8 @@
   backend-specific actuators, collision preparation, and bounded action targets. OvPhysX and Newton preparation
   replaces the GR1T2 Pink action term with
   :class:`~isaaclab_tasks.contrib.pick_place.gr1t2_bounded_pink_action_cfg.GR1T2BoundedPinkIKActionCfg`;
-  Isaac Sim PhysX keeps the Pink term.
+  Isaac Sim PhysX keeps the Pink term. GR1T2 on Newton uses Newton's collision pipeline with implicit
+  integration over two substeps, so the resting steering wheel settles and replays repeat.
 * Added public OvPhysX and Newton selection while retaining Kit defaults and supporting
   standalone backend preparation without optional teleoperation configuration.
   Registered construction prepares the selected backend and preserves prepared configuration copies
