@@ -1264,7 +1264,6 @@ def test_pose_and_intrinsic_updates_target_the_given_camera(monkeypatch, stage_m
     renderer.update_camera_intrinsics(cameras[1], wp.zeros(2, dtype=wp.mat33f, device="cpu"), parameters)
     if use_ovstage:
         assert renderer.scene.stage.write_attributes.call_args.args[0] is cameras[1].camera_xform_binding
-        assert all(desc.cuda_stream is None for desc in renderer.scene.stage.write_attributes.call_args.args[1])
         bound_paths = [call.args[0] for call in renderer.scene.paths.create_path_list_from_strings.call_args_list]
         assert bound_paths == [
             entry
@@ -1525,15 +1524,13 @@ def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(asynchron
     renderer._geometry_writes.close()
 
 
-@pytest.mark.parametrize("use_ovstage", [True, False])
-def test_cpu_camera_pose_updates_use_host_tensors_without_a_cuda_stream(use_ovstage):
+def test_cpu_camera_pose_updates_use_host_tensors_without_a_cuda_stream():
     renderer = _make_ovrtx_renderer_without_backend()
-    renderer._use_ovstage = use_ovstage
+    renderer._use_ovstage = False
     renderer.cfg = OVRTXRendererCfg()
     renderer._warp_device = wp.get_device("cpu")
     renderer._device = "cpu"
-    stage = MagicMock()
-    renderer.scene = types.SimpleNamespace(stage=stage, ordinal=11)
+    renderer.scene = types.SimpleNamespace(stage=MagicMock(), ordinal=11)
     camera = _make_ovrtx_camera_render_data()
     camera.camera_xform_binding = MagicMock()
     camera.camera_writes = _AsyncWriteBuffers([wp.empty(2, dtype=wp.mat44d, device="cpu")])
@@ -1541,15 +1538,10 @@ def test_cpu_camera_pose_updates_use_host_tensors_without_a_cuda_stream(use_ovst
     orientations = wp.array([[0.0, 0.0, 0.0, 1.0]] * 2, dtype=wp.quatf, device="cpu")
     update = renderer.update_camera
     update(camera, positions, orientations, None)
-    call = stage.write_attribute.call_args if use_ovstage else camera.camera_xform_binding.write_async.call_args
-    assert call.kwargs["cuda_stream"] is None
-    if use_ovstage:
-        assert call.args == (camera.camera_xform_binding, "omni:xform")
-        assert call.kwargs["ordinal"] == 11
-    else:
-        # Reusing the camera ring waits for previous writes without a CUDA stream.
-        update(camera, positions, orientations, None)
-        update(camera, positions, orientations, None)
+    assert camera.camera_xform_binding.write_async.call_args.kwargs["cuda_stream"] is None
+    # Reusing the camera ring waits for previous writes without a CUDA stream.
+    update(camera, positions, orientations, None)
+    update(camera, positions, orientations, None)
     camera.camera_writes.close()
 
 

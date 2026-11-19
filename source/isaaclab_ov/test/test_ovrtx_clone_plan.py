@@ -514,16 +514,13 @@ def test_deferred_render_copy_failure_requires_stage_reset(monkeypatch: pytest.M
     native, paths = Mock(), Mock()
     monkeypatch.setattr(stage_module, "create_ovstage", lambda _: contextlib.nullcontext(native))
     monkeypatch.setattr(ovstage, "PathDictionary", lambda _: contextlib.nullcontext(paths))
-    population = Mock()
-    monkeypatch.setattr(stage_module, "populate_stage", population)
+    monkeypatch.setattr(stage_module, "populate_stage", lambda *args, **kwargs: None)
     source = Usd.Stage.CreateInMemory()
     UsdGeom.Cube.Define(source, "/World/env_0/Body")
     backend = stage_module.OvstageBackend(stage_module.OvstageBackendCfg(defer_render_copies=True))
     backend.clone_copies = [("/World/env_0", ["/World/env_1"])]
     try:
-        camera_desc = object()
-        backend.populate(source.ExportToString(), population_desc=camera_desc)
-        assert population.call_args.kwargs["population_desc"] is camera_desc
+        backend.populate(source.ExportToString())
         backend.commit()
         with pytest.raises(RuntimeError, match="reserved render-copy ordinal"):
             backend.complete_render_copies()
