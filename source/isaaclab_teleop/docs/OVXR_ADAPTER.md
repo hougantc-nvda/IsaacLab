@@ -15,8 +15,9 @@ native renderer and OVStage the session borrows through its lease.
   context and reserves the lease before environment construction. It binds the
   completed environment and reads current target-frame transforms.
 - `isaaclab_teleop.ov_libraries_xr.OvLibrariesXrSession` supplies the application
-  adapter to Isaac Capture. It declares XR render products, publishes scene and
+  adapter to Isaac Capture. It declares the two eye cameras, publishes scene and
   anchor updates, transfers render-thread ownership and coordinates shutdown.
+  OVXR authors its own eye render products, render vars and render settings.
 - Isaac Capture owns the OVXR session and render worker. Its borrowed OpenXR
   handles are available to the teleoperation input session.
 

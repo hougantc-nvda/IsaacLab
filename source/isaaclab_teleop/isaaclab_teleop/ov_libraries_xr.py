@@ -37,16 +37,6 @@ __all__ = ["OvLibrariesXrCameraFeedCfg", "OvLibrariesXrCfg", "OvLibrariesXrDeskt
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OVXR_RENDER_PRODUCT_PATHS = (
-    "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0_OVXR_Left",
-    "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0_OVXR_Right",
-)
-_DEFAULT_OVXR_RENDER_VAR_PATHS = (
-    "/Render/Vars/LdrColor",
-    "/Render/Vars/XRDepth",
-)
-_DEFAULT_OVXR_RENDER_SETTINGS_PATH = "/Render/OmniverseGlobalRenderSettings"
-
 
 class OvLibrariesXrSession:
     """Isaac Lab adapter around Isaac Capture's OVXR session.
@@ -189,7 +179,7 @@ class OvLibrariesXrSession:
             raise ValueError("max_blank_frames must be a non-negative integer")
         _require_external_anchor_state(external_anchor_state)
         # Reject an inconsistent environment or configuration before the worker claims the single-use
-        # transfer and authors the OVXR prims.
+        # transfer and declares the eye cameras.
         self._bootstrap.validate_environment(env)
         if self._cfg.camera_feeds and not env.unwrapped.scene.cfg.lazy_sensor_update:
             raise ValueError(
@@ -479,6 +469,9 @@ class _CounterRate:
 def _resolve_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> dict[str, str]:
     """Return the type of every type-only OVXR prim to declare, by path, without authoring anything.
 
+    Only the eye cameras are declared: the view partitions are written on them before the first
+    frame. OVXR authors its render products, render vars and render settings itself.
+
     Raises:
         RuntimeError: If the environment has no Stage, or a path already has a prim of another type.
         ValueError: If a path is not absolute or is requested with two types.
@@ -491,13 +484,7 @@ def _resolve_ovxr_runtime_prims(env: Any, cfg: OvLibrariesXrCfg) -> dict[str, st
     if stage is None:
         raise RuntimeError("OVXR runtime prim declaration requires an environment Stage")
 
-    render_products = cfg.render_products or _DEFAULT_OVXR_RENDER_PRODUCT_PATHS
-    declarations = (
-        *((path, "Camera") for path in cfg.camera_paths),
-        *((path, "RenderProduct") for path in render_products),
-        *((path, "RenderVar") for path in _DEFAULT_OVXR_RENDER_VAR_PATHS),
-        (_DEFAULT_OVXR_RENDER_SETTINGS_PATH, "RenderSettings"),
-    )
+    declarations = tuple((path, "Camera") for path in cfg.camera_paths)
     expected_types: dict[str, str] = {}
     for path, type_name in declarations:
         if not path.startswith("/") or path == "/":
@@ -529,10 +516,15 @@ class _StageOrdinalLedger(StageOrdinalLedger):
     """Reserve explicit OVStage ordinals for the application publication lane."""
 
     def __init__(self, stage: Any) -> None:
+        import ovstage
+
         self._stage = stage
         self._state_lock = threading.Lock()
         self._active_ordinal: int | None = None
         self._closed = False
+        # Ordinals are signed: a new Stage is sealed through the minimum, and the maximum is never written.
+        self._ordinal_min = ovstage.ORDINAL_MIN
+        self._ordinal_max = ovstage.ORDINAL_MAX
         self._floor = self._read_floor()
 
     def reserve(self) -> int:
@@ -542,7 +534,7 @@ class _StageOrdinalLedger(StageOrdinalLedger):
                 raise RuntimeError("OVStage ordinal ledger is closed")
             if self._active_ordinal is not None:
                 raise RuntimeError(f"OVStage ordinal {self._active_ordinal} is still unresolved")
-            if self._floor == (1 << 64) - 1:
+            if self._floor >= self._ordinal_max:
                 raise RuntimeError("OVStage ordinal range is exhausted")
             self._active_ordinal = self._floor + 1
             return self._active_ordinal
@@ -606,7 +598,7 @@ class _StageOrdinalLedger(StageOrdinalLedger):
         with self._stage.get_attribute_write_floor() as query:
             query.wait()
             floor = int(query.fetch())
-        if floor < 0 or floor > (1 << 64) - 1:
+        if not self._ordinal_min <= floor <= self._ordinal_max:
             raise RuntimeError(f"OVStage returned an invalid write floor: {floor}")
         return floor
 

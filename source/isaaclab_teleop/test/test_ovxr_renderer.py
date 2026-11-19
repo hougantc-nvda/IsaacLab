@@ -16,6 +16,7 @@ import types
 from unittest.mock import DEFAULT, MagicMock
 
 import numpy as np
+import ovstage
 import pytest
 import torch
 import warp as wp
@@ -117,7 +118,7 @@ def leased_renderer(monkeypatch):
     monkeypatch.setattr(OVRTXBackend, "_initial_gpu_selection", None)
     native, stage, paths = MagicMock(), MagicMock(), MagicMock()
     floor = stage.get_attribute_write_floor.return_value.__enter__.return_value
-    floor.fetch.return_value = 0
+    floor.fetch.return_value = ovstage.ORDINAL_MIN  # A new OVStage is sealed through the minimum ordinal.
 
     def advance(*, ordinal, **kwargs):
         return types.SimpleNamespace(wait=lambda: setattr(floor.fetch, "return_value", ordinal))
@@ -264,11 +265,11 @@ def test_leased_stage_preparation_requires_an_unused_private_stage(leased_render
     _prepare_leased_renderer(renderer, bind=False)
     lease.claim_owner_transfer(lease.offer_owner_transfer())
     floor = renderer.scene.stage.get_attribute_write_floor.return_value.__enter__.return_value
-    floor.fetch.return_value = 1
+    floor.fetch.return_value = ovstage.ORDINAL_MIN + 1
     with pytest.raises(RuntimeError, match="unused private OVStage"):
         renderer.prepare_stage(renderer._sim.stage, 1)
     assert not renderer._initialized_scene
-    floor.fetch.return_value = 0
+    floor.fetch.return_value = ovstage.ORDINAL_MIN
     renderer.prepare_stage(renderer._sim.stage, 1)
     lease.validate_live()
     lease.release()
@@ -991,12 +992,13 @@ def Xform "World" {
                     read.wait()
                     for group in read.groups():
                         try:
-                            values = np.asarray(group.array(0).copy()).reshape(group.data_count, -1)
                             group_paths = paths.get_path_strings(group.prim_list)
-                            attribute = paths.token_to_string(group.attribute)
-                            for index in range(min(group.prim_count, group.data_count)):
-                                path = group_paths[group.prim_index(index)]
-                                resolved[path, attribute] = values[group.data_row_index(index)].tolist()
+                            for column in group.columns:
+                                values = np.asarray(column.array(0).copy()).reshape(column.data_count, -1)
+                                attribute = paths.token_to_string(column.attribute)
+                                for index in range(min(group.prim_count, column.data_count)):
+                                    path = group_paths[group.prim_index(index)]
+                                    resolved[path, attribute] = values[column.data_row_index(index)].tolist()
                         finally:
                             stage.release_group(group)
         finally:

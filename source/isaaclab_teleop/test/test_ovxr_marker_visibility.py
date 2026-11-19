@@ -114,11 +114,12 @@ def test_tracking_markers_render_in_eyes_but_not_sensor_after_motion_and_reset(m
                             read.wait()
                             for group in read.groups():
                                 try:
-                                    values = np.asarray(group.array(0).copy()).reshape(group.data_count, -1)
+                                    column = group.columns[0]
+                                    values = np.asarray(column.array(0).copy()).reshape(column.data_count, -1)
                                     names = native_scene.paths.get_path_strings(group.prim_list)
-                                    for index in range(min(group.prim_count, group.data_count)):
+                                    for index in range(min(group.prim_count, column.data_count)):
                                         partitions[names[group.prim_index(index)]] = int(
-                                            values[group.data_row_index(index), 0]
+                                            values[column.data_row_index(index), 0]
                                         )
                                 finally:
                                     native_scene.stage.release_group(group)

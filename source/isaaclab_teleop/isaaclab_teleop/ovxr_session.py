@@ -229,7 +229,6 @@ class OvxrSessionBootstrap:
         self._lease.validate_live()
         import ovstage
         from isaaclab_ov.renderers.ovrtx_renderer import _resolve_env_light_partitions
-        from isaaclab_ov.stage import _handle_raw_id
 
         renderer = self._sim.get_or_create_backend(self._renderer_cfg)
         scene = renderer.scene
@@ -247,7 +246,7 @@ class OvxrSessionBootstrap:
             (
                 camera_paths,
                 "omni:scenePartition",
-                np.full(len(camera_paths), _handle_raw_id(scene.paths.intern_token("viewer")), dtype=np.uint64),
+                np.full(len(camera_paths), scene.paths.intern_token("viewer").raw_id, dtype=np.uint64),
             ),
             (
                 [settings_path],
