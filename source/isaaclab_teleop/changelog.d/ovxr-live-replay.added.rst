@@ -2,7 +2,8 @@
   paced rendering, backend-derived anchors, and ordered shutdown. ``record_demos.py`` accepts the
   live agent's ``--ovxr`` and ``--ovxr_session_mode`` options. ``replay_demos.py`` replays HDF5
   demonstrations on a kitless backend selected with ``--physics``, also when Isaac Sim is installed, and
-  the MCAP replay agent replays headless on a kitless backend without ``--ovxr``.
+  the MCAP replay agent replays headless on a kitless backend without ``--ovxr``, reporting each run's
+  outcome without render timing.
 * Added ``--ovxr_step_hz`` to the live teleoperation agent and the demonstration recorder. It caps
   the host-control rate with ``--ovxr`` while XR rendering runs independently.
 * Added ``--start_on_replay`` to the MCAP replay agent. It starts playback at startup and after

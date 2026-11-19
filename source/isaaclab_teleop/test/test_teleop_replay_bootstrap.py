@@ -436,3 +436,70 @@ def test_replay_control_timing_uses_recorded_events_or_explicit_legacy_start(mon
     assert lifecycle._retargeter_reset_frame_id == 7
     assert stats.active_iterations == len(applied)
     assert stats.outcome == "incomplete"
+
+
+@pytest.mark.parametrize("kit_active", [False, True])
+def test_unrendered_replay_reports_its_outcome_only_without_kit(monkeypatch, kit_active):
+    """A kitless replay has no application render loop to time; under Kit an unmeasured run still fails."""
+    import torch
+    from isaaclab_teleop import IsaacTeleopCfg
+    from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
+
+    class Device:
+        last_control_events = SimpleNamespace(is_active=True, should_reset=False)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def reset(self):
+            pass
+
+        def advance(self):
+            return torch.zeros(1)
+
+    steps = []
+
+    def step(_actions):
+        steps.append(len(steps))
+        return None, None, torch.tensor([False]), torch.tensor([False]), {}
+
+    env = SimpleNamespace(
+        num_envs=1,
+        scene=SimpleNamespace(physics_backend="ovphysx", env_prim_paths=["/World/envs/env_0"]),
+        sim=SimpleNamespace(device="cpu", render=lambda: None, is_running=lambda: len(steps) < 3),
+        reset=lambda: None,
+        step=step,
+    )
+    monkeypatch.setattr(replay, "has_kit", lambda: kit_active)
+    monkeypatch.setattr(
+        replay, "NvmlGpuStatsProvider", lambda: SimpleNamespace(sample=lambda: None, summary=lambda: {})
+    )
+    monkeypatch.setattr(
+        replay,
+        "args_cli",
+        SimpleNamespace(
+            device="cpu",
+            replay_file="recording.mcap",
+            start_on_replay=False,
+            enable_debug_visualization=False,
+            max_replay_duration_s=10.0,
+            num_success_steps=1,
+        ),
+        raising=False,
+    )
+
+    def run():
+        return replay._run_single_replay(
+            env, IsaacTeleopCfg(), None, run_index=1, total_runs=2, teleop_interface=Device()
+        )
+
+    if kit_active:
+        with pytest.raises(RuntimeError, match="no usable frame intervals"):
+            run()
+    else:
+        stats = run()
+        assert stats.active_iterations == 3
+        assert not stats.active_frame_times_ms

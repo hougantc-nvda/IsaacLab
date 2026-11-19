@@ -97,7 +97,9 @@ Stats output:
     is written. Partial reports are never emitted: CI relies on
     "no JSON output" as an unambiguous failure signal.
     OVXR owns rendering independently, so application render-call timing
-    statistics remain empty for OVXR replays.
+    statistics remain empty for OVXR replays. A kitless replay without
+    ``--ovxr`` has no application render loop either; it reports its
+    outcome with the same empty timing statistics.
 
     Each active iteration also emits one ``GpuStatsProvider.sample()``
     call. The default :class:`NvmlGpuStatsProvider` snapshots GPU
@@ -1572,7 +1574,8 @@ def _run_single_replay(
 
     # Fail loud before returning so the next replay never starts and
     # the batch produces no partial report. See _assert_run_measured.
-    if presentation is None:
+    # Only Kit runs an application render loop to time.
+    if presentation is None and has_kit():
         _assert_run_measured(stats, run_index)
     return stats
 
