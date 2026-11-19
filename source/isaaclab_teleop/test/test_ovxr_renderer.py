@@ -13,7 +13,7 @@ import contextlib
 import importlib.util
 import inspect
 import types
-from unittest.mock import MagicMock
+from unittest.mock import DEFAULT, MagicMock
 
 import numpy as np
 import pytest
@@ -1152,6 +1152,22 @@ def test_split_gpu_publication_orders_the_transfer_after_the_producing_stream(mo
     ]
 
 
+def _complete_handed_stream(publisher, synchronize=None):
+    """Side effect for a Stage double: finish the work on the stream it is handed, as the native copy-in does.
+
+    The transfer stream is non-blocking and ``numpy()`` does not wait for it, so a staged array is only
+    safe to read once the Stage's write has completed the transfer.
+    """
+    synchronize = synchronize or wp.synchronize_stream
+
+    def write_attribute(*_args, cuda_stream=None, **_kwargs):
+        assert cuda_stream == publisher._stream.cuda_stream
+        synchronize(publisher._stream)
+        return DEFAULT
+
+    return write_attribute
+
+
 def test_geometry_publication_cuda_devices_resize_and_failed_consumption(monkeypatch):
     """Only foreign CUDA points move; replacement sources and failed consumption cannot corrupt a snapshot."""
     with pytest.raises(ValueError, match="explicit CUDA device"):
@@ -1188,6 +1204,7 @@ def test_geometry_publication_cuda_devices_resize_and_failed_consumption(monkeyp
     syncs = []
     synchronize = wp.synchronize_stream
     monkeypatch.setattr(wp, "synchronize_stream", lambda stream: syncs.append(stream) or synchronize(stream))
+    stage.write_attribute.side_effect = _complete_handed_stream(publisher, synchronize)
     try:
         publisher.write(stage, object(), paths, inputs, 1)
         # Stage reads after the copy on the transfer stream; no host wait on that stream precedes it.
@@ -1284,6 +1301,7 @@ def test_rigid_publication_uses_target_device_and_retains_failed_producer(monkey
         backend=types.SimpleNamespace(transforms_timestamp=1), get_transforms=lambda *_a, **_kw: True
     )
     renderer.scene.stage = stage = MagicMock()
+    stage.write_attribute.side_effect = _complete_handed_stream(publisher)
     renderer.scene.ordinal = 11
     observed = []
     convert = ovxr_gpu_publication.xform_tensor_from_warp
