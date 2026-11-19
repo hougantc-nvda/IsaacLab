@@ -88,7 +88,7 @@ def test_teleop_ovxr_validates_external_stage_without_changing_environment(
             sensitivity=1.0,
             xr=False,
             using_ovxr=kitless,
-            ovxr_pip_camera=None,
+            ovxr_camera_feed=None,
             disable_external_cameras=False,
             physics=None,
         ),
@@ -1402,7 +1402,36 @@ def test_desktop_mirror_requires_ovxr(monkeypatch, capsys, entrypoint, flags):
     assert "--ovxr_desktop_mirror requires --ovxr" in capsys.readouterr().err
 
 
-def _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, flags, calls):
+@pytest.mark.parametrize("entrypoint", ["live", "record", "replay"])
+@pytest.mark.parametrize(
+    "flags, message",
+    [
+        (["--ovxr_pip_camera", "robot_pov_cam"], "--ovxr_pip_camera was renamed to --ovxr_camera_feed"),
+        (["--ovxr_pip_fps=15"], "--ovxr_pip_fps was renamed to --ovxr_camera_feed_fps"),
+        (["--ovxr_pip_head_locked"], "--ovxr_pip_head_locked was removed"),
+        (["--ovxr_pip_view_position", "0", "0", "-1"], "--ovxr_pip_view_position was removed"),
+    ],
+)
+def test_previous_camera_feed_option_spellings_fail_fast(monkeypatch, capsys, entrypoint, flags, message):
+    """Unknown options are forwarded to Hydra, so the earlier spellings are rejected by name."""
+    from isaaclab_teleop.entrypoints import record_demos, teleop_replay_agent, teleop_se3_agent
+
+    module = {"live": teleop_se3_agent, "record": record_demos, "replay": teleop_replay_agent}[entrypoint]
+    monkeypatch.setattr(sys, "argv", ["teleop-test"])
+    monkeypatch.setattr(module, "args_cli", None, raising=False)
+    argv = ["--task", "Test", "--ovxr", *flags]
+    if entrypoint == "replay":
+        argv += ["--replay_file", "recording.mcap"]
+        monkeypatch.setattr(module, "hydra_overrides", None, raising=False)
+    with pytest.raises(SystemExit):
+        module._parse_args(argv)
+    error = capsys.readouterr().err
+    assert message in error
+    # A removed option points at the task layout that now places the feeds.
+    assert ("xr_camera_feed_layout" in error) == ("removed" in message)
+
+
+def _run_ovxr_camera_feed_workflow(monkeypatch, entrypoint, layout, flags, calls):
     """Run an entrypoint's ``main`` with one PiP camera until it prepares the OVXR session.
 
     Task resolution and launch are stubbed; CLI parsing, pre-launch preparation and session
@@ -1466,7 +1495,7 @@ def _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, flags, calls):
         monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
     monkeypatch.setattr(SimulationContext, "instance", lambda: None)
     monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    arguments = ["--task", "Test", "--ovxr", "--cloudxr_env", "none", "--ovxr_pip_camera", "head_cam", *flags]
+    arguments = ["--task", "Test", "--ovxr", "--cloudxr_env", "none", "--ovxr_camera_feed", "head_cam", *flags]
     if entrypoint == "live":
         monkeypatch.setattr(module, "has_kit", lambda: False)
         monkeypatch.setattr(
@@ -1484,52 +1513,44 @@ def _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, flags, calls):
 
 
 @pytest.mark.parametrize("entrypoint", ["live", "replay"])
-@pytest.mark.parametrize(
-    "placement, flags, position",
-    [
-        # A head-locked task layout keeps its panel placement without the flag.
-        ("head_locked", [], (0.1, -0.15, -0.8)),
-        # The flag places a world layout in the VIEW space, at the requested position.
-        ("world", ["--ovxr_pip_head_locked", "--ovxr_pip_view_position", "0", "-0.1", "-0.6"], (0.0, -0.1, -0.6)),
-    ],
-)
-def test_ovxr_pip_cli_reaches_session_construction(monkeypatch, entrypoint, placement, flags, position):
-    """The PiP and mirror options of both workflows reach the OVXR session configuration."""
+@pytest.mark.parametrize("placement", ["head_locked", "viewer_start", "world"])
+def test_ovxr_camera_feed_cli_reaches_session_construction(monkeypatch, entrypoint, placement):
+    """The camera feed and mirror options of both workflows reach the OVXR session configuration."""
     # These adapter tests require the optional Capture OVXR session module.
     pytest.importorskip("isaaccapture.ovxr_session_manager")
     from isaaclab_ov.renderers import OVRTXRendererCfg
     from isaaclab_teleop import XrCameraFeedLayoutCfg
 
     layout = XrCameraFeedLayoutCfg(placement=placement, world_position_m=(1.0, 0.0, 1.5))
-    rates = ["--ovxr_pip_fps", "15", "--ovxr_desktop_mirror_fps", "20"]
+    rates = ["--ovxr_camera_feed_fps", "15", "--ovxr_desktop_mirror_fps", "20"]
     calls = []
-    config, prepared = _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, flags + rates, calls)
+    config, prepared = _run_ovxr_camera_feed_workflow(monkeypatch, entrypoint, layout, rates, calls)
 
     assert calls == [("keep", ("head_cam",)), "launch", "prepare"]
     [(xr_cfg, renderer_cfg)] = prepared
     # The mirror rate applies only once ``--ovxr_desktop_mirror`` enables the mirror.
     assert xr_cfg.desktop_mirror is None
-    [camera] = xr_cfg.auxiliary_cameras
+    [camera] = xr_cfg.camera_feeds
     # Configclasses copy their fields, so the panel holds a copy of the scene sensor configuration.
     assert camera.name == "head_cam" and camera.camera_cfg.prim_path == config.scene.head_cam.prim_path
     assert camera.camera_cfg.renderer_cfg == config.scene.head_cam.renderer_cfg
     assert camera.max_fps == 15.0
-    assert camera.position == pytest.approx(position)
+    # OVXR shows the feed head-locked at the task's offset and distance, whatever the layout's placement.
+    assert camera.position == pytest.approx((0.1, -0.15, -0.8))
     assert isinstance(renderer_cfg, OVRTXRendererCfg) and renderer_cfg == config.scene.head_cam.renderer_cfg
     # Forcing head-locked placement leaves the task layout unchanged.
     assert config.isaac_teleop.xr_camera_feed_layout.placement == placement
 
 
 @pytest.mark.parametrize("entrypoint", ["live", "replay"])
-@pytest.mark.parametrize("placement", ["viewer_start", "world"])
-def test_ovxr_pip_rejects_task_layout_that_is_not_head_locked_before_launch(monkeypatch, entrypoint, placement):
-    """Without ``--ovxr_pip_head_locked``, a task layout OVXR cannot present fails before launch."""
+def test_ovxr_camera_feed_rejects_world_layout_without_a_distance_before_launch(monkeypatch, entrypoint):
+    """A world layout leaves ``distance_m`` unused; one that OVXR cannot show head-locked fails before launch."""
     from isaaclab_teleop import XrCameraFeedLayoutCfg
 
-    layout = XrCameraFeedLayoutCfg(placement=placement, world_position_m=(1.0, 0.0, 1.5))
+    layout = XrCameraFeedLayoutCfg(placement="world", world_position_m=(1.0, 0.0, 1.5), distance_m=0.0)
     calls = []
-    with pytest.raises(ValueError, match=rf"{placement!r} placement.*--ovxr_pip_head_locked"):
-        _run_ovxr_pip_workflow(monkeypatch, entrypoint, layout, [], calls)
+    with pytest.raises(ValueError, match=r"xr_camera_feed_layout uses 'world' placement.*distance_m"):
+        _run_ovxr_camera_feed_workflow(monkeypatch, entrypoint, layout, [], calls)
     assert calls == []
 
 

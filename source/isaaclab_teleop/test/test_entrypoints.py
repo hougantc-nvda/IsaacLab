@@ -40,7 +40,7 @@ def test_live_entrypoint_preserves_resolved_camera_selection(monkeypatch):
 
     monkeypatch.setattr(workflow, "run_teleoperation", run)
     monkeypatch.setattr(sys, "argv", ["caller"])
-    assert workflow.run_teleop_se3_agent_cli(["--ovxr", "--ovxr_pip_camera", "robot_pov_cam"]) == 0
+    assert workflow.run_teleop_se3_agent_cli(["--ovxr", "--ovxr_camera_feed", "robot_pov_cam"]) == 0
     assert calls == ["launch", resolved, "close"]
     assert sys.argv == ["caller"]
 
@@ -108,4 +108,4 @@ def test_live_and_recording_script_help_lists_ovxr(script):
     )
     assert result.returncode == 0, result.stderr
     assert re.search(r"^\s+--ovxr(?:\s|$)", result.stdout, re.MULTILINE)
-    assert "--ovxr_pip_camera" in result.stdout
+    assert "--ovxr_camera_feed" in result.stdout

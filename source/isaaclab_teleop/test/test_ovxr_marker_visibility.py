@@ -19,7 +19,7 @@ pytest.importorskip("isaaccapture.ovxr_session_manager")
 
 from isaaclab_ov.physics import OvPhysxCfg
 from isaaclab_teleop.ov_libraries_xr import _IsaacLabOvxrApplicationInterface
-from isaaclab_teleop.ovxr_cfg import OvLibrariesXrCameraCfg, OvLibrariesXrCfg
+from isaaclab_teleop.ovxr_cfg import OvLibrariesXrCameraFeedCfg, OvLibrariesXrCfg
 from isaaclab_teleop.ovxr_renderer import OvxrRendererCfg
 from isaaclab_teleop.ovxr_session import OvxrSessionBootstrap
 from ovrtx import Device
@@ -75,8 +75,8 @@ def test_tracking_markers_render_in_eyes_but_not_sensor_after_motion_and_reset(m
         cfg = OvLibrariesXrCfg(
             auto_launch_cloudxr=False,
             camera_paths=("/Eyes/Left", "/Eyes/Right"),
-            auxiliary_cameras=tuple(
-                OvLibrariesXrCameraCfg(name=name, camera_cfg=camera)
+            camera_feeds=tuple(
+                OvLibrariesXrCameraFeedCfg(name=name, camera_cfg=camera)
                 for name, camera in zip(("sensor", "left", "right"), cameras, strict=True)
             ),
         )

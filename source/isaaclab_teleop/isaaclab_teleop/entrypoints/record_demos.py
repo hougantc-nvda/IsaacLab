@@ -66,7 +66,7 @@ from .. import (
     CLOUDXR_JS_ENV,
     CLOUDXR_STANDALONE_ENV,
     IsaacTeleopCfg,
-    OvLibrariesXrCameraCfg,
+    OvLibrariesXrCameraFeedCfg,
     se3_keyboard_teleop_cfg,
     se3_spacemouse_teleop_cfg,
 )
@@ -76,7 +76,7 @@ from ._ovxr_launch import (
     add_ovxr_presentation_args,
     prepare_ovxr_launch,
     reject_ovxr_runtime_conflicts,
-    resolve_ovxr_pip_cameras,
+    resolve_ovxr_camera_feeds,
     validate_ovxr_presentation_args,
 )
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
@@ -325,7 +325,7 @@ def create_environment_config(
     ManagerBasedRLEnvCfg | DirectRLEnvCfg,
     object | None,
     IsaacTeleopCfg | DeviceCfg,
-    tuple[OvLibrariesXrCameraCfg, ...],
+    tuple[OvLibrariesXrCameraFeedCfg, ...],
 ]:
     """Create and configure the environment configuration.
 
@@ -341,7 +341,7 @@ def create_environment_config(
             - env_cfg: The configured environment configuration
             - success_term: The success termination object or None if not available
             - teleop_cfg: The resolved Capture or native device configuration
-            - selected_cameras: The resolved OVXR PiP panels, empty without ``--ovxr_pip_camera``
+            - selected_cameras: The resolved OVXR PiP panels, empty without ``--ovxr_camera_feed``
 
     Raises:
         SystemExit: If parsing the environment configuration fails (the error is logged and the process exits).
@@ -379,14 +379,14 @@ def create_environment_config(
         env_cfg = remove_camera_configs(env_cfg)
     selected_cameras = ()
     if args_cli.using_ovxr:
-        if args_cli.ovxr_pip_camera is not None:
+        if args_cli.ovxr_camera_feed is not None:
             from ..ovxr_renderer import OvxrRendererCfg
 
             # Resolve the panels before launch preparation removes the other cameras, so that an
             # invalid selection or task layout fails before launch.
-            selected_cameras = resolve_ovxr_pip_cameras(env_cfg, args_cli, OvxrRendererCfg())
+            selected_cameras = resolve_ovxr_camera_feeds(env_cfg, args_cli, OvxrRendererCfg())
         env_cfg = prepare_ovxr_launch(
-            env_cfg, args_cli.task, env_cfg.scene.num_envs, keep=tuple(args_cli.ovxr_pip_camera or ())
+            env_cfg, args_cli.task, env_cfg.scene.num_envs, keep=tuple(args_cli.ovxr_camera_feed or ())
         )
 
     if isinstance(teleop_cfg, IsaacTeleopCfg):
@@ -919,7 +919,7 @@ def record_demos(
     teleop_cfg: IsaacTeleopCfg | DeviceCfg,
     cleanup: contextlib.ExitStack,
     *,
-    selected_cameras: tuple[OvLibrariesXrCameraCfg, ...] = (),
+    selected_cameras: tuple[OvLibrariesXrCameraFeedCfg, ...] = (),
 ) -> None:
     """Create the environment and record demonstrations until the session ends."""
     from .. import XrCameraFeedSession
@@ -994,7 +994,7 @@ def _record_ovxr_demos(
     success_term: object | None,
     teleop_cfg: IsaacTeleopCfg,
     camera_feed_session: "XrCameraFeedSession",
-    selected_cameras: tuple[OvLibrariesXrCameraCfg, ...],
+    selected_cameras: tuple[OvLibrariesXrCameraFeedCfg, ...],
 ) -> int:
     """Record through an OVXR session prepared before the environment and drained before its release.
 
@@ -1014,7 +1014,7 @@ def _record_ovxr_demos(
             env_cfg,
             args_cli,
             application_name=f"isaaclab-ovxr-record-{args_cli.task}",
-            auxiliary_cameras=selected_cameras,
+            camera_feeds=selected_cameras,
         )
         try:
             env = gym.make(args_cli.task, cfg=env_cfg).unwrapped

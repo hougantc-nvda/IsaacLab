@@ -18,9 +18,8 @@ OVXR viewer:
     ``source/isaaclab_teleop/docs/kitless_xr.md`` for installation and launch
     instructions.
 
-    Optional camera quads use ``--ovxr_pip_camera NAME`` with the same rate, placement
-    and position options as live teleoperation (``--ovxr_pip_head_locked`` overrides a
-    task layout that is not head-locked). The desktop mirror is disabled by default;
+    Optional camera quads use ``--ovxr_camera_feed NAME`` with the same rate option
+    as live teleoperation. The desktop mirror is disabled by default;
     ``--ovxr_desktop_mirror`` enables it.
 
 Inputs:
@@ -316,14 +315,14 @@ from .. import (
     CLOUDXR_AVP_ENV,
     CLOUDXR_JS_ENV,
     CLOUDXR_STANDALONE_ENV,
-    OvLibrariesXrCameraCfg,
+    OvLibrariesXrCameraFeedCfg,
 )
 from ..action_policy import initial_hand_tracking_issue, prepare_teleop_action
 from ._ovxr_launch import (
     add_ovxr_presentation_args,
     prepare_ovxr_launch,
     reject_ovxr_runtime_conflicts,
-    resolve_ovxr_pip_cameras,
+    resolve_ovxr_camera_feeds,
     validate_ovxr_presentation_args,
 )
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
@@ -1139,7 +1138,7 @@ def _prepare_env_cfg(
     num_envs: int,
     device: str,
     overrides: Sequence[str] = (),
-) -> tuple[ManagerBasedRLEnvCfg, object | None, tuple[OvLibrariesXrCameraCfg, ...]]:
+) -> tuple[ManagerBasedRLEnvCfg, object | None, tuple[OvLibrariesXrCameraFeedCfg, ...]]:
     """Build and tweak an env config suitable for non-interactive replay.
 
     Mirrors the env-config mutations performed by ``record_demos.py``'s
@@ -1186,7 +1185,7 @@ def _prepare_env_cfg(
     Returns:
         Tuple ``(env_cfg, success_term, selected_cameras)``. ``success_term`` is ``None`` when
         the env doesn't define a ``success`` termination term.
-        ``selected_cameras`` holds the resolved OVXR PiP panels, empty without ``--ovxr_pip_camera``.
+        ``selected_cameras`` holds the resolved OVXR PiP panels, empty without ``--ovxr_camera_feed``.
     """
     env_cfg = parse_env_cfg(task, device=device, num_envs=num_envs, overrides=overrides)
     env_cfg.env_name = task.split(":")[-1]
@@ -1211,13 +1210,13 @@ def _prepare_env_cfg(
     if args_cli.ovxr:
         if args_cli.xr:
             raise ValueError("--xr and --ovxr are mutually exclusive OpenXR frame-loop owners")
-        if args_cli.ovxr_pip_camera is not None:
+        if args_cli.ovxr_camera_feed is not None:
             from ..ovxr_renderer import OvxrRendererCfg
 
             # Resolve the panels before launch preparation removes the other cameras, so that an
             # invalid selection or task layout fails before launch.
-            selected_cameras = resolve_ovxr_pip_cameras(env_cfg, args_cli, OvxrRendererCfg())
-        env_cfg = prepare_ovxr_launch(env_cfg, task, num_envs, keep=tuple(args_cli.ovxr_pip_camera or ()))
+            selected_cameras = resolve_ovxr_camera_feeds(env_cfg, args_cli, OvxrRendererCfg())
+        env_cfg = prepare_ovxr_launch(env_cfg, task, num_envs, keep=tuple(args_cli.ovxr_camera_feed or ()))
     # A task without a physics selection keeps None: SimulationContext defaults it to PhysxCfg.
     configs, kit_sources = validate_launch(env_cfg, vars(args_cli).copy())
     if args_cli.ovxr:
@@ -1865,7 +1864,7 @@ def main() -> int:
 def _run_replay_batch(
     env_cfg: ManagerBasedRLEnvCfg,
     success_term: object | None,
-    selected_cameras: tuple[OvLibrariesXrCameraCfg, ...],
+    selected_cameras: tuple[OvLibrariesXrCameraFeedCfg, ...],
 ) -> int:
     """Build the env, run the ``--num_replays`` replays, and report the stats; see :func:`main`.
 
@@ -1905,7 +1904,7 @@ def _run_replay_batch(
                 env_cfg,
                 args_cli,
                 application_name=f"isaaclab-ovxr-replay-{args_cli.task}",
-                auxiliary_cameras=selected_cameras,
+                camera_feeds=selected_cameras,
             )
 
             def request_shutdown(_signum, _frame):

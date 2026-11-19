@@ -97,13 +97,13 @@ The same names identify the policy image observations and the task's XR camera
 feeds, with the head panel centered and wrist panels to its left and right.
 In Kit, sensor `update_period` controls image sampling in simulation time; feed
 `max_update_hz` caps uploads. In OVXR, each panel renders natively at the lower of
-`--ovxr_pip_fps` and its feed's nonzero `max_update_hz`; `update_period` does not
+`--ovxr_camera_feed_fps` and its feed's nonzero `max_update_hz`; `update_period` does not
 apply. Actual delivery also depends on simulation and renderer throughput. Camera
 sampling rates are configuration targets, not measured headset frame rates.
 
 With `--xr`, the teleoperation launcher's `--disable_external_cameras` option removes
 these cameras and their image observations. The kitless XR launcher accepts up to
-three camera names with `--ovxr_pip_camera`. Camera feeds are opt-in: without
+three camera names with `--ovxr_camera_feed`. Camera feeds are opt-in: without
 this option, live OVXR and MCAP replay omit task cameras and PiP layers. Selected
 OVXR cameras feed the panels only: their policy image observations are removed even
 with `presets=rgb`, so the application does not request a second camera render.

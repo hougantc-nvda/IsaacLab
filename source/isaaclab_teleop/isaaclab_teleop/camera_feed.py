@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from isaaclab.sensors import Camera, CameraCfg
 
-    from .ovxr_cfg import OvLibrariesXrCameraCfg
+    from .ovxr_cfg import OvLibrariesXrCameraFeedCfg
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _DLSS_EXEC_MODES = frozenset({"performance", "balanced", "quality", "auto", "rtx
 def select_ovxr_camera_feeds(
     env_cfg: Any, names: Sequence[str], renderer_cfg: OVRTXRendererCfg
 ) -> list[tuple[str, CameraCfg, XrCameraFeedCfg]]:
-    """Validate selected PiP cameras and assign their shared renderer before launch.
+    """Validate selected camera feeds and assign their shared renderer before launch.
 
     Selection order is retained. Each name must identify a scene camera and exactly
     one enabled feed. Validation completes before any camera configuration changes.
@@ -61,15 +61,15 @@ def select_ovxr_camera_feeds(
     from isaaclab.sensors import CameraCfg
 
     if len(names) > 3 or len(names) != len(set(names)):
-        raise ValueError("Select up to three unique OVXR PiP cameras")
+        raise ValueError("Select up to three unique OVXR camera feeds")
     selected = []
     for name in names:
         camera = getattr(env_cfg.scene, name, None)
         if not isinstance(camera, CameraCfg):
-            raise ValueError(f"OVXR PiP camera {name!r} is not a configured CameraCfg")
+            raise ValueError(f"OVXR camera feed {name!r} is not a configured CameraCfg")
         feeds = [feed for feed in env_cfg.isaac_teleop.xr_camera_feeds if feed.enabled and feed.camera_name == name]
         if len(feeds) != 1:
-            raise ValueError(f"OVXR PiP camera {name!r} must have exactly one enabled XrCameraFeedCfg")
+            raise ValueError(f"OVXR camera feed {name!r} must have exactly one enabled XrCameraFeedCfg")
         selected.append((name, camera, feeds[0]))
     for _name, camera, _feed in selected:
         camera.renderer_cfg = renderer_cfg
@@ -81,19 +81,16 @@ def resolve_ovxr_camera_configs(
     layout: XrCameraFeedLayoutCfg,
     *,
     max_fps: float,
-    position_override: tuple[float, float, float] | None = None,
-) -> tuple[OvLibrariesXrCameraCfg, ...]:
+) -> tuple[OvLibrariesXrCameraFeedCfg, ...]:
     """Resolve selected feeds into OVXR panels without creating native resources.
 
     A feed's positive update cap limits the caller's rate; zero leaves that rate
-    unchanged. A position override applies only to a single selected panel.
+    unchanged.
 
     Args:
         selected: Camera/feed references returned by :func:`select_ovxr_camera_feeds`.
         layout: Head-locked panel layout, including spacing and panel dimensions in metres.
         max_fps: Maximum panel update rate in frames per second; must be finite and positive.
-        position_override: Optional single-panel centre in OpenXR VIEW coordinates, in metres
-            (right, up, backward). A negative Z places the panel in front of the viewer.
 
     Returns:
         Panel configurations in selection order. Layout and feed configuration are not mutated.
@@ -101,15 +98,13 @@ def resolve_ovxr_camera_configs(
         still select the same shared renderer; session preparation takes a further snapshot.
 
     Raises:
-        ValueError: If the layout, feed, rate, or override is invalid or unsupported.
+        ValueError: If the layout, feed or rate is invalid or unsupported.
     """
-    from .ovxr_cfg import OvLibrariesXrCameraCfg
+    from .ovxr_cfg import OvLibrariesXrCameraFeedCfg
 
     _validate_layout_cfg(layout)
     if selected and layout.placement != "head_locked":
         raise ValueError("Kitless XR camera quads require head_locked placement")
-    if position_override is not None and len(selected) > 1:
-        raise ValueError("A PiP position override requires one camera; multiple panels use task layout")
     for _name, _camera, feed in selected:
         _XrCameraFeedManager._validate_cfg(feed, layout.placement)
     feeds = _layout_feed_cfgs(
@@ -120,14 +115,12 @@ def resolve_ovxr_camera_configs(
     cameras = []
     for (name, camera, _feed), feed in zip(selected, feeds, strict=True):
         cameras.append(
-            OvLibrariesXrCameraCfg(
+            OvLibrariesXrCameraFeedCfg(
                 name=name,
                 camera_cfg=camera,
                 max_fps=min(max_fps, feed.max_update_hz) if feed.max_update_hz > 0.0 else max_fps,
                 panel_width_m=feed.panel_width_m,
-                position=(float(feed.offset_m[0]), float(feed.offset_m[1]), -float(feed.distance_m))
-                if position_override is None
-                else tuple(position_override),
+                position=(float(feed.offset_m[0]), float(feed.offset_m[1]), -float(feed.distance_m)),
             )
         )
     return tuple(cameras)

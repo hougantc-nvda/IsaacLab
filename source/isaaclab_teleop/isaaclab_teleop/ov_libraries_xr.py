@@ -22,7 +22,7 @@ from isaaccapture.ovxr_session_manager import OvxrApplicationInterface, StageOrd
 
 from isaaclab.physics import PhysicsEvent
 
-from .ovxr_cfg import OvLibrariesXrCameraCfg, OvLibrariesXrCfg, OvLibrariesXrDesktopMirrorCfg
+from .ovxr_cfg import OvLibrariesXrCameraFeedCfg, OvLibrariesXrCfg, OvLibrariesXrDesktopMirrorCfg
 from .ovxr_session import OvxrSessionBootstrap, validate_ovxr_session_preparation
 
 if TYPE_CHECKING:
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from .ovxr_renderer import OvxrRendererCfg
 
-__all__ = ["OvLibrariesXrCameraCfg", "OvLibrariesXrCfg", "OvLibrariesXrDesktopMirrorCfg", "OvLibrariesXrSession"]
+__all__ = ["OvLibrariesXrCameraFeedCfg", "OvLibrariesXrCfg", "OvLibrariesXrDesktopMirrorCfg", "OvLibrariesXrSession"]
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class OvLibrariesXrSession:
                 selects a different simulation device or physics time step, or already has a prim of
                 another type at a configured OVXR prim path.
             TypeError: If ``external_anchor_state`` does not implement :class:`ExternalAnchorState`.
-            ValueError: If ``max_blank_frames`` is not a nonnegative integer, selected auxiliary cameras
+            ValueError: If ``max_blank_frames`` is not a nonnegative integer, selected camera feeds
                 use eager scene sensor updates, or a configured OVXR prim path is not absolute or is
                 requested with two types.
         """
@@ -191,9 +191,9 @@ class OvLibrariesXrSession:
         # Reject an inconsistent environment or configuration before the worker claims the single-use
         # transfer and authors the OVXR prims.
         self._bootstrap.validate_environment(env)
-        if self._cfg.auxiliary_cameras and not env.unwrapped.scene.cfg.lazy_sensor_update:
+        if self._cfg.camera_feeds and not env.unwrapped.scene.cfg.lazy_sensor_update:
             raise ValueError(
-                "OVXR auxiliary cameras require scene.lazy_sensor_update=True; eager sensor updates"
+                "OVXR camera feeds require scene.lazy_sensor_update=True; eager sensor updates"
                 " would capture cameras whose renderer is owned by the XR worker"
             )
         _resolve_ovxr_runtime_prims(env, self._cfg)
@@ -376,13 +376,13 @@ class OvLibrariesXrSession:
             RuntimeError: If a simulation context already exists or extension mode is active.
             ValueError: If the XR configuration is invalid.
         """
-        cfg = replace(cfg, auxiliary_cameras=tuple(cfg.auxiliary_cameras))
+        cfg = replace(cfg, camera_feeds=tuple(cfg.camera_feeds))
         validate_ovxr_session_preparation()
         import ovxr
 
         bootstrap = OvxrSessionBootstrap(sim_cfg, renderer_cfg)
         try:
-            for camera in cfg.auxiliary_cameras:
+            for camera in cfg.camera_feeds:
                 bootstrap.configure_auxiliary_camera(camera.camera_cfg, max_fps=camera.max_fps)
             # Process-global settings change only after preparation succeeds. The native
             # renderer is created later with the environment, so they still precede it.
@@ -638,7 +638,7 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
         self._ordinal_ledger = None
         self._last_published_ordinal: int | None = None
         self._publication_closed = False
-        self._auxiliary_cameras = cfg.auxiliary_cameras
+        self._camera_feeds = cfg.camera_feeds
         self.desktop_mirror = None
         self._external_anchor = external_anchor_state
         self._anchor_snapshot: tuple[int, np.ndarray] | None = None
@@ -658,12 +658,12 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
 
         self._bootstrap.claim_render_owner_transfer(capability)
         unwrapped = self._env.unwrapped
-        if self._auxiliary_cameras:
+        if self._camera_feeds:
             # Fail before native Stage binding and visual-exclusion export.
             sensors = unwrapped.scene.sensors
-            for camera in self._auxiliary_cameras:
+            for camera in self._camera_feeds:
                 if sensors.get(camera.name) is None:
-                    raise RuntimeError(f"Configured auxiliary camera {camera.name!r} is not present in the environment")
+                    raise RuntimeError(f"Configured camera feed {camera.name!r} is not present in the environment")
         _declare_ovxr_runtime_prims(self._env, self._cfg)
         from .xr_visual_exclusions import exclude_visual_meshes
 
@@ -675,7 +675,7 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
         with exclude_visual_meshes(stage, self._excluded_visual_meshes, environment_root_path=environment_root_path):
             self._lease = self._bootstrap.bind_environment(self._env)
         auxiliary_paths = ()
-        if self._auxiliary_cameras:
+        if self._camera_feeds:
             auxiliary_paths = self._lease.auxiliary_render_product_paths
         with self._lease.ovstage_owner_lane():
             self._ordinal_ledger = _StageOrdinalLedger(self._lease.ovstage)
@@ -712,7 +712,7 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
                 orientation_xyzw=camera.orientation_xyzw,
                 space=camera.space,
             )
-            for path, camera in zip(auxiliary_paths, self._auxiliary_cameras, strict=True)
+            for path, camera in zip(auxiliary_paths, self._camera_feeds, strict=True)
         )
         consumers = [CameraPanelConsumer(panels)] if panels else []
         if self._cfg.desktop_mirror is not None:
@@ -757,9 +757,9 @@ class _IsaacLabOvxrApplicationInterface(OvxrApplicationInterface):
 
         def prepare() -> None:
             nonlocal snapshot
-            if self._auxiliary_cameras:
+            if self._camera_feeds:
                 sensors = self._env.unwrapped.scene.sensors
-                for camera in self._auxiliary_cameras:
+                for camera in self._camera_feeds:
                     # OVXR presentation bypasses Camera's image-update path. Refresh only poses
                     # after simulation/reset kinematics, before publishing the matching scene.
                     # Camera has no public pose-only refresh; its pose update renders and counts no frame.

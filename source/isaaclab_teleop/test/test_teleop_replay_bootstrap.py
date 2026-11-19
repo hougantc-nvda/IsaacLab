@@ -50,14 +50,12 @@ def test_ovxr_presentation_preserves_camera_layout(monkeypatch, layout_mode):
     original_layout = config.isaac_teleop.xr_camera_feed_layout
     original_layout_fields = original_layout.to_dict() if original_layout is not None else None
     original_feeds = [feed.to_dict() for feed in config.isaac_teleop.xr_camera_feeds]
-    from isaaclab_teleop.entrypoints._ovxr_launch import resolve_ovxr_pip_cameras
+    from isaaclab_teleop.entrypoints._ovxr_launch import resolve_ovxr_camera_feeds
     from isaaclab_teleop.ovxr_renderer import OvxrRendererCfg
 
     args = SimpleNamespace(
-        ovxr_pip_camera=names,
-        ovxr_pip_head_locked=True,
-        ovxr_pip_fps=15.0,
-        ovxr_pip_view_position=None,
+        ovxr_camera_feed=names,
+        ovxr_camera_feed_fps=15.0,
         task="Test",
         ovxr_session_mode="ar",
         cloudxr_env="none",
@@ -66,16 +64,16 @@ def test_ovxr_presentation_preserves_camera_layout(monkeypatch, layout_mode):
         ovxr_desktop_mirror_fps=20.0,
     )
     # Environment preparation resolves the panels that the presentation receives.
-    cameras = resolve_ovxr_pip_cameras(config, args, OvxrRendererCfg())
+    cameras = resolve_ovxr_camera_feeds(config, args, OvxrRendererCfg())
     prepare = Mock()
     monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
     from isaaclab_teleop.entrypoints._ovxr_presentation import OvxrPresentation
 
-    presentation = OvxrPresentation.prepare(config, args, application_name="replay", auxiliary_cameras=cameras)
+    presentation = OvxrPresentation.prepare(config, args, application_name="replay", camera_feeds=cameras)
     assert presentation.session is prepare.return_value
     session_config = prepare.call_args.args[1]
     assert session_config.desktop_mirror.max_fps == 20.0
-    assert [camera.max_fps for camera in session_config.auxiliary_cameras] == [15.0, 15.0]
+    assert [camera.max_fps for camera in session_config.camera_feeds] == [15.0, 15.0]
     # Panels copy the sensor configuration; an equal renderer configuration shares one renderer.
     assert prepare.call_args.kwargs["renderer_cfg"] == config.scene.left.renderer_cfg
     expected = (
@@ -83,7 +81,7 @@ def test_ovxr_presentation_preserves_camera_layout(monkeypatch, layout_mode):
         if layout_mode == "horizontal"
         else [(0.0, 0.0, -0.8), (0.0, 0.0, -0.8)]
     )
-    for camera, position in zip(session_config.auxiliary_cameras, expected, strict=True):
+    for camera, position in zip(session_config.camera_feeds, expected, strict=True):
         assert camera.position == pytest.approx(position)
     assert config.isaac_teleop.xr_camera_feed_layout is original_layout
     if original_layout is not None:
@@ -230,9 +228,9 @@ def test_presented_replay_preserves_startup_ownership_and_batch_completion(monke
 
     class Presentation:
         @classmethod
-        def prepare(cls, cfg, args, *, application_name, auxiliary_cameras):
+        def prepare(cls, cfg, args, *, application_name, camera_feeds):
             assert application_name == "isaaclab-ovxr-replay-task"
-            assert auxiliary_cameras == ()
+            assert camera_feeds == ()
             return cls()
 
         def __init__(self):
@@ -838,22 +836,12 @@ def test_required_hand_data_is_counted_before_the_batch_and_replayed_synchronous
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        (["--ovxr_pip_head_locked"], "OVXR presentation options require --ovxr"),
-        (["--ovxr", "--ovxr_pip_fps", "0"], "--ovxr_pip_fps must be finite and positive"),
-        (["--ovxr", "--ovxr_pip_camera", "robot_pov_cam", "presets=rgb"], "takes camera names, not overrides"),
+        (["--ovxr_camera_feed", "robot_pov_cam"], "--ovxr_camera_feed requires --ovxr"),
+        (["--ovxr", "--ovxr_camera_feed_fps", "0"], "--ovxr_camera_feed_fps must be finite and positive"),
+        (["--ovxr", "--ovxr_camera_feed", "robot_pov_cam", "presets=rgb"], "takes camera names, not overrides"),
         (
-            [
-                "--ovxr",
-                "--ovxr_pip_camera",
-                "a",
-                "b",
-                "--ovxr_pip_head_locked",
-                "--ovxr_pip_view_position",
-                "0",
-                "0",
-                "-1",
-            ],
-            "A PiP position override requires one camera",
+            ["--ovxr", "--ovxr_camera_feed", "robot_pov_cam", "--disable_external_cameras"],
+            "--ovxr_camera_feed cannot be combined with --disable_external_cameras",
         ),
     ],
 )

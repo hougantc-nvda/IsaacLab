@@ -175,22 +175,18 @@ with kitless physics.
 
 ## Camera panels and desktop mirror
 
-Select up to three task cameras and a head-locked layout:
+Select up to three task cameras:
 
 ```bash
 uv run --extra ovxr isaaclab teleop run --ovxr \
     --task IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs \
-    --num_envs 1 --device cpu --physics ovphysx \
-    --ovxr_pip_camera robot_pov_cam left_wrist_cam right_wrist_cam \
-    --ovxr_pip_head_locked presets=rgb
+    --num_envs 1 --device cpu --physics ovphysx presets=rgb \
+    --ovxr_camera_feed robot_pov_cam left_wrist_cam right_wrist_cam
 ```
 
-`--ovxr_pip_fps` limits panel updates. With `--ovxr_pip_head_locked` and a single
-`--ovxr_pip_camera`, `--ovxr_pip_view_position X Y Z` sets that panel's VIEW-space
-center; it is rejected with multiple panels. Panel cameras must be
-enabled in the task's `xr_camera_feeds`. World and viewer-start layouts are not
-supported by the OVXR presenter: `--ovxr_pip_head_locked` places such a layout's
-panels in the OpenXR VIEW space, and without it the command fails before launch.
+`--ovxr_camera_feed_fps` limits panel updates. Panel cameras must be
+enabled in the task's `xr_camera_feeds`. OVXR shows camera feeds head-locked, using the
+size, gap and distance of the task's `xr_camera_feed_layout`.
 The session snapshots its camera selection at
 preparation; create a new session to change it. Panels use the same renderer as
 the headset and do not require a desktop display. OVXR panels show no label; a
@@ -199,7 +195,7 @@ lists each camera by its sensor name.
 
 GR1T2 and G1 tasks provide `robot_pov_cam`. Fixed-base G1 adds `left_wrist_cam` and
 `right_wrist_cam` with `presets=rgb`, as in the example above. SO101 does not declare
-a PiP camera in its scene. Use the desktop mirror without `--ovxr_pip_camera` for that task.
+a PiP camera in its scene. Use the desktop mirror without `--ovxr_camera_feed` for that task.
 
 Selected OVXR cameras feed the panels only. Their policy image observations are
 removed even with `presets=rgb`, so the application does not request a second

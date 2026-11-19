@@ -10,13 +10,18 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..xr_cfg import XrAnchorRotationMode, remove_camera_configs
 
 if TYPE_CHECKING:
-    from ..ovxr_cfg import OvLibrariesXrCameraCfg
+    from ..ovxr_cfg import OvLibrariesXrCameraFeedCfg
+
+# Earlier spellings of the camera-feed options. Unknown options are forwarded to Hydra, so they are rejected by name.
+_RENAMED_OVXR_OPTIONS = {"--ovxr_pip_camera": "--ovxr_camera_feed", "--ovxr_pip_fps": "--ovxr_camera_feed_fps"}
+_REMOVED_OVXR_OPTIONS = ("--ovxr_pip_head_locked", "--ovxr_pip_view_position")
 
 
 def prepare_ovxr_launch(env_cfg: Any, task: str, num_envs: int, *, keep: tuple[str, ...] = ()) -> Any:
@@ -95,7 +100,7 @@ def add_ovxr_presentation_args(parser: argparse.ArgumentParser) -> None:
         help="Maximum desktop-mirror update rate (default: 30 Hz).",
     )
     parser.add_argument(
-        "--ovxr_pip_camera",
+        "--ovxr_camera_feed",
         type=str,
         nargs="+",
         default=None,
@@ -105,22 +110,10 @@ def add_ovxr_presentation_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--ovxr_pip_fps",
+        "--ovxr_camera_feed_fps",
         type=float,
         default=30.0,
-        help="Maximum OVXR PiP update rate (default: 30 Hz).",
-    )
-    parser.add_argument(
-        "--ovxr_pip_head_locked",
-        action="store_true",
-        help="Place the application camera quads in the OpenXR VIEW space, overriding the task layout.",
-    )
-    parser.add_argument(
-        "--ovxr_pip_view_position",
-        type=float,
-        nargs=3,
-        metavar=("X", "Y", "Z"),
-        help="Optional VIEW-space camera panel center in meters; requires --ovxr_pip_head_locked.",
+        help="Maximum OVXR camera feed update rate (default: 30 Hz).",
     )
 
 
@@ -134,74 +127,79 @@ def validate_ovxr_presentation_args(
         args: Parsed namespace.
         using_ovxr: Whether the command selected ``--ovxr``.
     """
-    if args.ovxr_pip_camera is not None and not using_ovxr:
-        parser.error("--ovxr_pip_camera requires --ovxr")
-    if args.ovxr_pip_camera is not None:
+    for token in sys.argv[1:]:
+        option = token.split("=", 1)[0]
+        if option in _RENAMED_OVXR_OPTIONS:
+            parser.error(f"{option} was renamed to {_RENAMED_OVXR_OPTIONS[option]}")
+        if option in _REMOVED_OVXR_OPTIONS:
+            parser.error(
+                f"{option} was removed: OVXR always shows camera feeds head-locked, and the task's"
+                " xr_camera_feed_layout sets their placement"
+            )
+    if args.ovxr_camera_feed is not None and not using_ovxr:
+        parser.error("--ovxr_camera_feed requires --ovxr")
+    if args.ovxr_camera_feed is not None:
         # The option takes every following bare token, including Hydra overrides placed after it.
-        overrides = [name for name in args.ovxr_pip_camera if "=" in name]
+        overrides = [name for name in args.ovxr_camera_feed if "=" in name]
         if overrides:
             parser.error(
-                f"--ovxr_pip_camera takes camera names, not overrides {overrides}; place overrides such as"
-                " presets=rgb before --ovxr_pip_camera or after another option"
+                f"--ovxr_camera_feed takes camera names, not overrides {overrides}; place overrides such as"
+                " presets=rgb before --ovxr_camera_feed or after another option"
             )
-    if (args.ovxr_pip_head_locked or args.ovxr_pip_view_position is not None) and not using_ovxr:
-        parser.error("OVXR presentation options require --ovxr")
     if args.ovxr_desktop_mirror and not using_ovxr:
         parser.error("--ovxr_desktop_mirror requires --ovxr")
-    if args.ovxr_pip_camera is not None and args.disable_external_cameras:
-        parser.error("--ovxr_pip_camera cannot be combined with --disable_external_cameras")
-    if not math.isfinite(args.ovxr_pip_fps) or args.ovxr_pip_fps <= 0.0:
-        parser.error("--ovxr_pip_fps must be finite and positive")
-    if args.ovxr_pip_view_position is not None:
-        if not args.ovxr_pip_head_locked or args.ovxr_pip_camera is None:
-            parser.error("--ovxr_pip_view_position requires a head-locked PiP camera")
-        if len(args.ovxr_pip_camera) > 1:
-            parser.error("A PiP position override requires one camera; multiple panels use task layout")
-        if not all(math.isfinite(value) for value in args.ovxr_pip_view_position):
-            parser.error("--ovxr_pip_view_position must be finite")
+    if args.ovxr_camera_feed is not None and args.disable_external_cameras:
+        parser.error("--ovxr_camera_feed cannot be combined with --disable_external_cameras")
+    if not math.isfinite(args.ovxr_camera_feed_fps) or args.ovxr_camera_feed_fps <= 0.0:
+        parser.error("--ovxr_camera_feed_fps must be finite and positive")
     if not math.isfinite(args.ovxr_desktop_mirror_fps) or args.ovxr_desktop_mirror_fps <= 0:
         parser.error("--ovxr_desktop_mirror_fps must be finite and positive")
 
 
-def resolve_ovxr_pip_cameras(
+def resolve_ovxr_camera_feeds(
     env_cfg: Any, args: argparse.Namespace, renderer_cfg: Any
-) -> tuple[OvLibrariesXrCameraCfg, ...]:
-    """Select the requested PiP cameras and resolve their OVXR panels before launch.
+) -> tuple[OvLibrariesXrCameraFeedCfg, ...]:
+    """Select the requested camera feeds and resolve their OVXR panels before launch.
 
     Selection assigns ``renderer_cfg`` to each selected camera, so the OVXR session and its panels
     share one OVRTX configuration. Resolution creates no native resources, so an invalid selection or
     task layout fails before the simulation launches.
 
+    OVXR shows camera feeds head-locked only. The task's ``xr_camera_feed_layout`` supplies the panel
+    size, gap and distance; its ``placement`` is not used, nor is the world pose of a ``"world"`` layout.
+
     Args:
         env_cfg: Resolved environment configuration.
         args: Parsed namespace with the shared OVXR presentation options.
-        renderer_cfg: OVRTX configuration shared by the OVXR session and its PiP cameras.
+        renderer_cfg: OVRTX configuration shared by the OVXR session and its camera feeds.
 
     Returns:
-        The resolved panels in selection order, or an empty tuple without ``--ovxr_pip_camera``.
+        The resolved panels in selection order, or an empty tuple without ``--ovxr_camera_feed``.
 
     Raises:
-        ValueError: If a selected camera or its feed is invalid, or if the task layout is not
-            head-locked and ``--ovxr_pip_head_locked`` is not given.
+        ValueError: If a selected camera or its feed is invalid, or if the task's
+            ``xr_camera_feed_layout`` cannot be placed head-locked.
     """
-    if args.ovxr_pip_camera is None:
+    if args.ovxr_camera_feed is None:
         return ()
 
     from ..camera_feed import resolve_ovxr_camera_configs, select_ovxr_camera_feeds
     from ..isaac_teleop_cfg import XrCameraFeedLayoutCfg
 
-    selected = select_ovxr_camera_feeds(env_cfg, args.ovxr_pip_camera, renderer_cfg)
+    selected = select_ovxr_camera_feeds(env_cfg, args.ovxr_camera_feed, renderer_cfg)
     layout = env_cfg.isaac_teleop.xr_camera_feed_layout or XrCameraFeedLayoutCfg()
-    if args.ovxr_pip_head_locked:
-        layout = layout.replace(placement="head_locked")
-    elif layout.placement != "head_locked":
-        raise ValueError(
-            f"OVXR camera panels are head-locked, but the task places them with {layout.placement!r} placement."
-            " Pass --ovxr_pip_head_locked to place them in the OpenXR VIEW space."
+    try:
+        return resolve_ovxr_camera_configs(
+            selected, layout.replace(placement="head_locked"), max_fps=args.ovxr_camera_feed_fps
         )
-    return resolve_ovxr_camera_configs(
-        selected, layout, max_fps=args.ovxr_pip_fps, position_override=args.ovxr_pip_view_position
-    )
+    except ValueError as exc:
+        if layout.placement != "world":
+            raise
+        # "world" placement leaves distance_m unused and unvalidated; head-locked placement needs it.
+        raise ValueError(
+            "OVXR shows camera feeds head-locked, but the task's xr_camera_feed_layout uses 'world' placement and"
+            f" cannot be shown that way: {exc}"
+        ) from exc
 
 
 def reject_ovxr_runtime_conflicts(configs: Sequence[Any], kit_sources: Sequence[str]) -> None:

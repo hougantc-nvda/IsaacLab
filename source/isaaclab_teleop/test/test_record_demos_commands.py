@@ -111,10 +111,10 @@ def test_recording_notifies_teleop_when_environment_zero_resets_itself(terminate
         (["--ovxr_step_hz", "20"], "requires --ovxr"),
         (["--ovxr", "--ovxr_step_hz", "nan"], "finite and non-negative"),
         (["--ovxr_desktop_mirror"], "--ovxr_desktop_mirror requires --ovxr"),
-        (["--ovxr_pip_camera", "head_cam"], "--ovxr_pip_camera requires --ovxr"),
-        (["--ovxr", "--ovxr_pip_camera", "head_cam", "presets=rgb"], "takes camera names, not overrides"),
+        (["--ovxr_camera_feed", "head_cam"], "--ovxr_camera_feed requires --ovxr"),
+        (["--ovxr", "--ovxr_camera_feed", "head_cam", "presets=rgb"], "takes camera names, not overrides"),
         (["--ovxr", "--ovxr_session_mode", "vr", "--ovxr_step_hz", "20"], None),
-        (["--ovxr", "--ovxr_desktop_mirror", "--ovxr_pip_camera", "head_cam", "--ovxr_pip_head_locked"], None),
+        (["--ovxr", "--ovxr_desktop_mirror", "--ovxr_camera_feed", "head_cam"], None),
     ],
 )
 def test_recording_parses_ovxr_options_like_live(monkeypatch, capsys, arguments, message):
@@ -139,10 +139,8 @@ def test_recording_parses_ovxr_options_like_live(monkeypatch, capsys, arguments,
             "auto_launch_cloudxr",
             "ovxr_desktop_mirror",
             "ovxr_desktop_mirror_fps",
-            "ovxr_pip_camera",
-            "ovxr_pip_fps",
-            "ovxr_pip_head_locked",
-            "ovxr_pip_view_position",
+            "ovxr_camera_feed",
+            "ovxr_camera_feed_fps",
         )
         parsed.append({name: getattr(args, name) for name in names})
     if message is None:
@@ -202,7 +200,10 @@ def test_recording_ovxr_checks_launch_before_preparing_and_owns_context_cleanup(
     assert cfg.events.randomize_joint_state.params["std"] == 0.0
 
 
-def test_recording_ovxr_presentation_options_reach_session_construction(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "task", ["IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs", "IsaacContrib-PickPlace-GR1T2-Abs"]
+)
+def test_recording_ovxr_presentation_options_reach_session_construction(monkeypatch, tmp_path, task):
     """The recorder passes the live agent's PiP and mirror options to the OVXR session, keeping only PiP cameras."""
     import contextlib
     from types import SimpleNamespace
@@ -219,10 +220,10 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
     monkeypatch.setattr(sys, "argv", ["record_demos.py"])
     monkeypatch.setattr(record_demos, "args_cli", None, raising=False)
     record_demos._parse_args([
-        "--task", "IsaacContrib-PickPlace-FixedBaseUpperBodyIK-G1-Abs", "--physics", "ovphysx", "--ovxr",
-        "--cloudxr_env", "none", "--dataset_file", str(tmp_path / "g1.hdf5"),
-        "--ovxr_pip_fps", "15", "--ovxr_desktop_mirror", "--ovxr_desktop_mirror_fps", "20",
-        "--ovxr_pip_camera", "robot_pov_cam", "--ovxr_pip_head_locked",
+        "--task", task, "--physics", "ovphysx", "--ovxr",
+        "--cloudxr_env", "none", "--dataset_file", str(tmp_path / "demo.hdf5"),
+        "--ovxr_camera_feed_fps", "15", "--ovxr_desktop_mirror", "--ovxr_desktop_mirror_fps", "20",
+        "--ovxr_camera_feed", "robot_pov_cam",
     ])  # fmt: skip
     launched = []
     prepared = []
@@ -253,8 +254,10 @@ def test_recording_ovxr_presentation_options_reach_session_construction(monkeypa
     assert cfg.scene.robot_pov_cam is not None
     [(xr_cfg, renderer_cfg)] = prepared
     assert xr_cfg.desktop_mirror is not None and xr_cfg.desktop_mirror.max_fps == 20.0
-    [camera] = xr_cfg.auxiliary_cameras
+    [camera] = xr_cfg.camera_feeds
     assert camera.name == "robot_pov_cam" and camera.max_fps == 15.0
+    # G1 declares a head-locked layout and GR1T2 keeps the default one; OVXR shows both head-locked.
+    assert camera.space == "head_locked" and camera.position == pytest.approx((0.0, -0.15, -0.8))
     assert renderer_cfg == camera.camera_cfg.renderer_cfg
 
 

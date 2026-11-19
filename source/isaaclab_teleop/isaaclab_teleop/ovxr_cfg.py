@@ -27,7 +27,7 @@ _DEFAULT_OVXR_CAMERA_PATHS = (
 
 
 @configclass
-class OvLibrariesXrCameraCfg:
+class OvLibrariesXrCameraFeedCfg:
     """One application-selected sensor and its camera-panel policy."""
 
     name: str = MISSING
@@ -110,15 +110,15 @@ class OvLibrariesXrCfg:
     """Whether OVXR waits for render output before returning from frame rendering."""
     desktop_mirror: OvLibrariesXrDesktopMirrorCfg | None = None
     """Owner-managed desktop mirror; None disables it."""
-    auxiliary_cameras: tuple[OvLibrariesXrCameraCfg, ...] = ()
+    camera_feeds: tuple[OvLibrariesXrCameraFeedCfg, ...] = ()
     """Up to three uniquely named camera panels; an empty selection disables panels."""
     extra_openxr_extensions: tuple[str, ...] = ()
     """Additional OpenXR extension names requested when creating the session."""
 
     def __post_init__(self) -> None:
-        cameras = self.auxiliary_cameras
+        cameras = self.camera_feeds
         if len(cameras) > 3 or len({camera.name for camera in cameras}) != len(cameras):
-            raise ValueError("Select at most three uniquely named auxiliary cameras")
+            raise ValueError("Select at most three uniquely named camera feeds")
         if self.session_mode not in ("ar", "vr"):
             raise ValueError("session_mode must be 'ar' or 'vr'")
         if not math.isfinite(self.meters_per_unit) or self.meters_per_unit <= 0:

@@ -1366,8 +1366,9 @@ or failure, or the replay duration limit ends the run. The separate
 ``isaaclab teleop replay`` command replays HDF5 demonstrations; the task's
 ``--physics`` and ``--renderer`` selections decide whether it starts Kit.
 
-Add ``--ovxr_pip_camera robot_pov_cam --ovxr_pip_head_locked`` for a camera
-panel. OVXR live and MCAP replay run without a local window by default; add
+Add ``--ovxr_camera_feed robot_pov_cam`` for a camera panel. OVXR shows camera
+feeds head-locked, using the size, gap and distance of the task's
+``xr_camera_feed_layout``. OVXR live and MCAP replay run without a local window by default; add
 ``--ovxr_desktop_mirror`` to show completed images locally. XR and PiP rendering
 are independent of the desktop mirror.
 See the kitless XR guide for installation, camera selection and display requirements.

@@ -498,8 +498,8 @@ def test_host_lends_the_selected_auxiliary_product_without_rendering_it(xr_modul
         bootstrap,
         env,
         xr_module.OvLibrariesXrCfg(
-            auxiliary_cameras=(
-                xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
+            camera_feeds=(
+                xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
             ),
         ),
     )
@@ -517,8 +517,8 @@ def test_host_rejects_a_missing_selected_auxiliary_camera(xr_module, monkeypatch
         bootstrap,
         env,
         xr_module.OvLibrariesXrCfg(
-            auxiliary_cameras=(
-                xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
+            camera_feeds=(
+                xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
             ),
         ),
     )
@@ -562,8 +562,8 @@ def test_selected_camera_poses_follow_motion_and_reset_before_publication(xr_mod
 
     cameras = {name: PoseOnlyCamera() for name in (*names, "unselected")}
     env.scene = SimpleNamespace(stage=None, sensors=cameras, env_prim_paths=["/World/envs/env_0"])
-    host._auxiliary_cameras = tuple(
-        xr_module.OvLibrariesXrCameraCfg(name, SimpleNamespace(width=720, height=450)) for name in names
+    host._camera_feeds = tuple(
+        xr_module.OvLibrariesXrCameraFeedCfg(name, SimpleNamespace(width=720, height=450)) for name in names
     )
     bootstrap.lease.auxiliary_render_product_paths = tuple(f"/Render/{name}" for name in names)
     binding = host.attach_on_render_thread(host.offer_render_owner_transfer())
@@ -827,8 +827,8 @@ def test_session_delegates_lifecycle_to_isaacteleop_owner(xr_module, monkeypatch
         xr_module.OvLibrariesXrCfg(
             extra_openxr_extensions=("XR_EXT_debug_utils",),
             desktop_mirror=xr_module.OvLibrariesXrDesktopMirrorCfg(max_fps=20.0),
-            auxiliary_cameras=(
-                xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
+            camera_feeds=(
+                xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", SimpleNamespace(width=720, height=450)),
             )
             if camera_enabled
             else (),
@@ -1058,8 +1058,8 @@ def test_eager_selected_cameras_are_rejected_before_worker_ownership(xr_module, 
     external = importlib.import_module("isaaccapture.ovxr_session_manager.ovxr_session")
     monkeypatch.setattr(external, "OvxrSession", lambda *_args, **_kwargs: pytest.fail("created an XR owner"))
     bootstrap = _FakeBootstrap()
-    camera = xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=720, height=450))
-    session = xr_module.OvLibrariesXrSession(bootstrap, xr_module.OvLibrariesXrCfg(auxiliary_cameras=(camera,)))
+    camera = xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", SimpleNamespace(width=720, height=450))
+    session = xr_module.OvLibrariesXrSession(bootstrap, xr_module.OvLibrariesXrCfg(camera_feeds=(camera,)))
     env = SimpleNamespace(
         unwrapped=SimpleNamespace(scene=SimpleNamespace(cfg=SimpleNamespace(lazy_sensor_update=False)))
     )
@@ -1107,23 +1107,23 @@ def test_desktop_mirror_rate_must_be_positive_and_finite(xr_module):
 
 def test_auxiliary_camera_config_is_preconfigured(xr_module, monkeypatch):
     with pytest.raises(ValueError, match="name and configuration"):
-        xr_module.OvLibrariesXrCameraCfg()
+        xr_module.OvLibrariesXrCameraFeedCfg()
     with pytest.raises(ValueError, match="name and configuration"):
-        xr_module.OvLibrariesXrCameraCfg(name="robot_pov_cam")
+        xr_module.OvLibrariesXrCameraFeedCfg(name="robot_pov_cam")
     with pytest.raises(ValueError, match="name and configuration"):
-        xr_module.OvLibrariesXrCameraCfg("", object())
+        xr_module.OvLibrariesXrCameraFeedCfg("", object())
     with pytest.raises(ValueError, match="name and configuration"):
-        xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", None)
+        xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", None)
     with pytest.raises(ValueError, match="max_fps"):
-        xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", object(), max_fps=0.0)
+        xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", object(), max_fps=0.0)
     with pytest.raises(ValueError, match="head_locked"):
-        xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", object(), space="world")
+        xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", object(), space="world")
 
     bootstrap = _FakeBootstrap()
     camera_cfg = SimpleNamespace(width=720, height=450)
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", lambda *_args: bootstrap)
-    camera = xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", camera_cfg)
-    session = xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(auxiliary_cameras=(camera,)))
+    camera = xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", camera_cfg)
+    session = xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(camera_feeds=(camera,)))
     assert isinstance(session, xr_module.OvLibrariesXrSession)
     assert bootstrap.auxiliary_camera_cfgs == [camera_cfg]
 
@@ -1276,29 +1276,29 @@ def test_three_auxiliary_camera_configs_prepare_the_same_bootstrap(xr_module, mo
     bootstrap = _FakeBootstrap()
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", lambda *_: bootstrap)
     cameras = tuple(
-        xr_module.OvLibrariesXrCameraCfg(
+        xr_module.OvLibrariesXrCameraFeedCfg(
             name=name, camera_cfg=SimpleNamespace(width=640, height=480), max_fps=hz, space="head_locked"
         )
         for name, hz in zip(("robot_pov_cam", "left_wrist_cam", "right_wrist_cam"), (20, 10, 10), strict=True)
     )
-    session = xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(auxiliary_cameras=cameras))
+    session = xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(camera_feeds=cameras))
     assert bootstrap.auxiliary_camera_cfgs == [camera.camera_cfg for camera in cameras]
     assert session is not None
-    extra = xr_module.OvLibrariesXrCameraCfg("overview", SimpleNamespace(width=640, height=480))
+    extra = xr_module.OvLibrariesXrCameraFeedCfg("overview", SimpleNamespace(width=640, height=480))
     with pytest.raises(ValueError, match="at most three"):
-        xr_module.OvLibrariesXrCfg(auxiliary_cameras=(*cameras, extra))
+        xr_module.OvLibrariesXrCfg(camera_feeds=(*cameras, extra))
 
 
 def test_prepare_snapshots_camera_selection_without_mutating_caller(xr_module, monkeypatch):
     bootstrap = _FakeBootstrap()
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", lambda *_: bootstrap)
     camera_cfg = SimpleNamespace(width=640, height=480)
-    camera = xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", camera_cfg)
-    cfg = xr_module.OvLibrariesXrCfg(auxiliary_cameras=(camera,))
+    camera = xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", camera_cfg)
+    cfg = xr_module.OvLibrariesXrCfg(camera_feeds=(camera,))
     session = xr_module.OvLibrariesXrSession.prepare(object(), cfg)
-    cfg.auxiliary_cameras = ()
-    assert session._cfg.auxiliary_cameras == (camera,)
-    assert session._cfg.auxiliary_cameras[0].camera_cfg is bootstrap.auxiliary_camera_cfgs[0]
+    cfg.camera_feeds = ()
+    assert session._cfg.camera_feeds == (camera,)
+    assert session._cfg.camera_feeds[0].camera_cfg is bootstrap.auxiliary_camera_cfgs[0]
 
 
 @pytest.mark.parametrize("abort_fails", [False, True])
@@ -1323,7 +1323,7 @@ def test_prepare_aborts_partial_bootstrap_and_preserves_first_error(xr_module, m
     monkeypatch.setattr(bootstrap, "configure_auxiliary_camera", fail)
 
     cfg = xr_module.OvLibrariesXrCfg(
-        auxiliary_cameras=(xr_module.OvLibrariesXrCameraCfg("robot_pov_cam", SimpleNamespace(width=640, height=480)),),
+        camera_feeds=(xr_module.OvLibrariesXrCameraFeedCfg("robot_pov_cam", SimpleNamespace(width=640, height=480)),),
     )
     with pytest.raises(RuntimeError) as caught:
         xr_module.OvLibrariesXrSession.prepare(object(), cfg)
@@ -1340,7 +1340,7 @@ def test_public_xr_exports_resolve_to_implemented_types(xr_module):
     import isaaclab_teleop
 
     assert isaaclab_teleop.OvLibrariesXrCfg is xr_module.OvLibrariesXrCfg
-    assert isaaclab_teleop.OvLibrariesXrCameraCfg is xr_module.OvLibrariesXrCameraCfg
+    assert isaaclab_teleop.OvLibrariesXrCameraFeedCfg is xr_module.OvLibrariesXrCameraFeedCfg
     assert isaaclab_teleop.OvLibrariesXrSession is xr_module.OvLibrariesXrSession
 
 

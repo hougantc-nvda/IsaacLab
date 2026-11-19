@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..ov_libraries_xr import OvLibrariesXrSession
-    from ..ovxr_cfg import OvLibrariesXrCameraCfg
+    from ..ovxr_cfg import OvLibrariesXrCameraFeedCfg
     from ..ovxr_renderer import OvxrRendererCfg
 
 
@@ -44,7 +44,7 @@ class OvxrPresentation:
         args: argparse.Namespace,
         *,
         application_name: str,
-        auxiliary_cameras: tuple[OvLibrariesXrCameraCfg, ...] = (),
+        camera_feeds: tuple[OvLibrariesXrCameraFeedCfg, ...] = (),
         renderer_cfg: OvxrRendererCfg | None = None,
     ) -> OvxrPresentation:
         """Prepare the OVXR session before the environment is constructed.
@@ -56,7 +56,7 @@ class OvxrPresentation:
                 and the shared OVXR presentation options (see
                 :func:`~isaaclab_teleop.entrypoints._ovxr_launch.add_ovxr_presentation_args`).
             application_name: OpenXR application name.
-            auxiliary_cameras: Resolved PiP camera panels. The session renders with their shared OVRTX
+            camera_feeds: Resolved camera feeds. The session renders with their shared OVRTX
                 configuration.
             renderer_cfg: OVRTX configuration without camera panels. Defaults to
                 :class:`~isaaclab_teleop.OvxrRendererCfg`.
@@ -67,9 +67,9 @@ class OvxrPresentation:
         from .. import OvLibrariesXrCfg, OvLibrariesXrDesktopMirrorCfg, OvLibrariesXrSession
         from ..ovxr_renderer import OvxrRendererCfg
 
-        if auxiliary_cameras:
+        if camera_feeds:
             # Camera selection assigned one OVRTX configuration to every panel; the session shares it.
-            renderer_cfg = auxiliary_cameras[0].camera_cfg.renderer_cfg
+            renderer_cfg = camera_feeds[0].camera_cfg.renderer_cfg
         elif renderer_cfg is None:
             renderer_cfg = OvxrRendererCfg()
         session = OvLibrariesXrSession.prepare(
@@ -84,7 +84,7 @@ class OvxrPresentation:
                     if args.ovxr_desktop_mirror
                     else None
                 ),
-                auxiliary_cameras=auxiliary_cameras,
+                camera_feeds=camera_feeds,
             ),
             renderer_cfg=renderer_cfg,
         )

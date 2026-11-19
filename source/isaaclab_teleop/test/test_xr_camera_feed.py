@@ -58,20 +58,6 @@ def test_ovxr_feed_selection_preserves_order_shared_renderer_and_rate_limits():
     assert all(camera.camera_cfg.renderer_cfg == renderer for camera in cameras)
     assert all(camera.space == "head_locked" for camera in cameras)
     assert cameras[0].position == (0.1, -0.2, -0.9)
-    with pytest.raises(ValueError, match="position override requires one camera"):
-        camera_feed.resolve_ovxr_camera_configs(
-            selected,
-            XrCameraFeedLayoutCfg(placement="head_locked"),
-            max_fps=20.0,
-            position_override=(0.1, 0.2, -0.8),
-        )
-    overridden = camera_feed.resolve_ovxr_camera_configs(
-        selected[:1],
-        XrCameraFeedLayoutCfg(placement="head_locked"),
-        max_fps=20.0,
-        position_override=(0.1, 0.2, -0.8),
-    )
-    assert overridden[0].position == (0.1, 0.2, -0.8)
 
 
 @pytest.mark.parametrize("placement", ["viewer_start", "world"])

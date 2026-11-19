@@ -45,7 +45,7 @@ from .. import (
     CLOUDXR_JS_ENV,
     CLOUDXR_STANDALONE_ENV,
     IsaacTeleopCfg,
-    OvLibrariesXrCameraCfg,
+    OvLibrariesXrCameraFeedCfg,
     se3_gamepad_teleop_cfg,
     se3_keyboard_teleop_cfg,
     se3_spacemouse_teleop_cfg,
@@ -56,7 +56,7 @@ from ._ovxr_launch import (
     add_ovxr_presentation_args,
     prepare_ovxr_launch,
     reject_ovxr_runtime_conflicts,
-    resolve_ovxr_pip_cameras,
+    resolve_ovxr_camera_feeds,
     validate_ovxr_presentation_args,
 )
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
@@ -211,7 +211,7 @@ def main() -> None:  # noqa: C901
 
 
 def _resolve_env_cfg() -> tuple[
-    ManagerBasedRLEnvCfg, IsaacTeleopCfg | DeviceCfg, bool, tuple[OvLibrariesXrCameraCfg, ...]
+    ManagerBasedRLEnvCfg, IsaacTeleopCfg | DeviceCfg, bool, tuple[OvLibrariesXrCameraFeedCfg, ...]
 ]:
     """Resolve task configuration and teleop ownership before runtime launch."""
     # Resolve the task configuration through Hydra so CLI presets are applied.
@@ -270,14 +270,14 @@ def _resolve_env_cfg() -> tuple[
             env_cfg = remove_camera_configs(env_cfg)
     selected_cameras = ()
     if args_cli.using_ovxr:
-        if args_cli.ovxr_pip_camera is not None:
+        if args_cli.ovxr_camera_feed is not None:
             from ..ovxr_renderer import OvxrRendererCfg
 
             # Resolve the panels before launch preparation removes the other cameras, so that an
             # invalid selection or task layout fails before launch.
-            selected_cameras = resolve_ovxr_pip_cameras(env_cfg, args_cli, OvxrRendererCfg())
+            selected_cameras = resolve_ovxr_camera_feeds(env_cfg, args_cli, OvxrRendererCfg())
         env_cfg = prepare_ovxr_launch(
-            env_cfg, args_cli.task, args_cli.num_envs, keep=tuple(args_cli.ovxr_pip_camera or ())
+            env_cfg, args_cli.task, args_cli.num_envs, keep=tuple(args_cli.ovxr_camera_feed or ())
         )
     # A task without a physics selection keeps None: SimulationContext defaults it to PhysxCfg.
     configs, kit_sources = validate_launch(env_cfg, vars(args_cli).copy())
@@ -315,7 +315,7 @@ def run_teleoperation(  # noqa: C901
     teleop_cfg: IsaacTeleopCfg | DeviceCfg,
     *,
     use_isaac_teleop: bool,
-    selected_cameras: tuple[OvLibrariesXrCameraCfg, ...] = (),
+    selected_cameras: tuple[OvLibrariesXrCameraFeedCfg, ...] = (),
 ) -> None:
     """Create the environment and teleop device, then run the teleoperation loop until the app is closed."""
 
@@ -356,7 +356,7 @@ def run_teleoperation(  # noqa: C901
                 env_cfg,
                 args_cli,
                 application_name=f"isaaclab-ovxr-teleop-{args_cli.task}",
-                auxiliary_cameras=selected_cameras,
+                camera_feeds=selected_cameras,
             )
 
         try:
