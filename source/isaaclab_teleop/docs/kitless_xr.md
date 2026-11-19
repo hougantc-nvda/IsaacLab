@@ -71,7 +71,6 @@ head and controllers relative to the floor. Between trials, end the previous XR
 session and reload the client page before reconnecting; recheck both settings.
 
 `--ovxr` and Kit's `--xr` select separate XR runtimes and are mutually exclusive.
-An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 
 No local window opens by default. `--ovxr_session_mode {ar,vr}` (default `ar`) selects the
 OpenXR session mode in live teleoperation, recording and replay. Headset rendering still
