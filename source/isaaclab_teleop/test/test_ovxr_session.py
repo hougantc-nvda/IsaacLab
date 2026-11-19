@@ -57,8 +57,6 @@ def bootstrap(monkeypatch):
     from isaaclab.app import get_settings_manager
     from isaaclab.renderers import RenderContext
 
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
     renderer = OvxrRenderer(
         OvxrRendererCfg(),
@@ -220,8 +218,6 @@ def ovxr_simulation(monkeypatch):
     from isaaclab.physics import PhysicsEvent
     from isaaclab.sim import SimulationContext
 
-    for name in ("ISAAC_LAB_OVRTX_USE_OVSTAGE", "ISAAC_LAB_SHARE_OVSTAGE"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
     monkeypatch.setattr(ovxr_session, "_RETAINED_NATIVE_PAIRS", [])
     events = []

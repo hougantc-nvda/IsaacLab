@@ -506,13 +506,6 @@ class OVRTXRenderer(BaseRenderer):
         self._initialized_scene = True
         self._needs_transform_initialization = not self._use_ovstage and self.backend.cfg.read_gpu_transforms
 
-    # Extension points for a subclass that lends the native pair to another owner. The defaults
-    # describe ordinary rendering.
-
-    def _requires_private_ovstage(self) -> bool:
-        """Whether clone preparation must give this renderer its own OVStage."""
-        return False
-
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""
         object_paths = self._sdp.backend.transform_paths

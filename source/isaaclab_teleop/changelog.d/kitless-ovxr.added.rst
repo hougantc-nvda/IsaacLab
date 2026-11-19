@@ -4,7 +4,7 @@
   A failed scene publication stops further publication, and a session whose renderer cannot be
   retired keeps its borrowed resources.
 * Added :class:`~isaaclab_teleop.OvxrRendererCfg`, the OVXR session's OVRTX renderer. It lends its
-  native renderer and private OVStage to Isaac Capture's render worker, with a single-use
+  native renderer and its own OVStage to Isaac Capture's render worker, with a single-use
   render-thread ownership transfer, deferred Stage preparation, ordered scene publication
   (including dirty visual materials) and ordered cleanup. Cameras with an ordinary OVRTX
   configuration keep Isaac Lab's renderer.

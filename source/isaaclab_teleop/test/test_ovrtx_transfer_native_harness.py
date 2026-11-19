@@ -70,6 +70,7 @@ def _make_env_and_bootstrap(task: str):
     )
     bootstrap = OvxrSessionBootstrap(cfg.sim, OvxrRendererCfg())
     try:
+        bootstrap.create_native_pair()
         return bootstrap, gym.make(task, cfg=cfg).unwrapped
     except BaseException:
         bootstrap.abort()
@@ -203,7 +204,6 @@ def _run_native_subprocess(task: str, transfer: bool) -> None:
     # Keep the native lifetime in a child that the standard subprocess timeout owns.
     completed = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), task, "transfer" if transfer else "same-thread"],
-        env={**os.environ, "ISAAC_LAB_OVRTX_USE_OVSTAGE": "1"},
         capture_output=True,
         text=True,
         timeout=180,
