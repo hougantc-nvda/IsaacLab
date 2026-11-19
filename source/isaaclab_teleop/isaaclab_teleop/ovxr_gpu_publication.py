@@ -204,7 +204,7 @@ class _GeometryPublicationBuffers:
         This is the exact transfer used for publication: the target comes from Warp's default
         allocator on the publication device, peer access is left to the driver, and the copy waits
         on the stream that produced ``source``, or on the source device's current stream when the
-        caller names none. ``isaaclab_teleop.check_cuda_peer`` exercises it.
+        caller names none. ``isaaclab_teleop.tools.check_cuda_peer`` exercises it.
         """
         if self._stream is None:
             # Warp creates streams with CU_STREAM_DEFAULT, which serialize with work on the legacy

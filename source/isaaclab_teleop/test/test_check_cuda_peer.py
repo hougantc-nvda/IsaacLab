@@ -9,7 +9,7 @@ import sys
 
 import numpy as np
 import pytest
-from isaaclab_teleop import check_cuda_peer
+from isaaclab_teleop.tools import check_cuda_peer
 
 from isaaclab.test.utils import DeviceScope, test_devices
 

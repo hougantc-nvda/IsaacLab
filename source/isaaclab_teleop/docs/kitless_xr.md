@@ -289,7 +289,7 @@ Before splitting GPUs, check that PCIe peer copies return correct values in both
 directions on this host, with the application's `CUDA_VISIBLE_DEVICES` selection:
 
 ```bash
-uv run --extra ovxr python -m isaaclab_teleop.check_cuda_peer --devices cuda:0 cuda:1
+uv run --extra ovxr python -m isaaclab_teleop.tools.check_cuda_peer --devices cuda:0 cuda:1
 ```
 
 The check copies test patterns both ways through the renderer's own geometry-publication

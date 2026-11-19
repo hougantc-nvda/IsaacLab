@@ -5,7 +5,7 @@
 
 """Check synchronized cross-GPU copy values before splitting physics and rendering across GPUs.
 
-Run as ``python -m isaaclab_teleop.check_cuda_peer --devices cuda:0 cuda:1``.
+Run as ``python -m isaaclab_teleop.tools.check_cuda_peer --devices cuda:0 cuda:1``.
 This is a small transfer-integrity check, not an application or performance test. It runs the
 geometry-publication copy that the OVXR renderer uses when ``OvxrRendererCfg.active_cuda_gpus`` excludes
 the simulation GPU, in both directions, then, where supported, direct peer copies between plain

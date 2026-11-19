@@ -95,7 +95,7 @@ jobs:
         with:
           triggered-jobs-pr: multi-GPU split rendering
           patterns: |
-            ^source/isaaclab_teleop/isaaclab_teleop/(ovxr_renderer|ovxr_gpu_publication|check_cuda_peer)\.py$ :: Split-GPU publication
+            ^source/isaaclab_teleop/isaaclab_teleop/(ovxr_renderer|ovxr_gpu_publication|tools/check_cuda_peer)\.py$ :: Split-GPU publication
             ^source/isaaclab_teleop/test/test_(ovxr_renderer|check_cuda_peer)\.py$ :: Split-GPU tests
             ^source/isaaclab_ov/ :: OVRTX GPU selection and renderer hooks
             ^docker/Dockerfile\.kitless$ :: CI image definition
