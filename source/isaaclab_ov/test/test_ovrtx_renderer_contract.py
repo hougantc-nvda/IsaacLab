@@ -270,9 +270,6 @@ def test_ovrtx_renderer_config_enables_supported_runtime_options(
         routes = {OvPhysxReplicateContext: {0}, OvrtxReplicateContext: {1}}
         OvrtxReplicateContext.prepare(sim, routes)
         assert routes == {OvPhysxReplicateContext: {0}, OvrtxReplicateContext: {1}}
-    active_override = "2" if settings == ("1", None) and not with_physics else None
-    # A renderer subclass supplies an explicit native GPU selection through this extension point.
-    monkeypatch.setattr(OVRTXRenderer, "_native_cuda_gpus", lambda _self: active_override)
     cfg = OVRTXRendererCfg()
     renderer = sim.get_or_create_backend(cfg)
     shared = sim.get_or_create_backend(replace(cfg))
@@ -299,9 +296,7 @@ def test_ovrtx_renderer_config_enables_supported_runtime_options(
     assert loaded == [str(dependency)] * (1 if shared_physics else 2)
     assert len(redirected) == (1 if shared_physics else 2)
     assert renderer.backend.renderer is not None
-    assert config_kwargs.get("active_cuda_gpus") == (
-        active_override if active_override is not None else "1" if use_ovstage else None
-    )
+    assert config_kwargs.get("active_cuda_gpus") == ("1" if use_ovstage else None)
     # Camera compatibility must retain the requested GPU scene-transform path,
     # including when simulation tensors originate on the CPU.
     assert config_kwargs["read_gpu_transforms"] is True
