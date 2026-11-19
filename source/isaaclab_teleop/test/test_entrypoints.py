@@ -108,3 +108,4 @@ def test_live_and_recording_script_help_lists_ovxr(script):
     )
     assert result.returncode == 0, result.stderr
     assert re.search(r"^\s+--ovxr(?:\s|$)", result.stdout, re.MULTILINE)
+    assert "--ovxr_pip_camera" in result.stdout
