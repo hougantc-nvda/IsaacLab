@@ -96,7 +96,6 @@ A blank or below-scene main view with a working camera panel warrants checking
 this client origin before changing the renderer.
 
 `--ovxr` and Kit's `--xr` select separate XR runtimes and are mutually exclusive.
-An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 
 OVXR live teleoperation, recording and MCAP replay run without a local window by default.
 Add `--ovxr_desktop_mirror` to open the mirror on a host with a desktop display;
