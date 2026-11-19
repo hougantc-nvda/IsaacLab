@@ -37,8 +37,6 @@ pytestmark = [pytest.mark.ov, pytest.mark.skipif(not torch.cuda.is_available(), 
 
 def test_tracking_markers_render_in_eyes_but_not_sensor_after_motion_and_reset(monkeypatch):
     """Read native depth so identical camera views distinguish a visible marker from the task object."""
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     device = resolve_test_sim_device()
     renderer_cfg = OvxrRendererCfg()
     camera_cfg = CameraCfg(
@@ -66,6 +64,7 @@ def test_tracking_markers_render_in_eyes_but_not_sensor_after_motion_and_reset(m
     try:
         for cfg in cameras:
             bootstrap.configure_auxiliary_camera(cfg)
+        bootstrap.create_native_pair()
         scene = InteractiveScene(scene_cfg)
         sim.register_interactive_scene(scene)
         sim.reset()

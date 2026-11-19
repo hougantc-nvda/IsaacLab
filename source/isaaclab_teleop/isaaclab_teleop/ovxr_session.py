@@ -227,7 +227,7 @@ class OvxrSessionBootstrap:
         """Keep tracking markers in the eye views and task geometry/lights visible to every camera.
 
         Call once on the render owner after binding, under the lease's owner lane. Only the
-        private presentation Stage changes; the application USD and ordinary renderers do not.
+        session's presentation Stage changes; the application USD and ordinary renderers do not.
         """
         self._require_open()
         if not self._bound or self._sim is None or self._lease is None:

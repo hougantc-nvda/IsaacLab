@@ -1468,7 +1468,6 @@ def _run_ovxr_camera_feed_workflow(monkeypatch, entrypoint, layout, flags, calls
     with suppress(ModuleNotFoundError):
         monkeypatch.setattr(isaaclab_teleop.OvLibrariesXrSession, "prepare", prepare)
     monkeypatch.setattr(SimulationContext, "instance", lambda: None)
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
     arguments = ["--task", "Test", "--ovxr", "--cloudxr_env", "none", "--ovxr_camera_feed", "head_cam", *flags]
     if entrypoint == "live":
         monkeypatch.setattr(module, "has_kit", lambda: False)
