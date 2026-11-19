@@ -236,7 +236,9 @@ class IsaacTeleopCfg:
     it is not installed). When ``None``, Isaac Lab resolves it at session start to
     Isaac Capture's pipelined, deadline-paced default
     (``RetargetingExecutionConfig(mode="pipelined", pacing=DeadlinePacingConfig(safety_margin_s=0.025))``),
-    where ``isaacteleop`` is guaranteed to be available. Set this explicitly to
+    where ``isaacteleop`` is guaranteed to be available. An MCAP replay without Kit resolves it to
+    ``RetargetingExecutionConfig(mode="sync")`` instead, so that every step consumes exactly the next
+    recorded frame. Set this explicitly to
     ``RetargetingExecutionConfig(mode="sync")`` for exact current-frame
     retargeting while debugging or comparing behavior.
     """
