@@ -23,7 +23,7 @@ from .command_handler import CommandHandler
 from .control_events import ControlEvents
 from .isaac_teleop_cfg import IsaacTeleopCfg
 from .session_lifecycle import TeleopSessionLifecycle
-from .xr_anchor_manager import XrAnchorManager
+from .xr_anchor_manager import ExternalXrAnchor, XrAnchorManager
 
 if TYPE_CHECKING:
     from isaacteleop.oxr import OpenXRSessionHandles
@@ -187,7 +187,7 @@ class IsaacTeleopDevice:
         self._ovxr_session = ovxr_session or external_oxr_handles_provider is not None
 
         # Borrowed OVXR handles imply external anchor ownership.
-        self._anchor_manager = XrAnchorManager(cfg.xr_cfg, ovxr_session=self._ovxr_session)
+        self._anchor_manager = ExternalXrAnchor(cfg.xr_cfg) if self._ovxr_session else XrAnchorManager(cfg.xr_cfg)
         self._command_handler = CommandHandler()
         self._session_lifecycle = TeleopSessionLifecycle(
             cfg,
@@ -320,9 +320,11 @@ class IsaacTeleopDevice:
         return self._anchor_manager.anchor_headset_path
 
     @property
-    def external_anchor_state(self) -> XrAnchorManager | None:
+    def external_anchor_state(self) -> ExternalXrAnchor | None:
         """The dynamic anchor capability consumed by Lab's external scene publisher."""
-        return self._anchor_manager if self._anchor_manager.external_reference_path is not None else None
+        if not self._ovxr_session or self._anchor_manager.external_reference_path is None:
+            return None
+        return self._anchor_manager
 
     @property
     def required_openxr_extensions(self) -> tuple[str, ...]:

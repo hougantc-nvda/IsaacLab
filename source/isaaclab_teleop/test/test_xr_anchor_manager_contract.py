@@ -32,7 +32,7 @@ def test_dynamic_external_anchor_commits_pose_before_input_and_preserves_reset(m
     )
     with use_stage(Usd.Stage.CreateInMemory()):
         UsdGeom.Xform.Define(xr_anchor_manager.get_current_stage(), "/World/Robot")
-        manager = xr_anchor_manager.XrAnchorManager(cfg, ovxr_session=True)
+        manager = xr_anchor_manager.ExternalXrAnchor(cfg)
     with pytest.raises(RuntimeError, match="committed post-reset"):
         manager.get_world_matrix()
     reference = np.eye(4)
@@ -85,8 +85,7 @@ def test_ovxr_session_does_not_borrow_an_available_kit_xr_core(monkeypatch):
     core = MagicMock()
     monkeypatch.setattr(xr_anchor_manager, "XRCore", core)
     with use_stage(Usd.Stage.CreateInMemory()):
-        manager = xr_anchor_manager.XrAnchorManager(XrCfg(), ovxr_session=True)
-    assert manager.xr_core is None
+        xr_anchor_manager.ExternalXrAnchor(XrCfg())
     core.get_singleton.assert_not_called()
 
 
@@ -110,6 +109,8 @@ def test_public_device_exposes_dynamic_anchor_only_for_ovxr_session(monkeypatch,
         kwargs.update(ovxr_session=True, mcap_replay_path="recording.mcap")
     with use_stage(Usd.Stage.CreateInMemory()):
         device = isaac_teleop_device.IsaacTeleopDevice(cfg, **kwargs)
+    expected_anchor = xr_anchor_manager.XrAnchorManager if capability == "none" else xr_anchor_manager.ExternalXrAnchor
+    assert type(device._anchor_manager) is expected_anchor
     assert (device.external_anchor_state is not None) == (capability != "none")
     lifecycle.assert_called_once()
     assert lifecycle.call_args.kwargs["ovxr_session"] == (capability != "none")
@@ -144,12 +145,12 @@ def test_replay_refreshes_configured_static_anchor_on_the_same_stage(monkeypatch
     first_cfg = XrCfg(anchor_pos=(1.0, 2.0, 3.0))
     next_cfg = XrCfg(anchor_pos=(-1.0, 0.5, 2.0), anchor_rot=(0.0, 0.0, 1.0, 0.0))
     with use_stage(stage):
-        first = xr_anchor_manager.XrAnchorManager(first_cfg, ovxr_session=True)
+        first = xr_anchor_manager.ExternalXrAnchor(first_cfg)
         observed_pos, observed_rot = resolve_prim_pose(stage.GetPrimAtPath(first.anchor_headset_path))
         np.testing.assert_allclose(observed_pos, first_cfg.anchor_pos, atol=1e-7)
         assert abs(np.dot(observed_rot, first_cfg.anchor_rot)) == pytest.approx(1.0)
         first.cleanup()
-        second = xr_anchor_manager.XrAnchorManager(next_cfg, ovxr_session=True)
+        second = xr_anchor_manager.ExternalXrAnchor(next_cfg)
         observed_pos, observed_rot = resolve_prim_pose(stage.GetPrimAtPath(second.anchor_headset_path))
         np.testing.assert_allclose(observed_pos, next_cfg.anchor_pos, atol=1e-7)
         assert abs(np.dot(observed_rot, next_cfg.anchor_rot)) == pytest.approx(1.0)
@@ -163,19 +164,21 @@ def test_ovxr_session_rejects_an_unusable_stage_anchor(monkeypatch):
     UsdGeom.Scope.Define(stage, "/World/XRAnchor")
     monkeypatch.setattr(xr_anchor_manager, "XRCore", None)
     with use_stage(stage), pytest.raises(ValueError, match="is not transformable"):
-        xr_anchor_manager.XrAnchorManager(XrCfg(), ovxr_session=True)
+        xr_anchor_manager.ExternalXrAnchor(XrCfg())
 
 
-def test_standalone_replay_keeps_warning_for_an_unusable_anchor(monkeypatch, caplog):
-    stage = Usd.Stage.CreateInMemory()
-    UsdGeom.Scope.Define(stage, "/World/XRAnchor")
-    monkeypatch.setattr(xr_anchor_manager, "XRCore", None)
-    cfg = XrCfg(anchor_pos=(1.0, 2.0, 3.0))
-    with use_stage(stage):
-        manager = xr_anchor_manager.XrAnchorManager(cfg)
-        np.testing.assert_allclose(manager.get_world_matrix()[:3, 3], cfg.anchor_pos)
-        manager.cleanup()
-    assert "is not transformable" in caplog.text
+def test_static_external_anchor_keeps_its_configured_pose_across_reset():
+    cfg = XrCfg(anchor_pos=(1.0, 2.0, 3.0), anchor_rot=(0.0, 0.0, 1.0, 0.0))
+    with use_stage(Usd.Stage.CreateInMemory()):
+        anchor = xr_anchor_manager.ExternalXrAnchor(cfg)
+    assert anchor.external_reference_path is None
+    expected = np.array([[-1, 0, 0, 1], [0, 0, 1, 2], [0, 1, 0, 3], [0, 0, 0, 1]])
+    np.testing.assert_allclose(anchor.get_world_matrix(), expected, atol=1e-7)
+    anchor.reset()
+    anchor.toggle_anchor_rotation()
+    np.testing.assert_allclose(anchor.get_world_matrix(), expected, atol=1e-7)
+    assert anchor.get_world_matrix().dtype == np.float32
+    anchor.cleanup()
 
 
 def test_kit_anchor_clock_is_lazy_until_subsequent_smoothed_update(monkeypatch):

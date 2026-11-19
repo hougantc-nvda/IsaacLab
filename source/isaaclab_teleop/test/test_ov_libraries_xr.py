@@ -400,7 +400,8 @@ def test_host_smooths_committed_anchor_on_xr_clock_and_reseeds_reset(xr_module, 
     )
     with use_stage(Usd.Stage.CreateInMemory()):
         UsdGeom.Xform.Define(xr_anchor_manager.get_current_stage(), "/World/Robot")
-        manager = xr_anchor_manager.XrAnchorManager(cfg, ovxr_session=True)
+        manager = xr_anchor_manager.ExternalXrAnchor(cfg)
+    assert isinstance(manager, xr_module.OvLibrariesXrSession.ExternalAnchorState)
 
     bootstrap = _FakeBootstrap()
     reference = np.eye(4)

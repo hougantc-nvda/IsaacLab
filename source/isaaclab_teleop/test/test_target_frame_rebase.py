@@ -196,7 +196,7 @@ def test_external_replay_reads_resolved_target_frame(monkeypatch):
     cfg = IsaacTeleopCfg(target_frame_prim_path="{ENV_REGEX_NS}/Robot/base", sim_device="cpu")
     lifecycle = MagicMock()
     monkeypatch.setattr("isaaclab_teleop.isaac_teleop_device.TeleopSessionLifecycle", lambda *a, **k: lifecycle)
-    monkeypatch.setattr("isaaclab_teleop.isaac_teleop_device.XrAnchorManager", lambda *a, **k: MagicMock())
+    monkeypatch.setattr("isaaclab_teleop.isaac_teleop_device.ExternalXrAnchor", lambda *a, **k: MagicMock())
     device = create_isaac_teleop_device(
         cfg, env_prim_path="/Lab/Cells/Cell0", use_kit_xr_bridge=False, ovxr_session=True
     )

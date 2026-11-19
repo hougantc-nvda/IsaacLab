@@ -1152,7 +1152,7 @@ def test_live_auto_reset_rebases_dynamic_anchor_before_next_input(monkeypatch, r
     import numpy as np
     from isaaclab_teleop import IsaacTeleopCfg, IsaacTeleopDevice
     from isaaclab_teleop.session_lifecycle import TeleopSessionLifecycle
-    from isaaclab_teleop.xr_anchor_manager import XrAnchorManager
+    from isaaclab_teleop.xr_anchor_manager import ExternalXrAnchor
     from isaaclab_teleop.xr_cfg import XrAnchorRotationMode, XrCfg
     from scipy.spatial.transform import Rotation
 
@@ -1163,13 +1163,12 @@ def test_live_auto_reset_rebases_dynamic_anchor_before_next_input(monkeypatch, r
     stage = Usd.Stage.CreateInMemory()
     with use_stage(stage):
         UsdGeom.Xform.Define(stage, "/World/Robot")
-        anchor = XrAnchorManager(
+        anchor = ExternalXrAnchor(
             XrCfg(
                 anchor_prim_path="/World/Robot",
                 fixed_anchor_height=True,
                 anchor_rotation_mode=XrAnchorRotationMode.FOLLOW_PRIM,
-            ),
-            ovxr_session=True,
+            )
         )
     lifecycle = TeleopSessionLifecycle(IsaacTeleopCfg(), use_kit_xr_bridge=False)
     initial_pose = np.eye(4)
