@@ -132,9 +132,10 @@ no application render loop runs. A task that sets `target_frame_prim_path`, such
 `IsaacContrib-Stack-Cube-SO101-IK-Abs-v0`, cannot replay headless without Kit and is rejected before
 launch: use `--ovxr` or a Kit run. A kitless replay consumes exactly one recorded frame per step, so
 it runs as fast as the simulator allows and does not depend on rendering or loop timing. Add
-`--require_hand_replay_data` to end the run at the end of the recorded two-hand data and report it as
-complete; this checks that a capture plays back in full without relying on the task's success
-condition. A recorded STOP, task success/failure, or `--max_replay_duration_s` ends
+`--require_hand_replay_data` to end the run at the end of the capture's recorded hand data, which the
+agent counts before the run, and report it as a success when the applied actions changed; this checks
+that a capture plays back in full without relying on the task's success condition. A tracking dropout
+inside the recording does not end the run, and a capture without a two-hand frame is rejected. A recorded STOP, task success/failure, or `--max_replay_duration_s` ends
 the run. Playback waits for recorded START messages, including after a recorded
 RESET. Reset does not rewind recorded input. For legacy captures started locally
 without recorded START messages, add `--start_on_replay` to start automatically

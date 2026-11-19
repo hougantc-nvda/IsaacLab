@@ -855,6 +855,17 @@ def test_teleop_replay_agent_resolves_typed_presets_without_reapplying_physics(m
     assert "ISAAC_LAB_OVRTX_USE_OVSTAGE" not in os.environ
 
 
+def test_require_hand_replay_data_option_is_off_by_default_and_documents_synchronous_retargeting():
+    from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
+
+    parser = replay._build_parser()
+    arguments = ["--task", "Test", "--replay_file", "recording.mcap"]
+    assert parser.parse_args(arguments).require_hand_replay_data is False
+    assert parser.parse_args([*arguments, "--require_hand_replay_data"]).require_hand_replay_data is True
+    assert parser.parse_args([*arguments, "--no-require_hand_replay_data"]).require_hand_replay_data is False
+    assert "retargets synchronously" in " ".join(parser.format_help().split())
+
+
 @pytest.mark.parametrize(
     ("kitless", "ovxr", "rejected"), [(True, False, True), (True, True, False), (False, False, False)]
 )
