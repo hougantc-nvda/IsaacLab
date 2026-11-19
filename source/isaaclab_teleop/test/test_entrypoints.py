@@ -60,3 +60,21 @@ def test_entrypoint_import_leaves_device_modules_to_launch(module):
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stderr[-2000:]
+
+
+@pytest.mark.parametrize(
+    "script", ["scripts/environments/teleoperation/teleop_se3_agent.py", "scripts/tools/record_demos.py"]
+)
+def test_live_and_recording_script_help_lists_ovxr(script):
+    """The live teleoperation and recording scripts offer the kitless OVXR presentation."""
+    import re
+    import subprocess
+    from pathlib import Path
+
+    # Repository root: this file lives at source/isaaclab_teleop/test/<file>.py
+    root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, str(root / script), "--help"], cwd=root, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"^\s+--ovxr(?:\s|$)", result.stdout, re.MULTILINE)

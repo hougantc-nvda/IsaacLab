@@ -57,8 +57,6 @@ def test_teleop_workflow_help_exposes_task_preset_selectors(source_checkout_root
     assert "physics=NAME" in result.stdout
     assert "renderer=NAME" in result.stdout
     assert "presets=NAME[,NAME,...]" in result.stdout
-    if command in ("run", "record"):
-        assert re.search(r"^\s+--ovxr(?:\s|$)", result.stdout, re.MULTILINE)
 
 
 @pytest.mark.parametrize(("command", "script_parts"), TELEOP_WORKFLOWS.items())
