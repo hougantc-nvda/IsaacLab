@@ -1,7 +1,7 @@
 # Installing kitless XR
 
 Use Python 3.12 on Linux x86-64. The checked-in `ovxr` extra and lockfile select
-Isaac Capture 1.7.115rc1 with the OVXR session owner, camera panels and desktop mirror,
+Isaac Capture 1.7.118rc1 with the OVXR session owner, camera panels and desktop mirror,
 and the compatible OVRTX, OVStage and OVPhysX packages. No local metadata edits are needed.
 
 Complete the CloudXR workstation, client, network and license prerequisites before

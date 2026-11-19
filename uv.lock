@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -1741,7 +1741,7 @@ wheels = [
 
 [[package]]
 name = "isaaccapture"
-version = "1.7.115rc1"
+version = "1.7.118rc1"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "isaacteleop" },
@@ -1749,8 +1749,8 @@ dependencies = [
     { name = "pyyaml" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/isaaccapture/isaaccapture-1.7.115rc1-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:f06521b661f89af4c62bbcae23cdb625116447f9b294cb64d8940eb58ba8d4f9" },
-    { url = "https://pypi.nvidia.com/isaaccapture/isaaccapture-1.7.115rc1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:ecb5bab927e1f6167b96af663236be902679f287e305fff1068296f91c4941d1" },
+    { url = "https://pypi.nvidia.com/isaaccapture/isaaccapture-1.7.118rc1-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:1533a9005311eef80f77e13de733dc09ecae6e1d00ae2f43a5a511315750e715" },
+    { url = "https://pypi.nvidia.com/isaaccapture/isaaccapture-1.7.118rc1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:973521e66f12a77ec68d2bfadff680a4694016e4dfdd9f1a5a82482a9608ca14" },
 ]
 
 [package.optional-dependencies]
@@ -2067,7 +2067,7 @@ requires-dist = [
     { name = "imgui-bundle", specifier = ">=1.92.5" },
     { name = "ipywidgets", marker = "extra == 'mimic'", specifier = ">=8.1.5" },
     { name = "isaaccapture", extras = ["ovxr", "desktop-mirror"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'ovxr'" },
-    { name = "isaaccapture", extras = ["retargeters", "ui", "cloudxr"], marker = "sys_platform == 'linux' and extra == 'teleop'", specifier = "==1.7.115rc1" },
+    { name = "isaaccapture", extras = ["retargeters", "ui", "cloudxr"], marker = "sys_platform == 'linux' and extra == 'teleop'", specifier = "==1.7.118rc1" },
     { name = "isaaclab", editable = "source/isaaclab" },
     { name = "isaaclab-assets", editable = "source/isaaclab_assets" },
     { name = "isaaclab-contrib", editable = "source/isaaclab_contrib" },
@@ -3868,7 +3868,6 @@ dependencies = [
     { name = "configargparse" },
     { name = "dash" },
     { name = "flask" },
-    { name = "ipywidgets" },
     { name = "matplotlib" },
     { name = "nbformat" },
     { name = "numpy" },
@@ -4137,14 +4136,14 @@ wheels = [
 
 [[package]]
 name = "ovxr"
-version = "0.1.0.5842"
+version = "0.2.0.1794933073"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "ovrtx" },
     { name = "ovstage" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/ovxr/ovxr-0.1.0.5842-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:146c90f1130456e836e120bff77e2f4f27bf387b67258e8b5c8641a0c0633854" },
+    { url = "https://pypi.nvidia.com/ovxr/ovxr-0.2.0.1794933073-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:ed7e48f0f20a9726c4c433edec1d9995b47434072b5ddfe71a1bde378a8bf65a" },
 ]
 
 [[package]]
