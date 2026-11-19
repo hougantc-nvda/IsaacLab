@@ -70,7 +70,6 @@ from robomimic.utils.log_utils import DataLogger, PrintLogger
 from torch.utils.data import DataLoader
 
 from isaaclab.app import launch_simulation
-from isaaclab.utils.version import has_kit
 
 import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.contrib.locomanip_pick_place  # noqa: F401
@@ -446,6 +445,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # run training inside a headless Isaac Sim runtime, which validation rollouts in Isaac Lab environments need;
-    # without Isaac Sim there is no runtime to launch, and training itself reads only the dataset
-    with launch_simulation(None) if has_kit() else contextlib.nullcontext():
+    # without an Isaac Sim installation there is no runtime to launch, and training itself reads only the dataset
+    from isaaclab_physx.app import KitLauncher
+
+    with launch_simulation(None) if KitLauncher.is_available() else contextlib.nullcontext():
         main(args)
