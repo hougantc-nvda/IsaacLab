@@ -817,10 +817,10 @@ def test_required_hand_data_is_counted_before_the_batch_and_replayed_synchronous
     env_cfg = SimpleNamespace(isaac_teleop=task_cfg)
     if case == "no_two_hand_frame":
         with pytest.raises(ValueError, match="no frame with both hands"):
-            replay._run_replay_batch(env_cfg, None)
+            replay._run_replay_batch(env_cfg, None, ())
         assert calls == [("count", "capture.mcap")]
         return
-    assert replay._run_replay_batch(env_cfg, None) == 0
+    assert replay._run_replay_batch(env_cfg, None, ()) == 0
     mode = "pipelined" if case == "task_mode" else "sync"
     assert calls == [
         ("count", "capture.mcap"),

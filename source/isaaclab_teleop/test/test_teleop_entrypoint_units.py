@@ -914,7 +914,7 @@ def test_kitless_replay_without_ovxr_rejects_a_task_target_frame(monkeypatch, ki
         with pytest.raises(ValueError, match=r"'test-task' sets isaac_teleop\.target_frame_prim_path.*--ovxr.*Kit"):
             replay._prepare_env_cfg("test-task", 1, None, overrides=replay.hydra_overrides)
     else:
-        prepared, _success = replay._prepare_env_cfg("test-task", 1, None, overrides=replay.hydra_overrides)
+        prepared, _success, _cameras = replay._prepare_env_cfg("test-task", 1, None, overrides=replay.hydra_overrides)
         assert prepared is cfg
 
 
