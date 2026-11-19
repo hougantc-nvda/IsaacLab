@@ -966,12 +966,13 @@ def Xform "World" {
                     read.wait()
                     for group in read.groups():
                         try:
-                            values = np.asarray(group.array(0).copy()).reshape(group.data_count, -1)
                             group_paths = paths.get_path_strings(group.prim_list)
-                            attribute = paths.token_to_string(group.attribute)
-                            for index in range(min(group.prim_count, group.data_count)):
-                                path = group_paths[group.prim_index(index)]
-                                resolved[path, attribute] = values[group.data_row_index(index)].tolist()
+                            for column in group.columns:
+                                values = np.asarray(column.array(0).copy()).reshape(column.data_count, -1)
+                                attribute = paths.token_to_string(column.attribute)
+                                for index in range(min(group.prim_count, column.data_count)):
+                                    path = group_paths[group.prim_index(index)]
+                                    resolved[path, attribute] = values[column.data_row_index(index)].tolist()
                         finally:
                             stage.release_group(group)
         finally:
