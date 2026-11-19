@@ -1089,6 +1089,69 @@ def test_geometry_publication_does_not_wait_on_the_host_before_stage_consumes_it
     assert writes[0]["cuda_stream"] == publisher._stream.cuda_stream
 
 
+@pytest.mark.parametrize("family", ["transforms", "points"])
+@pytest.mark.parametrize("producer_named", [True, False])
+def test_split_gpu_publication_orders_the_transfer_after_the_producing_stream(monkeypatch, family, producer_named):
+    """The transfer waits on the stream the base renderer names, not on the device's later current stream.
+
+    Streams, arrays and the Stage are doubles, so the recorded order does not depend on the host's GPUs:
+    producer, copy, rendering device, then the Stage write on the transfer stream and its completion wait.
+    """
+    events = []
+
+    class Stream:
+        def __init__(self, name):
+            self.name = self.cuda_stream = name
+
+        def wait_stream(self, other):
+            events.append((f"{self.name} waits for", other.name))
+
+    producer, current, transfer, rendering = map(Stream, ("producer", "current", "transfer", "rendering"))
+    # The simulation GPU's current stream is no longer the one that produced the data.
+    simulation_gpu = types.SimpleNamespace(is_cuda=True, stream=current)
+    rendering_gpu = types.SimpleNamespace(is_cuda=True, stream=rendering)
+    source = types.SimpleNamespace(device=simulation_gpu, shape=(1,), dtype=wp.mat44d)
+    staged = types.SimpleNamespace(device=rendering_gpu, shape=(1,), dtype=wp.mat44d)
+    publisher = _GeometryPublicationBuffers.__new__(_GeometryPublicationBuffers)
+    publisher._device = rendering_gpu
+    publisher._stream = transfer
+    publisher._buffers = {"@transforms": staged, "/World/Mesh": staged}
+    publisher._sources, publisher._source_streams, publisher._failed = [], [], False
+
+    def copy(target, origin, *, stream):
+        assert target is staged and origin is source
+        events.append(("copy on", stream.name))
+
+    def write_attribute(_binding, _attribute, *, tensors, cuda_stream, **_kwargs):
+        assert (tensors[0] if family == "points" else tensors) is staged
+        events.append(("stage reads on", cuda_stream))
+        return types.SimpleNamespace(wait=lambda: events.append("stage wait"))
+
+    monkeypatch.setattr(wp, "copy", copy)
+    for convert in ("points_tensor_from_warp", "xform_tensor_from_warp"):
+        monkeypatch.setattr(ovxr_gpu_publication, convert, lambda array: array)
+    renderer = _make_ovxr_renderer_without_backend(OvxrRendererCfg(active_cuda_gpus="1"))
+    renderer._geometry_publication = publisher
+    renderer._geometry_paths = ["/World/Mesh"]
+    renderer.scene.stage = types.SimpleNamespace(write_attribute=write_attribute)
+    renderer.scene.ordinal = 3
+    stream = producer if producer_named else None
+    try:
+        if family == "transforms":
+            renderer._write_ovstage_transforms(object(), source, stream)
+        else:
+            renderer._write_ovstage_points(object(), [source], stream)
+    finally:
+        renderer._geometry_publication = None
+    assert events == [
+        ("transfer waits for", "producer" if producer_named else "current"),
+        ("copy on", "transfer"),
+        ("transfer waits for", "rendering"),
+        ("stage reads on", "transfer"),
+        "stage wait",
+    ]
+
+
 def test_geometry_publication_cuda_devices_resize_and_failed_consumption(monkeypatch):
     """Only foreign CUDA points move; replacement sources and failed consumption cannot corrupt a snapshot."""
     with pytest.raises(ValueError, match="explicit CUDA device"):

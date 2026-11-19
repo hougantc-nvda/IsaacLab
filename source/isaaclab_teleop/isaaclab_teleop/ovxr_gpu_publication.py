@@ -75,22 +75,40 @@ class _GeometryPublicationBuffers:
         self._source_streams: list[wp.Stream] = []
         self._failed = False
 
-    def write(self, stage, binding, paths: Sequence[str], points: list[wp.array], ordinal: int) -> None:
-        """Copy foreign-GPU points and wait for Stage to consume the batch."""
+    def write(
+        self,
+        stage,
+        binding,
+        paths: Sequence[str],
+        points: list[wp.array],
+        ordinal: int,
+        producer: wp.Stream | None = None,
+    ) -> None:
+        """Copy foreign-GPU points and wait for Stage to consume the batch.
+
+        ``producer`` is the Warp stream that produced ``points``; without it, the transfer waits on
+        each source device's current stream.
+        """
         self._write(
             stage,
             binding,
             paths,
             points,
             ordinal,
+            producer,
             attribute="points",
             is_array=True,
             semantic=ovstage.AttributeSemantic.POINT,
             convert=points_tensor_from_warp,
         )
 
-    def write_transforms(self, stage, binding, matrices: wp.array, ordinal: int) -> None:
-        """Publish rigid poses on the publication device through the same completed-copy boundary."""
+    def write_transforms(
+        self, stage, binding, matrices: wp.array, ordinal: int, producer: wp.Stream | None = None
+    ) -> None:
+        """Publish rigid poses on the publication device through the same completed-copy boundary.
+
+        ``producer`` is the Warp stream that produced ``matrices``, as in :meth:`write`.
+        """
         # Point-buffer keys are absolute prim paths; this key cannot alias a point prim.
         self._write(
             stage,
@@ -98,6 +116,7 @@ class _GeometryPublicationBuffers:
             ("@transforms",),
             [matrices],
             ordinal,
+            producer,
             attribute="omni:xform",
             is_array=False,
             semantic=ovstage.AttributeSemantic.MATRIX,
@@ -135,6 +154,7 @@ class _GeometryPublicationBuffers:
         paths: Sequence[str],
         sources: list[wp.array],
         ordinal: int,
+        producer: wp.Stream | None,
         *,
         attribute: str,
         is_array: bool,
@@ -147,12 +167,16 @@ class _GeometryPublicationBuffers:
         # Reuse is safe only after the entire write completes.
         self._failed = True
         self._sources = sources
-        self._source_streams = [source.device.stream for source in sources if source.device.is_cuda]
+        # The stream that produced the sources orders the transfer; the device's current stream may
+        # have changed since.
+        self._source_streams = [
+            source.device.stream if producer is None else producer for source in sources if source.device.is_cuda
+        ]
         published = list(sources)
         for index, (path, source) in enumerate(zip(paths, sources, strict=True)):
             if not source.device.is_cuda or source.device == self._device:
                 continue
-            published[index] = self._copy_to_device(path, source)
+            published[index] = self._copy_to_device(path, source, producer)
         # Stage reads after the copies on the transfer stream, so no host wait precedes it. Its
         # completion wait below surfaces a failed copy before the caller seals the ordinal.
         # Include same-device producer work in Stage's input dependency.
@@ -174,12 +198,13 @@ class _GeometryPublicationBuffers:
         self._source_streams = []
         self._failed = False
 
-    def _copy_to_device(self, key: str, source: wp.array) -> wp.array:
+    def _copy_to_device(self, key: str, source: wp.array, producer: wp.Stream | None = None) -> wp.array:
         """Enqueue one foreign-GPU copy into reusable target storage on the transfer stream.
 
         This is the exact transfer used for publication: the target comes from Warp's default
         allocator on the publication device, peer access is left to the driver, and the copy waits
-        on the producer's current stream. ``isaaclab_teleop.check_cuda_peer`` exercises it.
+        on the stream that produced ``source``, or on the source device's current stream when the
+        caller names none. ``isaaclab_teleop.check_cuda_peer`` exercises it.
         """
         if self._stream is None:
             # Warp creates streams with CU_STREAM_DEFAULT, which serialize with work on the legacy
@@ -193,6 +218,6 @@ class _GeometryPublicationBuffers:
             with wp.ScopedStream(self._stream, sync_enter=False):
                 target = wp.empty_like(source, device=self._device)
             self._buffers[key] = target
-        self._stream.wait_stream(source.device.stream)
+        self._stream.wait_stream(source.device.stream if producer is None else producer)
         wp.copy(target, source, stream=self._stream)
         return target

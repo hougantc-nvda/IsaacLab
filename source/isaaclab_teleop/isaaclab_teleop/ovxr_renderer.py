@@ -1018,14 +1018,14 @@ class OvxrRenderer(OVRTXRenderer):
         if self._geometry_publication is None:
             super()._write_ovstage_transforms(binding, matrices, stream)
         else:
-            self._geometry_publication.write_transforms(self.scene.stage, binding, matrices, self.scene.ordinal)
+            self._geometry_publication.write_transforms(self.scene.stage, binding, matrices, self.scene.ordinal, stream)
 
     def _write_ovstage_points(self, binding: Any, points: list[wp.array], stream: wp.Stream | None) -> None:
         if self._geometry_publication is None:
             super()._write_ovstage_points(binding, points, stream)
         else:
             self._geometry_publication.write(
-                self.scene.stage, binding, self._geometry_paths, points, self.scene.ordinal
+                self.scene.stage, binding, self._geometry_paths, points, self.scene.ordinal, stream
             )
 
     # Scene writes for the session's publisher, without this renderer's lease guards.
