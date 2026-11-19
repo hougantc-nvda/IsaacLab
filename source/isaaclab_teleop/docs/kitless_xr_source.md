@@ -28,6 +28,5 @@ uv run --no-sync python -m pytest source/isaaclab_teleop/test/test_ov_libraries_
 uv run --no-sync python -m pytest source/isaaclab_teleop/test/test_ovxr_session.py
 ```
 
-The dedicated OVXR CI job checks the Capture owner import and rejects skipped
-adapter tests. The ordinary Kit dependency selection cannot qualify these tests.
+The ordinary Kit dependency selection cannot qualify these tests.
 Native GPU, desktop and headset qualification are separate from these contract tests.
