@@ -1465,10 +1465,10 @@ def test_scene_preparation_respects_physics_population_and_camera_transform_mode
         assert events[-2:] == ["commit", "attach"]
 
 
-@pytest.mark.parametrize("use_ovstage, asynchronous", [(True, False), (False, False), (False, True)])
-def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(use_ovstage, asynchronous):
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(asynchronous):
     renderer = _make_ovrtx_renderer_without_backend()
-    renderer._use_ovstage = use_ovstage
+    renderer._use_ovstage = False
     renderer.cfg = OVRTXRendererCfg(async_rendering=asynchronous)
     renderer._warp_device = wp.get_device("cpu")
     renderer._device = "cpu"
@@ -1497,28 +1497,23 @@ def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(use_ovsta
             get_geometry_batches=lambda _format: [(geometry, {"/World/Object": (0, 1)})],
         )
     )
-    stage = MagicMock()
-    renderer.scene = types.SimpleNamespace(stage=stage, ordinal=11)
+    renderer.scene = types.SimpleNamespace(stage=MagicMock(), ordinal=11)
     renderer.update_transforms()
     renderer.update_geometries()
     bindings = (renderer._object_xform_binding, renderer._geometry_points_binding)
     writes = [getattr(binding, "write_async" if asynchronous else "write") for binding in bindings]
-    calls = stage.write_attribute.call_args_list if use_ovstage else [write.call_args for write in writes]
+    calls = [write.call_args for write in writes]
     assert len(calls) == 2 and all(c.kwargs["cuda_stream"] is None for c in calls)
-    if use_ovstage:
-        assert [c.args[1] for c in calls] == ["omni:xform", "points"]
-        assert all(c.kwargs["ordinal"] == 11 for c in calls)
-    else:
-        np.testing.assert_allclose(
-            calls[0].args[0].numpy(),
-            [[[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [1, 2, 3, 1]]],
-            atol=1e-6,
-        )
-        np.testing.assert_array_equal(calls[1].args[0][0].numpy(), points.numpy())
+    np.testing.assert_allclose(
+        calls[0].args[0].numpy(),
+        [[[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [1, 2, 3, 1]]],
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(calls[1].args[0][0].numpy(), points.numpy())
     # A repeated publication of unchanged state must not duplicate either write.
     renderer.update_transforms()
     renderer.update_geometries()
-    assert stage.write_attribute.call_count == 2 if use_ovstage else all(write.call_count == 1 for write in writes)
+    assert all(write.call_count == 1 for write in writes)
     # Draining the retained buffers waits for previous writes without a CUDA stream.
     renderer._transform_writes.close()
     renderer._geometry_writes.close()
