@@ -447,6 +447,8 @@ def run_record_workflow(monkeypatch):
 
 def test_record_ovxr_loop_follows_live_presentation_and_shutdown_order(run_record_workflow):
     """Recording prepares OVXR first, fences input on reset publication, never renders, and drains XR first."""
+    from isaaclab_teleop.entrypoints._ovxr_runtime import RENDERER_ATTACH_TIMEOUT_S
+
     events = []
     frames = []
     steps = []
@@ -540,7 +542,7 @@ def test_record_ovxr_loop_follows_live_presentation_and_shutdown_order(run_recor
         "make",
         "device",
         "device-enter",
-        ("worker-start", 180.0),
+        ("worker-start", RENDERER_ATTACH_TIMEOUT_S),
         "env-reset",
         "device-reset",
         ("publish", (1, 0), True),

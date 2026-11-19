@@ -76,8 +76,11 @@ An explicit `ISAAC_LAB_OVRTX_USE_OVSTAGE=0` is incompatible with OVXR.
 No local window opens by default. `--ovxr_session_mode {ar,vr}` (default `ar`) selects the
 OpenXR session mode in live teleoperation, recording and replay. Headset rendering still
 uses the GPU and works with `DISPLAY` unset.
-Renderer startup has a bounded attachment timeout; it does not bound waiting for a
-client to establish its OpenXR session. Installing Capture and resolving
+Renderer startup waits up to 20 minutes for attachment; it does not bound waiting for a
+client to establish its OpenXR session. A first start compiles shaders, and other rendering
+processes on the same GPU slow attachment; either can take several minutes. Attachment cannot be
+interrupted: Ctrl+C takes effect once it completes.
+Installing Capture and resolving
 Python packages do not warm application-specific RTX shaders or Newton/Warp
 physics kernels. First runtime preparation and the first physics step can take
 longer than subsequent runs. Retain startup logs and distinguish stage/render
@@ -106,8 +109,7 @@ no application render loop runs. A recorded STOP, task success/failure, or `--ma
 the run. Playback waits for recorded START messages, including after a recorded
 RESET. Reset does not rewind recorded input. For legacy captures started locally
 without recorded START messages, add `--start_on_replay` to start automatically
-at startup and after RESET. `--max_stage_load_wait_s` bounds
-renderer startup separately; the replay duration starts after warmup and
+at startup and after RESET. The replay duration starts after renderer startup and warmup, and
 includes any lazy first-step physics initialization. Deadlines are checked
 between steps. Application render-call timing statistics are unavailable when
 OVXR owns rendering independently.

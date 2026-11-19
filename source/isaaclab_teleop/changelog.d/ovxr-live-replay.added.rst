@@ -4,6 +4,9 @@
   demonstrations on a kitless backend selected with ``--physics``, also when Isaac Sim is installed, and
   the MCAP replay agent replays headless on a kitless backend without ``--ovxr``, reporting each run's
   outcome without render timing.
+* Added a 20-minute bound on OVXR renderer startup in live teleoperation, recording and MCAP replay.
+  It covers a first start, which compiles shaders, and attachment on a GPU shared with other rendering
+  processes.
 * Added ``--ovxr_step_hz`` to the live teleoperation agent and the demonstration recorder. It caps
   the host-control rate with ``--ovxr`` while XR rendering runs independently.
 * Added ``--start_on_replay`` to the MCAP replay agent. It starts playback at startup and after

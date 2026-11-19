@@ -298,7 +298,7 @@ from .. import (
 )
 from ._ovxr_launch import prepare_ovxr_launch, reject_ovxr_runtime_conflicts
 from ._ovxr_presentation import OvxrPresentation, admit_reset_publication, update_idle_presentation
-from ._ovxr_runtime import requires_hard_sim_reset
+from ._ovxr_runtime import RENDERER_ATTACH_TIMEOUT_S, requires_hard_sim_reset
 
 logger = logging.getLogger(__name__)
 
@@ -423,7 +423,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "Safety cap on how long to wait for omni.usd to finish loading the stage before"
             " proceeding anyway. Hit only when something is misconfigured (missing asset, slow"
             " Nucleus, etc.); a warning is logged and replay continues. Default is 300s."
-            " With --ovxr it also bounds render-worker startup, which fails and drains on expiry."
         ),
     )
     parser.add_argument(
@@ -1270,7 +1269,7 @@ def _warmup_replay(env: gym.Env, run_index: int, presentation: OvxrPresentation 
 
 def _start_replay_presentation(env: gym.Env, presentation: OvxrPresentation) -> None:
     """Start the viewer for the first run, or adopt the current device's anchor, then publish the reset."""
-    if not presentation.start(env, timeout_s=args_cli.max_stage_load_wait_s):
+    if not presentation.start(env, timeout_s=RENDERER_ATTACH_TIMEOUT_S):
         raise RuntimeError("OVXR viewer shut down before replay startup")
     presentation.publish(env, reset=True)
 

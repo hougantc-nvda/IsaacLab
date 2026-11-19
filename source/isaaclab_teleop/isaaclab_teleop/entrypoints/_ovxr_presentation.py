@@ -85,6 +85,10 @@ class OvxrPresentation:
         if self.started:
             self.session.set_external_anchor_state(device.external_anchor_state)
             return True
+        print(
+            "[INFO]: Starting the OVXR renderer. A first start compiles shaders and a busy GPU slows it;"
+            " either can take several minutes and cannot be interrupted."
+        )
         self.started = self.session.start_render_worker(
             env,
             tracking_anchor_path=device.xr_render_anchor_path,

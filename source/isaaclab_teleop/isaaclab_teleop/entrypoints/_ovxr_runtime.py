@@ -19,8 +19,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RENDERER_ATTACH_TIMEOUT_S = 180.0
-"""Allow cold RTX preparation before failing attachment; client connection waits separately."""
+RENDERER_ATTACH_TIMEOUT_S = 1200.0
+"""Allow cold RTX preparation before failing attachment; client connection waits separately.
+
+A first start compiles shaders, and a GPU shared with other rendering processes slows attachment;
+either can take several minutes. An expired wait cannot cancel the attachment: the process still
+waits for it before it exits.
+"""
 
 
 def requires_hard_sim_reset(physics_backend: str | None) -> bool:

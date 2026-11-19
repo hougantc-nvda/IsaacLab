@@ -503,3 +503,17 @@ def test_unrendered_replay_reports_its_outcome_only_without_kit(monkeypatch, kit
         stats = run()
         assert stats.active_iterations == 3
         assert not stats.active_frame_times_ms
+
+
+def test_replay_renderer_startup_shares_the_cold_start_bound():
+    """Replay waits for renderer attachment as long as live teleoperation and recording do."""
+    from isaaclab_teleop.entrypoints import teleop_replay_agent as replay
+    from isaaclab_teleop.entrypoints._ovxr_runtime import RENDERER_ATTACH_TIMEOUT_S
+
+    waits = []
+    presentation = SimpleNamespace(
+        start=lambda _env, *, timeout_s: waits.append(timeout_s) or True,
+        publish=lambda _env, *, reset: None,
+    )
+    replay._start_replay_presentation("env", presentation)
+    assert waits == [RENDERER_ATTACH_TIMEOUT_S]
