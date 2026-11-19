@@ -3,7 +3,8 @@
   live agent's ``--ovxr`` and ``--ovxr_session_mode`` options. ``replay_demos.py`` replays HDF5
   demonstrations on a kitless backend selected with ``--physics``, also when Isaac Sim is installed, and
   the MCAP replay agent replays headless on a kitless backend without ``--ovxr``, reporting each run's
-  outcome without render timing.
+  outcome without render timing. A kitless MCAP replay consumes exactly one recorded frame per step, so
+  it runs as fast as the simulator allows.
 * Added a 20-minute bound on OVXR renderer startup in live teleoperation, recording and MCAP replay.
   It covers a first start, which compiles shaders, and attachment on a GPU shared with other rendering
   processes.

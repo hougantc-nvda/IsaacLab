@@ -232,6 +232,30 @@ class TestRetargetingExecutionConfig:
         assert resolved_execution.mode == "pipelined"
         assert resolved_execution.pacing.safety_margin_s == 0.025
 
+    @pytest.mark.parametrize(
+        ("replay", "kit", "expected"),
+        [(True, False, "sync"), (True, True, "pipelined"), (False, False, "pipelined")],
+    )
+    def test_only_a_kitless_replay_retargets_synchronously(self, monkeypatch, replay, kit, expected):
+        """A kitless MCAP replay consumes one recorded frame per step; live sessions and Kit keep the default."""
+        from isaaclab_teleop import session_lifecycle
+
+        monkeypatch.setattr(session_lifecycle, "has_kit", lambda: kit)
+        lifecycle = TeleopSessionLifecycle(_make_cfg(), mcap_replay_path="recording.mcap" if replay else None)
+        assert lifecycle._resolved_retargeting_execution().mode == expected
+
+    def test_a_task_execution_mode_overrides_the_kitless_replay_default(self, monkeypatch):
+        """An execution mode set by the task is used as given."""
+        from isaaclab_teleop import session_lifecycle
+
+        monkeypatch.setattr(session_lifecycle, "has_kit", lambda: False)
+        cfg = _make_cfg()
+        cfg.retargeting_execution = sys.modules["isaacteleop.teleop_session_manager"].RetargetingExecutionConfig(
+            mode="pipelined"
+        )
+        lifecycle = TeleopSessionLifecycle(cfg, mcap_replay_path="recording.mcap")
+        assert lifecycle._resolved_retargeting_execution() is cfg.retargeting_execution
+
 
 class TestExternalOpenXRHandles:
     """Tests for borrowing OVXR-owned OpenXR handles without the Kit bridge."""

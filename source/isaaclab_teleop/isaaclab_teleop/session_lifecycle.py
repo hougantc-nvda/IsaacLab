@@ -1269,12 +1269,17 @@ class TeleopSessionLifecycle:
         ``None`` so that constructing the config never requires the optional
         ``isaacteleop`` package. The default is resolved here, at session-start
         time, where ``isaacteleop`` is guaranteed to be importable.
+
+        A kitless MCAP replay retargets synchronously: every step consumes exactly the next
+        recorded frame, so the replay does not depend on how fast the application loop runs.
         """
         if self._cfg.retargeting_execution is not None:
             return self._cfg.retargeting_execution
 
         from isaacteleop.teleop_session_manager import DeadlinePacingConfig, RetargetingExecutionConfig
 
+        if self._is_replay and not has_kit():
+            return RetargetingExecutionConfig(mode="sync")
         return RetargetingExecutionConfig(mode="pipelined", pacing=DeadlinePacingConfig(safety_margin_s=0.025))
 
     def _try_start_session(self) -> bool:
