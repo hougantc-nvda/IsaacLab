@@ -57,8 +57,6 @@ def bootstrap(monkeypatch):
     from isaaclab.app import get_settings_manager
     from isaaclab.renderers import RenderContext
 
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
     renderer = OvxrRenderer(
         OvxrRendererCfg(),
@@ -220,8 +218,6 @@ def ovxr_simulation(monkeypatch):
     from isaaclab.physics import PhysicsEvent
     from isaaclab.sim import SimulationContext
 
-    for name in ("ISAAC_LAB_OVRTX_USE_OVSTAGE", "ISAAC_LAB_SHARE_OVSTAGE"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.delattr(builtins, ovxr_session._TERMINAL_MODE_SENTINEL, raising=False)
     monkeypatch.setattr(ovxr_session, "_RETAINED_NATIVE_PAIRS", [])
     events = []
@@ -253,7 +249,8 @@ def ovxr_simulation(monkeypatch):
     try:
         renderer = sim.get_or_create_backend(OvxrRendererCfg())
         renderer._sdp = SimpleNamespace(backend=SimpleNamespace(transform_paths=[]), get_geometry_points=lambda: {})
-        # Clone preparation creates the private pair; this thread then claims and binds it as the render owner.
+        # The lease created the pair and clone preparation routes the copies; this thread then claims and
+        # binds the pair as the render owner.
         OvrtxReplicateContext.prepare(sim, {})
         lease = bootstrap.claim_render_owner_transfer(bootstrap.offer_render_owner_transfer())
         renderer.prepare_stage(sim.stage, 1)

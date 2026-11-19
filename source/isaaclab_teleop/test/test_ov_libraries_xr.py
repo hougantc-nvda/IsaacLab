@@ -127,6 +127,9 @@ class _FakeBootstrap:
             )
         )
 
+    def create_native_pair(self):
+        pass
+
     def capture_scene_publisher(self):
         self.events.append("capture")
         return self.publisher
@@ -505,8 +508,6 @@ def test_host_reconciles_failed_publication_without_reusing_generation(xr_module
         markers={},
         _publish_visual_materials=contextlib.nullcontext,
     )
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     controller = controller_type(renderer)
     lease = controller.acquire()
     host._scene_publisher = lease.capture_scene_publisher()
@@ -776,7 +777,7 @@ def test_bootstrap_construction_failure_restores_terminal_mode(bootstrap_context
 
 
 def test_caller_renderer_settings_follow_successful_preparation(xr_module, monkeypatch):
-    """Settings apply after the lease is reserved; the native renderer is created later with the env."""
+    """Settings apply after the lease is reserved and before the session creates its native renderer."""
     settings = "  --/rtx/rendermode=MinimalRendering  "
     events = []
     bootstrap = _FakeBootstrap()
@@ -789,8 +790,9 @@ def test_caller_renderer_settings_follow_successful_preparation(xr_module, monke
         return bootstrap
 
     monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", create_bootstrap)
+    monkeypatch.setattr(bootstrap, "create_native_pair", lambda: events.append("native-pair"))
     xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg(renderer_settings=settings))
-    assert events == ["bootstrap", ("settings", settings.strip())]
+    assert events == ["bootstrap", ("settings", settings.strip()), "native-pair"]
     # The session retires before every Isaac Lab STOP listener of the prepared simulation.
     [(event, options)] = bootstrap.stop_listeners
     assert event is xr_module.PhysicsEvent.STOP
@@ -819,6 +821,23 @@ def test_failed_preparation_leaves_no_partial_renderer_settings(xr_module, monke
         xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg())
     assert applied == []
     assert bootstrap.aborted is (failure == "settings")
+
+
+def test_failed_native_pair_creation_aborts_the_bootstrap(xr_module, monkeypatch):
+    """A native renderer that fails to start aborts the bootstrap; its settings were already applied."""
+    bootstrap = _FakeBootstrap()
+    applied = []
+
+    def fail():
+        raise RuntimeError("native start failed")
+
+    monkeypatch.setitem(sys.modules, "ovxr", SimpleNamespace(apply_renderer_settings=applied.append))
+    monkeypatch.setattr(xr_module, "OvxrSessionBootstrap", lambda *_args: bootstrap)
+    monkeypatch.setattr(bootstrap, "create_native_pair", fail)
+    with pytest.raises(RuntimeError, match="native start failed"):
+        xr_module.OvLibrariesXrSession.prepare(object(), xr_module.OvLibrariesXrCfg())
+    assert len(applied) == 1
+    assert bootstrap.aborted
 
 
 def test_prepare_rejects_existing_context_before_global_settings(xr_module, monkeypatch):
@@ -934,8 +953,6 @@ def test_poisoned_publication_still_retires_in_capture_order(xr_module, monkeypa
         markers={},
         _publish_visual_materials=contextlib.nullcontext,
     )
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     controller = controller_type(renderer)
     lease = controller.acquire()
     bootstrap.publisher = lease.capture_scene_publisher()
@@ -1118,8 +1135,6 @@ def test_capture_worker_retires_post_claim_attachment_failure(
     controller = controller_type(renderer)
     renderer.acquire_render_lease = controller.acquire
     monkeypatch.setattr(context, "get_or_create_backend", lambda _self, _cfg: renderer)
-    monkeypatch.setenv("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1")
-    monkeypatch.delenv("ISAAC_LAB_SHARE_OVSTAGE", raising=False)
     cfg = SimpleNamespace(device="cpu", dt=0.01)
     bootstrap = module.OvxrSessionBootstrap(cfg)
     context.current.cfg = cfg

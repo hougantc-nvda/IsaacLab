@@ -14,7 +14,6 @@ ordinary OVRTX renderer stays available to other cameras.
 from __future__ import annotations
 
 import contextlib
-import os
 import threading
 import weakref
 from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
@@ -22,8 +21,9 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 import ovstage
-from isaaclab_ov.renderers import OVRTXRenderer, OVRTXRendererCfg
+from isaaclab_ov.renderers import OVRTXBackendCfg, OVRTXRenderer, OVRTXRendererCfg
 from isaaclab_ov.renderers.visual_materials import OVRTXVisualMaterialWriter
+from isaaclab_ov.stage import OvstageBackendCfg
 
 from pxr import Usd
 
@@ -79,6 +79,19 @@ class OvxrRenderLease:
         """Return the exact retained renderer-attached OVStage."""
         self.validate_live()
         return cast("OvStage", self._stage)
+
+    def create_native_pair(self) -> None:
+        """Create the session's own OVStage and the OVRTX engine that attaches to it.
+
+        Call this after process-wide renderer settings are applied and before the environment is
+        built. Clone preparation then finds the renderer initialized and only routes scene copies
+        to the Stage. Calling it again on the same renderer is a no-op.
+
+        Raises:
+            RuntimeError: If called off the owner thread, or after clone preparation initialized
+                the renderer.
+        """
+        self._controller.create_native_pair(self)
 
     def offer_owner_transfer(self) -> object:
         """Freeze one unbound lease and return its one-shot owner capability."""
@@ -363,19 +376,17 @@ class _OvxrLeaseController:
         self.stage_deferred = False
         self._marker_consumer: object | None = None
         self._previous_marker_groups: Iterable = ()
+        self._created_pair = False
 
     def acquire(self) -> OvxrRenderLease:
-        """Reserve the exact OVRTX/OVStage pair before stage preparation."""
+        """Reserve the renderer before stage preparation; :meth:`create_native_pair` creates its pair."""
         self.require_owner_thread("acquire a render lease")
-        if os.environ.get("ISAAC_LAB_OVRTX_USE_OVSTAGE", "1").strip() != "1":
-            raise RuntimeError("OvxrRenderLease requires ISAAC_LAB_OVRTX_USE_OVSTAGE=1")
-        if os.environ.get("ISAAC_LAB_SHARE_OVSTAGE") == "1":
-            raise RuntimeError("The render lease requires a private rendering OVStage")
         if self._renderer._closed:
             raise RuntimeError("Cannot acquire OvxrRenderLease from a closed renderer")
         if self.active is not None:
             raise RuntimeError("An OvxrRenderLease is already active")
-        if self._renderer.backend is not None or self._renderer._initialized_scene or self._generation != 0:
+        prepared = self._renderer.backend is not None and not self._created_pair
+        if prepared or self._renderer._initialized_scene or self._generation != 0:
             raise RuntimeError("OvxrRenderLease must be acquired before clone preparation")
         lease = OvxrRenderLease._create_unbound(self)
         registry = self._renderer._sim.vis_marker_registry
@@ -384,6 +395,32 @@ class _OvxrLeaseController:
         self._renderer.marker_groups = registry.get_groups().values()
         self.active = lease
         return lease
+
+    def create_native_pair(self, lease: OvxrRenderLease) -> None:
+        """Create the Stage and engine this lease lends, once, before clone preparation."""
+        self.validate_active(lease)
+        self.require_owner_thread("create the native pair")
+        if self._created_pair:
+            return
+        if self._renderer.backend is not None or self._renderer._initialized_scene:
+            raise RuntimeError("Clone preparation already initialized this renderer")
+        # The session manages its own rendering Stage: create the Stage and the engine that attaches to
+        # it. Clone preparation then finds the renderer initialized and only routes scene copies.
+        renderer = self._renderer
+        backend_cfg = OVRTXBackendCfg(
+            scene_key=renderer.cfg,
+            log_file_path=renderer.cfg.log_file_path,
+            log_level=renderer.cfg.log_level,
+            use_ovstage=True,
+            read_gpu_transforms=True,
+            device=renderer._sim.device,
+        )
+        # Register the Stage before the engine that borrows it.
+        scene = renderer._sim.get_or_create_backend(OvstageBackendCfg(scene_key=backend_cfg))
+        renderer.backend = renderer._sim.get_or_create_backend(backend_cfg)
+        renderer.scene = scene
+        renderer._use_ovstage = True
+        self._created_pair = True
 
     def require_owner_thread(self, operation: str) -> None:
         """Reject lease operations outside the renderer construction thread."""
@@ -598,15 +635,14 @@ class _OvxrLeaseController:
                 raise RuntimeError("Cannot replace the Stage of a bound renderer/scene pair")
             if num_envs != 1:
                 raise RuntimeError("The render lease requires exactly one environment")
-            renderer = self._renderer
-            # Clone preparation keys a private engine and OVStage by this renderer's configuration.
-            if not renderer._use_ovstage or renderer.backend.cfg.scene_key != renderer.cfg:
-                raise RuntimeError("The render lease requires its private OVStage renderer")
-            with renderer.scene.stage.get_attribute_write_floor() as floor:
+            if not self._created_pair:
+                # Clone preparation built an ordinary pair because the session never created its own.
+                raise RuntimeError("The render lease requires the pair that create_native_pair() creates")
+            with self._renderer.scene.stage.get_attribute_write_floor() as floor:
                 floor.wait()
                 # A new OVStage is sealed through the minimum ordinal; any published write raises the floor.
                 if int(floor.fetch()) != ovstage.ORDINAL_MIN:
-                    raise RuntimeError("The render lease requires an unused private OVStage")
+                    raise RuntimeError("The render lease requires an unused OVStage")
         return True
 
     def materialize_deferred_stage(self, lease: OvxrRenderLease, stage: Any, num_envs: int) -> bool:
@@ -737,11 +773,6 @@ class OvxrRenderer(OVRTXRenderer):
         writer = _OvxrVisualMaterialWriter(self, batches)
         self._visual_material_writer_ref = weakref.ref(writer)
         return writer
-
-    # Extension points of OVRTXRenderer.
-
-    def _requires_private_ovstage(self) -> bool:
-        return self._render_lease.active is not None
 
     # Scene writes for the session's publisher, without this renderer's lease guards.
 
