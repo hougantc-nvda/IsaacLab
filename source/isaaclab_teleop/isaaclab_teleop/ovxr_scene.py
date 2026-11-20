@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Native engine, markers and visual materials of the OVXR renderer's OVStage scene.
+"""Native engine, markers, visual materials and camera panels of the OVXR renderer's OVStage scene.
 
 These follow the OVStage path of Isaac Lab's OVRTX renderer
 (:mod:`isaaclab_ov.renderers.ovrtx_renderer` and :mod:`isaaclab_ov.renderers.visual_materials`):
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from isaaclab_ov.stage import OvstageBackend
 
     from isaaclab.renderers.base_renderer import VisualMaterialBatch
+    from isaaclab.renderers.camera_render_spec import CameraRenderSpec
 
     from .ovxr_renderer import OvxrRenderer, OvxrRendererCfg
 
@@ -152,6 +153,40 @@ def _resolve_env_light_partitions(
             " environments."
         )
     return assignments
+
+
+class _OvxrPanelRenderData:
+    """One camera panel's render product, pose binding and pose buffer in the OVXR renderer's OVStage.
+
+    The fields that :func:`~isaaclab_ov.renderers.ovrtx_usd.build_render_product_as_string` reads follow
+    the OVRTX renderer's camera render data; a panel is one camera view.
+    """
+
+    def __init__(self, spec: CameraRenderSpec, render_scope_name: str, device: str):
+        """Create render data for a panel camera in its assigned render scope.
+
+        Args:
+            spec: Camera render specification of the panel's single view.
+            render_scope_name: Root scope containing the panel's render product and RenderVars.
+            device: Simulation device, which holds the panel's pose buffer.
+        """
+        self.render_scope_name = render_scope_name
+        self.render_product_path = f"/{render_scope_name}/RenderProduct"
+        self.camera_paths = list(spec.camera_prim_paths)
+        self.width = spec.cfg.width
+        self.height = spec.cfg.height
+        self.num_cols = self.num_rows = 1
+        self.camera_xform_binding: ovstage.Query | None = None
+        self.camera_transforms = wp.empty(len(self.camera_paths), dtype=wp.mat44d, device=device)
+        self.resources = contextlib.ExitStack()
+        """Release the product and its binding, in reverse acquisition order."""
+
+    def cleanup(self) -> None:
+        """Release the panel's product and pose binding. Safe to call repeatedly."""
+        try:
+            self.resources.close()
+        finally:
+            self.camera_xform_binding = None
 
 
 def _remove_usd_reference(scene: OvstageBackend, reference: int) -> None:
