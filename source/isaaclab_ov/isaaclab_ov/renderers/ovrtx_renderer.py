@@ -407,6 +407,26 @@ class OVRTXRenderer(BaseRenderer):
         self._visual_material_writer_ref = weakref.ref(writer)
         return writer
 
+    @contextlib.contextmanager
+    def _publish_visual_materials(self) -> Iterator[None]:
+        """Publish dirty materials and complete their reads before buffers may change."""
+        material_writer = self._visual_material_writer_ref() if self._visual_material_writer_ref is not None else None
+        try:
+            if material_writer is not None:
+                material_writer.publish()
+            yield
+        finally:
+            if material_writer is not None:
+                # When another exception is already propagating, log the drain failure instead of
+                # replacing it. Losing it silently would hide a failed material write.
+                primary_active = sys.exc_info()[0] is not None
+                try:
+                    material_writer.drain()
+                except Exception as e:
+                    if not primary_active:
+                        raise
+                    logger.warning("Error draining material writes after a failed scene update: %s", e, exc_info=True)
+
     def prepare_stage(self, stage: Usd.Stage, num_envs: int) -> None:
         """Load, clone, and bind the shared scene before any camera products are registered."""
         logger.info("Preparing stage (%d envs)...", num_envs)
@@ -1192,10 +1212,7 @@ class OVRTXRenderer(BaseRenderer):
         if self.backend.renderer is None or not self._camera_render_data:
             return
         products = self.backend.render_products.copy()
-        material_writer = self._visual_material_writer_ref() if self._visual_material_writer_ref is not None else None
-        try:
-            if material_writer is not None:
-                material_writer.publish()
+        with self._publish_visual_materials():
             if self._needs_transform_initialization:
                 # OVRTX 0.6 initializes GPU world transforms on its first step using
                 # authored poses. Flush that initialization before capturing runtime
@@ -1217,18 +1234,6 @@ class OVRTXRenderer(BaseRenderer):
             else:
                 result = self.backend.renderer.step(render_products=products, delta_time=_RENDER_DELTA_TIME)
                 self._process_render_products(render_data, result)
-        finally:
-            if material_writer is not None:
-                # When another exception is already propagating, log the drain failure instead of
-                # replacing it. Losing it silently would hide a failed material write.
-                primary_active = sys.exc_info()[0] is not None
-                try:
-                    material_writer.drain()
-                except Exception as e:
-                    if not primary_active:
-                        raise
-                    logger.warning("Error draining material writes after a failed render: %s", e, exc_info=True)
-
         if self._use_ovstage:
             # Stage writes and material reads finish before rendering. Consume only after advancing
             # the ordinal so a failed readback cannot leave later writes at the sealed floor.
