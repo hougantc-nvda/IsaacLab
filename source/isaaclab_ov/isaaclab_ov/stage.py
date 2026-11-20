@@ -36,7 +36,13 @@ OVSTAGE_POINT_DTYPE = ovstage.DLDataType(code=ovstage.DLDataTypeCode.kDLFloat, b
 
 
 def populate_stage(
-    stage: ovstage.Stage, usda: str, *, ordinal: int, domains: ovstage.PopulationDomain, physics: bool = False
+    stage: ovstage.Stage,
+    usda: str,
+    *,
+    ordinal: int,
+    domains: ovstage.PopulationDomain,
+    physics: bool = False,
+    population_desc: ovstage.population.Desc | None = None,
 ) -> None:
     """Populate rendering and optional physics data using the pinned OVStage and OvPhysX SDKs.
 
@@ -50,14 +56,20 @@ def populate_stage(
         ordinal: Population write ordinal, sealed by the caller after cloning.
         domains: Native population domains, normally rendering.
         physics: Whether an OVPhysX consumer also needs physics data.
+        population_desc: Additional properties required by the rendering consumer.
     """
+    descs = [ovstage.population.Desc(domains=domains)]
     if physics:
+        descs.append(_physics_population_desc())
+    if population_desc is not None:
+        descs.append(population_desc)
+    if len(descs) > 1:
         ovstage.population.open_usd_from_string_with_desc(
             stage,
             usda,
             ordinal=ordinal,
             time=ovstage.population.DEFAULT_TIME,
-            descs=(ovstage.population.Desc(domains=domains), _physics_population_desc()),
+            descs=tuple(descs),
         )
         return
     ovstage.population.open_usd_from_string(stage, usda, ordinal=ordinal, domains=domains)
@@ -214,7 +226,7 @@ class OvstageBackend:
         """Whether population reserved a render-copy commit that consumers have not completed."""
         return self._deferred_render_copies is not None
 
-    def populate(self, usda: str) -> None:
+    def populate(self, usda: str, *, population_desc: ovstage.population.Desc | None = None) -> None:
         """Import the exported prototypes and apply the clone context's prepared operations.
 
         Population commits ordinal 1. With early physics attachment, ordinal 2 is reserved for
@@ -223,17 +235,23 @@ class OvstageBackend:
 
         Args:
             usda: USD scene containing the routed prototypes and their materials.
+            population_desc: Optional native property selection for this scene population.
         """
         if self.ordinal:
             return
 
         if self.cfg.defer_render_copies:
-            self._populate_originals(usda)
+            self._populate_originals(usda, population_desc=population_desc)
             return
 
         # Ordinal 0 is the empty state; population and cloning form the first committed write.
         populate_stage(
-            self.stage, usda, ordinal=1, domains=self.cfg.population_domains, physics=self.cfg.populate_physics
+            self.stage,
+            usda,
+            ordinal=1,
+            domains=self.cfg.population_domains,
+            physics=self.cfg.populate_physics,
+            population_desc=population_desc,
         )
         ovstage_replicate(
             self.stage, self.paths, self.clone_copies, self.clone_env_paths, self.clone_positions, ordinal=1
@@ -311,7 +329,7 @@ class OvstageBackend:
             self.paths = resources.enter_context(ovstage.PathDictionary(self.stage))
             self.resources = resources.pop_all()
 
-    def _populate_originals(self, usda: str) -> None:
+    def _populate_originals(self, usda: str, *, population_desc: ovstage.population.Desc | None = None) -> None:
         """Populate complete physics originals and retain the remaining render copies."""
         layer = Sdf.Layer.CreateAnonymous()
         if not layer.ImportFromString(usda):
@@ -340,6 +358,7 @@ class OvstageBackend:
             ordinal=1,
             domains=self.cfg.population_domains,
             physics=self.cfg.populate_physics,
+            population_desc=population_desc,
         )
         if any(targets for _, targets in copies):
             self.stage.compute_hierarchy(

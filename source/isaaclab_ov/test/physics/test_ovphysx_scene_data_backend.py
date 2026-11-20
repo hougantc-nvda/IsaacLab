@@ -217,8 +217,8 @@ def test_manager_attaches_and_releases_owned_ovstage(manager, monkeypatch, failu
     monkeypatch.setattr(
         stage_module,
         "populate_stage",
-        lambda stage, usda, *, ordinal, domains, physics: events.append(
-            ("populate", stage, usda, ordinal, domains, physics)
+        lambda stage, usda, *, ordinal, domains, physics, population_desc: events.append(
+            ("populate", stage, usda, ordinal, domains, physics, population_desc)
         ),
     )
     fake_ovstage.PathDictionary = lambda stage: nullcontext(object())
@@ -239,7 +239,7 @@ def test_manager_attaches_and_releases_owned_ovstage(manager, monkeypatch, failu
     manager.backend.close()
     assert events == [
         ("stage", "isaaclab.scene"),
-        ("populate", stage, "#usda 1.0", 1, om_mod.ovstage.PopulationDomain.RENDERING, True),
+        ("populate", stage, "#usda 1.0", 1, om_mod.ovstage.PopulationDomain.RENDERING, True, None),
         ("seal", 1),
         ("attach", stage, 1),
         ("wait_task", attach_task),
