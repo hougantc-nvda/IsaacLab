@@ -461,7 +461,7 @@ class OVRTXRenderer(BaseRenderer):
             if self.cfg.temp_usd_dir is not None:
                 _write_file(Path(self.cfg.temp_usd_dir), "ovrtx_renderer_stage.usda", usd)
             if self._use_ovstage:
-                self.scene.populate(usd)
+                self._populate_stage(usd)
             else:
                 self.backend.renderer.open_usd_from_string(usd)
                 ovrtx_replicate(self.backend.renderer, self.scene.clone_copies, env_paths, self.scene.clone_positions)
@@ -509,6 +509,17 @@ class OVRTXRenderer(BaseRenderer):
             self.scene.resources.callback(self.close)
         self._initialized_scene = True
         self._needs_transform_initialization = not self._use_ovstage and self.backend.cfg.read_gpu_transforms
+
+    # Extension points for a subclass that lends the native pair to another owner. The defaults
+    # describe ordinary rendering. Such a subclass registers deferred cameras through _register_camera.
+
+    def _populate_stage(self, usd: str) -> None:
+        """Populate the OVStage from the exported scene."""
+        self.scene.populate(usd)
+
+    def _defer_camera_registration(self, spec: CameraRenderSpec) -> bool:
+        """Whether :meth:`create_render_data` leaves the camera's product for later registration."""
+        return False
 
     def _setup_xform_bindings(self, stage: Usd.Stage) -> None:
         """Bind SDP body paths and preserve their authored scales when writing world poses."""
@@ -623,20 +634,34 @@ class OVRTXRenderer(BaseRenderer):
         camera_paths = list(spec.camera_prim_paths)
         env_partitions = {Sdf.Path(path): f"env_{i}" for i, path in enumerate(self.scene.clone_env_paths)}
         source_root = next((root for root in Sdf.Path(camera_paths[0]).GetPrefixes() if root in env_partitions), None)
+        if source_root is not None and len(camera_paths) < spec.num_instances:
+            # Native cloning may leave only the source camera in USD. Complete paths retain their row order.
+            suffix = camera_paths[0][len(str(source_root)) :]
+            camera_paths = [path + suffix for path in self.scene.clone_env_paths]
+        data = OVRTXCameraRenderData(spec, f"RenderCamera_{self.scene.next_camera_id}", camera_paths)
+        if not self._defer_camera_registration(spec):
+            self._register_camera(spec, data)
+        self.scene.next_camera_id += 1
+        self._camera_render_data.append(data)
+        return data
+
+    def _register_camera(self, spec: CameraRenderSpec, render_data: OVRTXCameraRenderData) -> None:
+        """Bind one product in the already populated simulation-owned scene."""
+        camera_paths = render_data.camera_paths
+        env_partitions = {Sdf.Path(path): f"env_{i}" for i, path in enumerate(self.scene.clone_env_paths)}
+        source_root = next((root for root in Sdf.Path(camera_paths[0]).GetPrefixes() if root in env_partitions), None)
         camera_partitions = []
         if source_root is not None:
-            # Native cloning may leave only the source camera in USD. Complete paths retain their row order.
-            if len(camera_paths) < spec.num_instances:
-                suffix = camera_paths[0][len(str(source_root)) :]
-                camera_paths = [path + suffix for path in self.scene.clone_env_paths]
             camera_partitions = [
                 next(env_partitions[root] for root in Sdf.Path(path).GetPrefixes() if root in env_partitions)
                 for path in camera_paths
             ]
-        render_data = OVRTXCameraRenderData(spec, f"RenderCamera_{self.scene.next_camera_id}", camera_paths)
         scope, product_path = render_data.render_scope_name, render_data.render_product_path
         usd = build_render_product_as_string(
-            spec, render_data, device_id=self._warp_device.ordinal, enable_shadows=self.cfg.enable_shadows
+            spec,
+            render_data,
+            device_id=self._warp_device.ordinal if self._warp_device.is_cuda else None,
+            enable_shadows=self.cfg.enable_shadows,
         )
         try:
             # Registration mutates the shared scene; finish renders using its existing products first.
@@ -723,11 +748,8 @@ class OVRTXRenderer(BaseRenderer):
         except Exception:
             render_data.cleanup()
             raise
-        self.scene.next_camera_id += 1
-        self._camera_render_data.append(render_data)
         self.backend.render_products.add(render_data.render_product_path)
         render_data.resources.callback(self.backend.render_products.discard, render_data.render_product_path)
-        return render_data
 
     def set_outputs(self, render_data: OVRTXCameraRenderData, output_data: dict[str, ProxyArray]) -> None:
         """Register pre-allocated warp output buffers for rendering.
@@ -805,7 +827,7 @@ class OVRTXRenderer(BaseRenderer):
         Wait for rendering on the consuming stream, or on the host on Linux unless
         :data:`_DISABLE_LINUX_CUDA_CPU_SYNC_ENV` is ``1``. Consume the zero-copy view inside the
         context. Unmapping records the consuming stream; native release waits for its queued
-        reads and the last view to be dropped.
+        reads and the last view to be dropped. CPU consumers wait on the host and release without a CUDA stream.
 
         Args:
             render_var: OVRTX ``RenderVarOutput`` to map (looked up from ``frame.render_vars``).
@@ -813,6 +835,14 @@ class OVRTXRenderer(BaseRenderer):
         Yields:
             The render var's contents as a Warp array, valid for the duration of the context.
         """
+        if not self._warp_device.is_cuda:
+            mapping = render_var.map(device=Device.CPU)
+            try:
+                mapping.wait()
+                yield wp.from_dlpack(mapping)
+            finally:
+                mapping.unmap()
+            return
         gpu_side_sync = _gpu_side_render_var_sync_enabled()
         # OVRTX uses 0 for no synchronization and 1 for Torch's legacy default stream (CUDA handle 0).
         stream = self._warp_device.stream.cuda_stream or 1
@@ -1144,7 +1174,7 @@ class OVRTXRenderer(BaseRenderer):
         binding = render_data.camera_xform_binding
         if binding is None:
             return
-        stream = self._warp_device.stream
+        stream = self._warp_device.stream if self._warp_device.is_cuda else None
         matrices = render_data.camera_writes.acquire(stream)
         wp.launch(
             create_camera_transforms_kernel, len(matrices), [positions, orientations, matrices], device=self._device
@@ -1157,7 +1187,7 @@ class OVRTXRenderer(BaseRenderer):
                 tensors=xform_tensor_from_warp(matrices),
                 is_array=False,
                 semantic=ovstage.AttributeSemantic.MATRIX,
-                cuda_stream=stream.cuda_stream or 1,
+                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
             ).wait()
         else:
             operation = render_data.camera_writes.submit(binding, matrices, stream)
@@ -1165,13 +1195,13 @@ class OVRTXRenderer(BaseRenderer):
                 operation.wait()
 
     def update_camera_intrinsics(self, render_data: OVRTXCameraRenderData, intrinsics: wp.array, parameters: wp.array):
-        """Publish calibration columns from GPU memory into the renderer-owned scene."""
+        """Publish calibration columns from their producing device into the renderer-owned scene."""
         # A runtime calibration change is a scene write for this camera's bindings, so its
         # in-flight renders must finish first. Other cameras keep their pipelines.
         errors = self.drain_pending_renders((render_data,))
         if errors:
             raise ExceptionGroup("OVRTX renders failed before calibration update", errors)
-        stream = wp.get_stream(parameters.device).cuda_stream or 1
+        stream = (wp.get_stream(parameters.device).cuda_stream or 1) if parameters.device.is_cuda else None
         if self._use_ovstage:
             self.scene.stage.write_attributes(
                 render_data.camera_xform_binding,

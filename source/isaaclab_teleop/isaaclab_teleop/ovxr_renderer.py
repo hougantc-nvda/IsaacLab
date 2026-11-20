@@ -7,25 +7,29 @@
 
 ``OvxrRenderer`` is the simulation's OVRTX renderer for an OVXR session: the same engine and
 OVStage render the simulation's scene, but the session's render worker owns them. Its lease handles
-the render-thread handoff, deferred Stage preparation and scene publication ordering. Isaac Lab's
-ordinary OVRTX renderer stays available to other cameras.
+the render-thread handoff, deferred Stage preparation, scene publication ordering and the selected
+camera panels. Isaac Lab's ordinary OVRTX renderer stays available to other cameras.
 """
 
 from __future__ import annotations
 
 import contextlib
+import math
+import re
 import threading
 import weakref
 from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, cast
 
 import ovstage
+import warp as wp
 from isaaclab_ov.renderers import OVRTXBackendCfg, OVRTXRenderer, OVRTXRendererCfg
 from isaaclab_ov.renderers.visual_materials import OVRTXVisualMaterialWriter
 from isaaclab_ov.stage import OvstageBackendCfg
 
-from pxr import Usd
+from pxr import Gf, Sdf, Usd
 
 from isaaclab.renderers.camera_render_spec import CameraRenderSpec
 from isaaclab.utils import configclass
@@ -43,6 +47,16 @@ class _OvxrLeaseState(Enum):
     UNBOUND = auto()
     BOUND = auto()
     RELEASED = auto()
+
+
+@dataclass
+class _AuxiliaryCamera:
+    cfg: Any
+    max_fps: float | None
+    spec: CameraRenderSpec | None = None
+    render_data: OVRTXCameraRenderData | None = None
+    state: tuple[Any, ...] | None = None
+    product_path: str | None = None
 
 
 class OvxrRenderLease:
@@ -69,6 +83,17 @@ class OvxrRenderLease:
         self.release()
 
     @property
+    def auxiliary_render_product_paths(self) -> tuple[str, ...]:
+        """RenderProduct paths of the selected auxiliary cameras, in configuration order.
+
+        Raises:
+            RuntimeError: If the lease is not bound and live, or a selected camera did not
+                materialize exactly one product.
+        """
+        self.validate_live()
+        return self._controller.product_paths(self)
+
+    @property
     def ovrtx_renderer(self) -> Renderer:
         """Return the exact retained application renderer."""
         self.validate_live()
@@ -92,6 +117,32 @@ class OvxrRenderLease:
                 the renderer.
         """
         self._controller.create_native_pair(self)
+
+    def configure_auxiliary_camera(self, camera_cfg: Any, *, max_fps: float | None = None) -> None:
+        """Authorize an exact camera before Stage materialization.
+
+        The leased renderer then accepts the one camera sensor whose specification matches
+        ``camera_cfg`` exactly: a single camera view with the same width, height and ordered
+        ``data_types``, at ``prim_path`` (``{ENV_REGEX_NS}`` matches any environment) or its
+        ``camera`` child prim. Every other camera on the leased renderer remains rejected.
+
+        Args:
+            camera_cfg: Configuration of the camera sensor to authorize, such as a
+                :class:`~isaaclab.sensors.camera.CameraCfg`. Its ``prim_path`` must be unique among
+                the lease's cameras.
+            max_fps: Maximum native rate of the camera's frames [Hz], authored on its prim in the
+                exported Stage. ``None`` authors no rate, so the camera renders with every frame of
+                its render product.
+
+        Raises:
+            RuntimeError: If the lease is released or already bound to a Stage, or ``prim_path`` is
+                already configured.
+            ValueError: If ``camera_cfg`` is ``None``, or ``max_fps`` is not finite and positive.
+        """
+        self._validate_active()
+        if self._state is not _OvxrLeaseState.UNBOUND:
+            raise RuntimeError("Auxiliary camera configuration must precede Stage materialization")
+        self._controller._renderer._panels.configure(camera_cfg, max_fps=max_fps)
 
     def offer_owner_transfer(self) -> object:
         """Freeze one unbound lease and return its one-shot owner capability."""
@@ -227,9 +278,10 @@ class OvxrScenePublisher:
 
     1. Skip a state that needs no publication (see :meth:`publication_required`).
     2. Run the simulation's visualization-marker callbacks, then the session's preparation, such as
-       capturing the inputs that the seal publishes.
-    3. Reserve an ordinal, write every scene component at it, and seal it.
-    4. If the write or seal fails, poison the pair, abandon the ordinal and re-raise.
+       refreshing camera panel poses.
+    3. Reject incomplete camera panel samples before reserving an ordinal.
+    4. Reserve an ordinal, write every scene component at it, and seal it.
+    5. If the write or seal fails, poison the pair, abandon the ordinal and re-raise.
 
     :meth:`~isaaclab.sim.SimulationContext.update_visualizers` runs the marker callbacks only for
     marker-capable visualizers, so without one, step 2 is what moves debug markers before they are drawn.
@@ -293,8 +345,8 @@ class OvxrScenePublisher:
                 :meth:`publication_required`.
             ordinals: Stage ordinal ledger with ``reserve()``, ``publish(ordinal)`` and
                 ``abandon(ordinal)``, such as Isaac Capture's ``StageOrdinalLedger``.
-            prepare: Called once a publication is required, after the marker callbacks and before an
-                ordinal is reserved.
+            prepare: Called once a publication is required, after the marker callbacks and before camera
+                panel samples are validated, for example to refresh their poses.
             seal: Seals the written ordinal. Defaults to ``ordinals.publish``.
             force: Publish even when the state needs no publication, for example for an
                 independently changed XR anchor.
@@ -304,8 +356,9 @@ class OvxrScenePublisher:
 
         Raises:
             RuntimeError: If called off the captured application thread, the publisher is closed or
-                inactive, or the write or seal failed. A failed write or seal poisons the pair,
-                abandons the ordinal and closes the publisher.
+                inactive, a camera panel lacks a live pose sample, or the write or seal failed. A
+                failed write or seal poisons the pair, abandons the ordinal and closes the publisher;
+                a rejected sample changes nothing.
         """
         self._require_application_thread()
         with self._lock:
@@ -319,6 +372,7 @@ class OvxrScenePublisher:
             if prepare is not None:
                 prepare()
             controller.require_publishable(self._lease)
+            controller._renderer._panels.validate_samples()
             ordinal = ordinals.reserve()
             try:
                 controller.write_scene_components(self._lease, ordinal, physics_step_id)
@@ -393,6 +447,7 @@ class _OvxrLeaseController:
         self._marker_consumer = registry.register_consumer()
         self._previous_marker_groups = self._renderer.marker_groups
         self._renderer.marker_groups = registry.get_groups().values()
+        self._renderer._panels.clear()
         self.active = lease
         return lease
 
@@ -551,6 +606,7 @@ class _OvxrLeaseController:
         self._renderer.marker_groups = self._previous_marker_groups
         self._previous_marker_groups = ()
         self.active = None
+        self._renderer._panels.clear()
 
     def reject_ordinary_operation(self, operation: str, *, retiring: bool = False) -> None:
         """Reject ordinary OVRTX operations while an external lease is active.
@@ -614,6 +670,11 @@ class _OvxrLeaseController:
         self._last_step_id = physics_step_id
         self._published_marker_revision = self._marker_revision()
 
+    def product_paths(self, lease: OvxrRenderLease) -> tuple[str, ...]:
+        """Return products in application selection order, independently of sensor initialization order."""
+        self.validate_live(lease, lease.ovrtx_renderer, lease.ovstage, lease._generation)
+        return self._renderer._panels.product_paths()
+
     def prepare_stage(self, num_envs: int) -> bool:
         """Validate or defer leased preparation; ordinary rendering is immediately allowed.
 
@@ -646,7 +707,7 @@ class _OvxrLeaseController:
         return True
 
     def materialize_deferred_stage(self, lease: OvxrRenderLease, stage: Any, num_envs: int) -> bool:
-        """Materialize a deferred Stage after render-thread ownership transfer."""
+        """Materialize a deferred Stage, with any selected cameras, after render-thread ownership transfer."""
         self.require_owner_thread("materialize a deferred Stage")
         # Unclaimed, a fallback prepare_stage would only defer again; reject even if nothing is deferred yet.
         if not self._transfer_claimed:
@@ -655,6 +716,8 @@ class _OvxrLeaseController:
             return False
         if self.active is not lease or lease._state is not _OvxrLeaseState.UNBOUND:
             raise RuntimeError("Deferred Stage is not eligible for materialization")
+        if not self._renderer._panels.prepared():
+            raise RuntimeError("Deferred auxiliary camera Stage is not eligible for materialization")
         self._renderer.prepare_stage(stage, num_envs)
         return True
 
@@ -662,6 +725,7 @@ class _OvxrLeaseController:
         """Bind the prepared native pair after renderer initialization succeeds."""
         lease = self.active
         if lease is not None:
+            self._renderer._panels.materialize()
             self.stage_deferred = False
             self._generation += 1
             lease._bind(self._renderer.backend.renderer, self._renderer.scene.stage, self._generation)
@@ -683,6 +747,164 @@ class _OvxrLeaseController:
         with self._renderer._publish_visual_materials():
             self._renderer._publish_transforms()
             self._renderer._publish_geometries()
+            self._renderer._panels.publish_poses()
+
+
+class _OvxrPanelCameras:
+    """Camera panels selected for the OVXR session, owned by ``OvxrRenderer``.
+
+    They match the selected camera sensors, create their render products once the session's render
+    worker prepares the Stage, author native frame rates on the export, and hold each camera's latest
+    pose sample until scene publication writes it. Product creation and pose writes use the borrowed
+    native pair, so they run under the lease, which itself handles only ownership, retirement and
+    publication ordering.
+    """
+
+    def __init__(self, renderer: OvxrRenderer):
+        self._renderer = renderer
+        self.cameras: list[_AuxiliaryCamera] = []
+
+    def clear(self) -> None:
+        self.cameras = []
+
+    def configure(self, camera_cfg: Any, *, max_fps: float | None = None) -> None:
+        """Select an exact camera for the current lease; see :meth:`OvxrRenderLease.configure_auxiliary_camera`."""
+        if camera_cfg is None:
+            raise ValueError("Auxiliary camera configuration cannot be None")
+        if any(camera.cfg.prim_path == camera_cfg.prim_path for camera in self.cameras):
+            raise RuntimeError("This auxiliary camera is already configured")
+        if max_fps is not None and (not math.isfinite(max_fps) or max_fps <= 0.0):
+            raise ValueError("Auxiliary camera max_fps must be finite and positive [Hz]")
+        self.cameras.append(_AuxiliaryCamera(camera_cfg, max_fps))
+
+    def for_spec(self, spec: CameraRenderSpec) -> _AuxiliaryCamera | None:
+        """Return the selected camera that ``spec`` describes, or ``None`` for an ordinary camera."""
+        if not self.cameras or not spec.camera_prim_paths:
+            return None
+        for camera in self.cameras:
+            expected = camera.cfg
+            pattern = str(expected.prim_path)
+            if "{ENV_REGEX_NS}" in pattern:
+                roots = self._renderer.scene.clone_env_paths
+                if len(roots) != 1:
+                    raise RuntimeError("An external camera requires exactly one cloned environment root")
+                pattern = pattern.replace("{ENV_REGEX_NS}", re.escape(roots[0]))
+            if (
+                int(spec.cfg.width) == int(expected.width)
+                and int(spec.cfg.height) == int(expected.height)
+                and tuple(spec.cfg.data_types) == tuple(expected.data_types)
+                and re.fullmatch(f"(?:{pattern})(?:/camera)?", str(spec.camera_prim_paths[0])) is not None
+            ):
+                # Only a matched camera is external; other specifications take the ordinary-camera path.
+                if spec.num_instances != 1 or spec.view_count != 1 or len(spec.camera_prim_paths) != 1:
+                    raise RuntimeError("An external camera requires exactly one camera view")
+                return camera
+        return None
+
+    def accept(self, spec: CameraRenderSpec) -> _AuxiliaryCamera | None:
+        """Return the selected camera for ``spec`` after recording its specification."""
+        camera = self.for_spec(spec)
+        if camera is None:
+            return None
+        if camera.spec is None:
+            camera.spec = spec
+        elif camera.spec != spec:
+            raise RuntimeError("Auxiliary camera specification changed after authorization")
+        return camera
+
+    def prepared(self) -> bool:
+        """Whether every selected camera has its specification and render data."""
+        return all(camera.spec is not None and camera.render_data is not None for camera in self.cameras)
+
+    def product_paths(self) -> tuple[str, ...]:
+        """Return products in application selection order, independently of sensor initialization order."""
+        paths = tuple(camera.product_path for camera in self.cameras)
+        if any(not isinstance(path, str) or not path.startswith("/") for path in paths) or len(set(paths)) != len(
+            paths
+        ):
+            raise RuntimeError("Auxiliary camera did not materialize exactly one RenderProduct per selection")
+        return paths
+
+    def populate(self, usd: str) -> None:
+        """Populate the renderer's scene with the selected cameras' native frame rates."""
+        usd = self._author_schedules(usd)
+        scheduled_paths = [camera.spec.camera_prim_paths[0] for camera in self.cameras if camera.max_fps is not None]
+        if not scheduled_paths:
+            self._renderer.scene.populate(usd)
+            return
+        population = ovstage.population
+        description = population.Desc(
+            domains=self._renderer.scene.cfg.population_domains,
+            selectors=[
+                population.Selector(
+                    population.PrimPredicate.has_path(*scheduled_paths),
+                    population.PropertyPredicate.has_name("omni:sensor:frameRate", "omni:sensor:Core:partialOutputs"),
+                )
+            ],
+        )
+        self._renderer.scene.populate(usd, population_desc=description)
+
+    def materialize(self) -> None:
+        """Register the selected cameras' products in the prepared Stage."""
+        for camera in self.cameras:
+            if camera.spec is None or camera.render_data is None:
+                raise RuntimeError("Selected auxiliary camera was not prepared")
+            self._renderer._register_camera(camera.spec, camera.render_data)
+            camera.product_path = camera.render_data.render_product_path
+        if self.cameras:
+            self._renderer.scene.commit()
+
+    def queue_update(self, render_data, positions, orientations, intrinsics) -> bool:
+        """Retain the latest pose sample of a selected camera until publication."""
+        for camera in self.cameras:
+            if camera.render_data is render_data:
+                camera.state = (render_data, positions, orientations, intrinsics)
+                return True
+        return False
+
+    def validate_samples(self) -> None:
+        """Validate the whole camera batch before any scene component starts writing."""
+        for camera in self.cameras:
+            if camera.state is None or camera.render_data is None or camera.render_data.camera_xform_binding is None:
+                raise RuntimeError("Auxiliary camera has no live world-pose sample")
+
+    def publish_poses(self) -> None:
+        """Write each selected camera's latest pose at the publication ordinal."""
+        for camera in self.cameras:
+            if camera.state is None or camera.render_data.camera_xform_binding is None:
+                raise RuntimeError("Auxiliary camera has no live world-pose sample")
+            self._renderer._publish_camera_pose(*camera.state)
+
+    def _author_schedules(self, usd: str) -> str:
+        """Author selected native camera rates on the private export, preserving the application stage.
+
+        The rates are authored on the export's layer, so composition arcs that the export
+        preserved are not flattened. An export without rate-limited cameras is returned unchanged.
+        """
+        scheduled = [camera for camera in self.cameras if camera.max_fps is not None]
+        if not scheduled:
+            return usd
+        layer = Sdf.Layer.CreateAnonymous("borrowed-renderer.usda")
+        if not layer.ImportFromString(usd):
+            raise RuntimeError("Cannot parse the exported leased Stage")
+        stage = None
+        for camera in scheduled:
+            if camera.spec is None:
+                raise RuntimeError("Native-rate auxiliary camera was not prepared")
+            path = Sdf.Path(camera.spec.camera_prim_paths[0])
+            if layer.GetPrimAtPath(path) is None:
+                # A camera inside a preserved reference has no spec of its own; check the composed export.
+                stage = stage or Usd.Stage.Open(layer)
+                if not stage.GetPrimAtPath(path).IsValid():
+                    raise RuntimeError("Native-rate auxiliary camera is absent from the exported Stage")
+            prim = Sdf.CreatePrimInLayer(layer, path)
+            for name, value_type, value in (
+                ("omni:sensor:frameRate", Sdf.ValueTypeNames.Double2, Gf.Vec2d(camera.max_fps, 1.0)),
+                ("omni:sensor:Core:partialOutputs", Sdf.ValueTypeNames.Bool, False),
+            ):
+                attribute = prim.attributes.get(name) or Sdf.AttributeSpec(prim, name, value_type)
+                attribute.default = value
+        return layer.ExportToString()
 
 
 class _OvxrVisualMaterialWriter(OVRTXVisualMaterialWriter):
@@ -723,11 +945,11 @@ class _OvxrVisualMaterialWriter(OVRTXVisualMaterialWriter):
 
 @configclass
 class OvxrRendererCfg(OVRTXRendererCfg):
-    """OVRTX renderer configuration for an OVXR session.
+    """OVRTX renderer configuration for an OVXR session and the cameras it shows as panels.
 
-    The session's ``OvxrRenderer`` lends its native renderer and OVStage to the session's
-    render worker. Cameras with an ordinary :class:`~isaaclab_ov.renderers.OVRTXRendererCfg` keep
-    Isaac Lab's ordinary renderer.
+    Give the session and every camera it shows as a panel the same configuration, so they share one
+    ``OvxrRenderer``. Cameras with an ordinary :class:`~isaaclab_ov.renderers.OVRTXRendererCfg`
+    keep Isaac Lab's ordinary renderer.
     """
 
     class_type: type[OvxrRenderer] | str = "{DIR}.ovxr_renderer:OvxrRenderer"
@@ -744,6 +966,7 @@ class OvxrRenderer(OVRTXRenderer):
     def __init__(self, cfg: OvxrRendererCfg, *, sim: Any):
         super().__init__(cfg, sim=sim)
         self._closed = False
+        self._panels = _OvxrPanelCameras(self)
         self._render_lease = _OvxrLeaseController(self)
 
     def acquire_render_lease(self) -> OvxrRenderLease:
@@ -774,6 +997,14 @@ class OvxrRenderer(OVRTXRenderer):
         self._visual_material_writer_ref = weakref.ref(writer)
         return writer
 
+    # Extension points of OVRTXRenderer.
+
+    def _populate_stage(self, usd: str) -> None:
+        self._panels.populate(usd)
+
+    def _defer_camera_registration(self, spec: CameraRenderSpec) -> bool:
+        return self._render_lease.stage_deferred and self._panels.for_spec(spec) is not None
+
     # Scene writes for the session's publisher, without this renderer's lease guards.
 
     def _publish_transforms(self) -> None:
@@ -782,11 +1013,24 @@ class OvxrRenderer(OVRTXRenderer):
     def _publish_geometries(self) -> None:
         super().update_geometries()
 
+    def _publish_camera_pose(self, render_data, positions, orientations, intrinsics) -> None:
+        super().update_camera(render_data, positions, orientations, intrinsics)
+
     # Ordinary operations, rejected while the session holds the lease.
 
     def create_render_data(self, spec: CameraRenderSpec) -> OVRTXCameraRenderData:
-        self._render_lease.reject_ordinary_operation("create ordinary camera render data")
-        return super().create_render_data(spec)
+        """Register an ordinary camera, or reserve a selected panel camera until the handoff."""
+        if str(wp.get_device(spec.device)) != self._device:
+            raise ValueError("Cameras sharing an OVRTX renderer must use the simulation device.")
+        camera = self._panels.accept(spec)
+        if camera is None:
+            self._render_lease.reject_ordinary_operation("create ordinary camera render data")
+        elif camera.render_data is not None:
+            raise RuntimeError("Auxiliary camera render data already exists")
+        data = super().create_render_data(spec)
+        if camera is not None:
+            camera.render_data = data
+        return data
 
     def update_transforms(self) -> None:
         # While leased, the session's scene publisher owns these writes.
@@ -802,6 +1046,8 @@ class OvxrRenderer(OVRTXRenderer):
         super().update_geometries()
 
     def update_camera(self, render_data, positions, orientations, intrinsics) -> None:
+        if self._panels.queue_update(render_data, positions, orientations, intrinsics):
+            return
         self._render_lease.reject_ordinary_operation("update ordinary cameras")
         super().update_camera(render_data, positions, orientations, intrinsics)
 
@@ -817,6 +1063,16 @@ class OvxrRenderer(OVRTXRenderer):
         if render_data:
             self._render_lease.reject_ordinary_operation("render an ordinary camera batch")
         super().render_batch(render_data)
+
+    def cleanup(self, render_data: OVRTXCameraRenderData | None) -> None:
+        """Release camera render data once the lease is released.
+
+        Releasing a product removes it from the borrowed Stage, so a camera keeps its resources
+        until the lease is released; :meth:`close` releases them afterwards.
+        """
+        if render_data is not None:
+            self._render_lease.reject_ordinary_operation("release camera render data", retiring=True)
+        super().cleanup(render_data)
 
     def close(self) -> None:
         """Release bindings once the lease is released; the registry owns the native engine."""
