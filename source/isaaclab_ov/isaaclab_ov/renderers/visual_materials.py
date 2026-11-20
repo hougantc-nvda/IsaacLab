@@ -62,22 +62,8 @@ class OVRTXVisualMaterialWriter:
                 start = end
         self._device = str(device)
         self._event = wp.Event(device=self._device)
-        with contextlib.ExitStack() as resources:
-            for channel, attribute_name, shader_paths, rows, dtype, shape in groups:
-                if renderer._use_ovstage:
-                    address = resources.enter_context(renderer.scene.query(shader_paths))
-                else:
-                    address = renderer.backend.renderer.bind_attribute(
-                        prim_paths=shader_paths,
-                        attribute_name=attribute_name,
-                        dtype=dtype,
-                        shape=shape,
-                        prim_mode=PrimMode.EXISTING_ONLY,
-                        flags=BindingFlag.OPTIMIZE,
-                    )
-                    resources.callback(address.unbind)
-                self._addresses.append((channel, address, attribute_name, rows))
-            self._resources = resources.pop_all()
+        self._resources = contextlib.ExitStack()
+        self._compile_addresses(renderer, groups)
 
     def __call__(self, material_offsets: dict[str, Any] | None = None, env_ids: Any | None = None) -> None:
         """Mark channels dirty; OVRTX currently copies each dirty channel's full device buffer."""
@@ -154,3 +140,24 @@ class OVRTXVisualMaterialWriter:
             self._addresses.clear()
             self._dirty_channels.clear()
             self._buffers.clear()
+
+    def _compile_addresses(self, renderer: OVRTXRenderer, groups: list[tuple]) -> None:
+        """Bind each channel's shader inputs in the renderer's populated scene."""
+        addresses = []
+        with contextlib.ExitStack() as resources:
+            for channel, attribute_name, shader_paths, rows, dtype, shape in groups:
+                if renderer._use_ovstage:
+                    address = resources.enter_context(renderer.scene.query(shader_paths))
+                else:
+                    address = renderer.backend.renderer.bind_attribute(
+                        prim_paths=shader_paths,
+                        attribute_name=attribute_name,
+                        dtype=dtype,
+                        shape=shape,
+                        prim_mode=PrimMode.EXISTING_ONLY,
+                        flags=BindingFlag.OPTIMIZE,
+                    )
+                    resources.callback(address.unbind)
+                addresses.append((channel, address, attribute_name, rows))
+            self._resources.enter_context(resources.pop_all())
+        self._addresses.extend(addresses)
