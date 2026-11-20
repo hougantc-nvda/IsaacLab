@@ -1463,3 +1463,75 @@ def test_scene_preparation_respects_physics_population_and_camera_transform_mode
     assert events.count("disable-camera-reads") == (stage_mode != "legacy")
     if stage_mode != "legacy":
         assert events[-2:] == ["commit", "attach"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_cpu_scene_publication_uses_host_tensors_without_a_cuda_stream(asynchronous):
+    renderer = _make_ovrtx_renderer_without_backend()
+    renderer._use_ovstage = False
+    renderer.cfg = OVRTXRendererCfg(async_rendering=asynchronous)
+    renderer._warp_device = wp.get_device("cpu")
+    renderer._device = "cpu"
+    renderer._object_xform_binding = MagicMock()
+    renderer._geometry_points_binding = MagicMock()
+    renderer._transforms_timestamp = renderer._geometry_timestamp = None
+    renderer._object_scales = None
+    renderer._geometry_paths = ["/World/Object"]
+    from isaaclab.scene_data import SceneDataFormat, SceneDataProvider
+
+    transforms = SceneDataFormat.Vec3_Quat()
+    transforms.positions = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3f, device="cpu")
+    transforms.orientations = wp.array([[0.0, 0.0, 2**-0.5, 2**-0.5]], dtype=wp.quatf, device="cpu")
+    output = SceneDataFormat.TransposedMatrix44d()
+    output.matrices = wp.empty(1, dtype=wp.mat44d, device="cpu")
+    geometry = SceneDataFormat.Points()
+    points = geometry.points = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3f, device="cpu")
+    renderer._transform_writes = _AsyncWriteBuffers([output])
+    renderer._geometry_writes = _AsyncWriteBuffers([wp.empty_like(points)])
+    renderer._geometry_offsets = {"/World/Object": 0}
+    renderer._sdp = SceneDataProvider(
+        types.SimpleNamespace(
+            transforms_timestamp=1,
+            geometry_timestamp=1,
+            get_transforms=lambda _format: transforms,
+            get_geometry_batches=lambda _format: [(geometry, {"/World/Object": (0, 1)})],
+        )
+    )
+    renderer.scene = types.SimpleNamespace(stage=MagicMock(), ordinal=11)
+    renderer.update_transforms()
+    renderer.update_geometries()
+    bindings = (renderer._object_xform_binding, renderer._geometry_points_binding)
+    writes = [getattr(binding, "write_async" if asynchronous else "write") for binding in bindings]
+    calls = [write.call_args for write in writes]
+    assert len(calls) == 2 and all(c.kwargs["cuda_stream"] is None for c in calls)
+    np.testing.assert_allclose(
+        calls[0].args[0].numpy(),
+        [[[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [1, 2, 3, 1]]],
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(calls[1].args[0][0].numpy(), points.numpy())
+    # A repeated publication of unchanged state must not duplicate either write.
+    renderer.update_transforms()
+    renderer.update_geometries()
+    assert all(write.call_count == 1 for write in writes)
+    # Draining the retained buffers waits for previous writes without a CUDA stream.
+    renderer._transform_writes.close()
+    renderer._geometry_writes.close()
+
+
+def test_cpu_marker_updates_use_host_tensors_without_a_cuda_stream():
+    from isaaclab_ov.renderers.ovrtx_renderer import OVRTXMarkers
+
+    import isaaclab.sim as sim_utils
+    from isaaclab.markers.visualization_markers_cfg import VisualizationMarkersCfg
+
+    renderer = _make_ovrtx_renderer_without_backend()
+    renderer._use_ovstage = False
+    renderer._device = "cpu"
+    renderer.backend.renderer = MagicMock()
+    cfg = VisualizationMarkersCfg(prim_path="/Visuals/Test", markers={"sphere": sim_utils.SphereCfg(radius=0.1)})
+    markers = OVRTXMarkers(renderer, cfg)
+    markers.update(torch.tensor([[1.0, 2.0, 3.0]]), None, None, None, visible=True)
+    write = renderer.backend.renderer.bind_attribute.return_value.write
+    assert write.call_args.kwargs["cuda_stream"] is None
+    np.testing.assert_allclose(write.call_args.args[0].numpy()[0][3, :3], [1.0, 2.0, 3.0])

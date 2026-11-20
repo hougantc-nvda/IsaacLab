@@ -398,7 +398,11 @@ class OVRTXRenderer(BaseRenderer):
 
     @property
     def visual_material_writer(self):
-        """Return a writer factory once this renderer has a scene consumer."""
+        """Return a writer factory once this renderer has a scene consumer.
+
+        The writer requires material buffers on one CUDA device. On a CPU simulation device,
+        an environment with :class:`~isaaclab.assets.VisualMaterial` assets therefore fails at reset.
+        """
         return self._create_visual_material_writer if self._initialized_scene else None
 
     def _create_visual_material_writer(self, batches: tuple[VisualMaterialBatch, ...]) -> OVRTXVisualMaterialWriter:
@@ -406,6 +410,26 @@ class OVRTXRenderer(BaseRenderer):
         writer = OVRTXVisualMaterialWriter(self, batches)
         self._visual_material_writer_ref = weakref.ref(writer)
         return writer
+
+    @contextlib.contextmanager
+    def _publish_visual_materials(self) -> Iterator[None]:
+        """Publish dirty materials and complete their reads before buffers may change."""
+        material_writer = self._visual_material_writer_ref() if self._visual_material_writer_ref is not None else None
+        try:
+            if material_writer is not None:
+                material_writer.publish()
+            yield
+        finally:
+            if material_writer is not None:
+                # When another exception is already propagating, log the drain failure instead of
+                # replacing it. Losing it silently would hide a failed material write.
+                primary_active = sys.exc_info()[0] is not None
+                try:
+                    material_writer.drain()
+                except Exception as e:
+                    if not primary_active:
+                        raise
+                    logger.warning("Error draining material writes after a failed scene update: %s", e, exc_info=True)
 
     def prepare_stage(self, stage: Usd.Stage, num_envs: int) -> None:
         """Load, clone, and bind the shared scene before any camera products are registered."""
@@ -1029,7 +1053,7 @@ class OVRTXRenderer(BaseRenderer):
         timestamp = self._sdp.backend.transforms_timestamp
         if self._transforms_timestamp == timestamp:
             return
-        stream = self._warp_device.stream
+        stream = self._warp_device.stream if self._warp_device.is_cuda else None
         asynchronous = self.cfg.async_rendering and not self._use_ovstage
         output = self._transform_writes.acquire(stream)
         if not self._sdp.get_transforms(output, allow_passthrough=not asynchronous, scales=self._object_scales):
@@ -1045,12 +1069,16 @@ class OVRTXRenderer(BaseRenderer):
                 tensors=xform_tensor_from_warp(matrices),
                 is_array=False,
                 semantic=ovstage.AttributeSemantic.MATRIX,
-                cuda_stream=stream.cuda_stream or 1,
+                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
             ).wait()
         elif asynchronous:
             self._transform_writes.submit(binding, matrices, stream)
         else:
-            binding.write(matrices, data_access=DataAccess.ASYNC, cuda_stream=stream.cuda_stream or 1)
+            binding.write(
+                matrices,
+                data_access=DataAccess.ASYNC,
+                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
+            )
         self._transforms_timestamp = timestamp
 
     def update_geometries(self) -> None:
@@ -1072,7 +1100,7 @@ class OVRTXRenderer(BaseRenderer):
         binding = self._geometry_points_binding
         if binding is None:
             return
-        stream = self._warp_device.stream
+        stream = self._warp_device.stream if self._warp_device.is_cuda else None
         asynchronous = self.cfg.async_rendering and not self._use_ovstage
         if asynchronous:
             output = self._geometry_writes.acquire(stream)
@@ -1093,12 +1121,16 @@ class OVRTXRenderer(BaseRenderer):
                 tensors=[points_tensor_from_warp(array) for array in points],
                 is_array=True,
                 semantic=ovstage.AttributeSemantic.POINT,
-                cuda_stream=stream.cuda_stream or 1,
+                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
             ).wait()
         elif asynchronous:
             self._geometry_writes.submit(binding, points, stream)
         else:
-            binding.write(points, data_access=DataAccess.ASYNC, cuda_stream=stream.cuda_stream or 1)
+            binding.write(
+                points,
+                data_access=DataAccess.ASYNC,
+                cuda_stream=(stream.cuda_stream or 1) if stream is not None else None,
+            )
         self._geometry_timestamp = timestamp
 
     def update_camera(
@@ -1192,10 +1224,7 @@ class OVRTXRenderer(BaseRenderer):
         if self.backend.renderer is None or not self._camera_render_data:
             return
         products = self.backend.render_products.copy()
-        material_writer = self._visual_material_writer_ref() if self._visual_material_writer_ref is not None else None
-        try:
-            if material_writer is not None:
-                material_writer.publish()
+        with self._publish_visual_materials():
             if self._needs_transform_initialization:
                 # OVRTX 0.6 initializes GPU world transforms on its first step using
                 # authored poses. Flush that initialization before capturing runtime
@@ -1217,18 +1246,6 @@ class OVRTXRenderer(BaseRenderer):
             else:
                 result = self.backend.renderer.step(render_products=products, delta_time=_RENDER_DELTA_TIME)
                 self._process_render_products(render_data, result)
-        finally:
-            if material_writer is not None:
-                # When another exception is already propagating, log the drain failure instead of
-                # replacing it. Losing it silently would hide a failed material write.
-                primary_active = sys.exc_info()[0] is not None
-                try:
-                    material_writer.drain()
-                except Exception as e:
-                    if not primary_active:
-                        raise
-                    logger.warning("Error draining material writes after a failed render: %s", e, exc_info=True)
-
         if self._use_ovstage:
             # Stage writes and material reads finish before rendering. Consume only after advancing
             # the ordinal so a failed readback cannot leave later writes at the sealed floor.
@@ -1412,7 +1429,8 @@ class OVRTXMesh:
             attributes["primvars:st"] = uvs
         if dynamic:
             attributes.update(faceVertexIndices=indices, faceVertexCounts=self._face_counts)
-        stream = wp.get_stream(points.device).cuda_stream or 1
+        # CPU geometry is written from host memory without a CUDA stream.
+        stream = (wp.get_stream(points.device).cuda_stream or 1) if points.device.is_cuda else None
         for name, values in attributes.items():
             if self.renderer._use_ovstage:
                 semantic = {
@@ -1570,7 +1588,9 @@ class OVRTXMarkers:
                     [self._path], "visibility", [token], semantic=Semantic.TOKEN_STRING
                 )
             self._visible = visible
-        stream = wp.stream_from_torch(torch.cuda.current_stream(translations.device))
+        # CPU marker state is converted and written on the host without a CUDA stream.
+        stream = wp.stream_from_torch(torch.cuda.current_stream(translations.device)) if translations.is_cuda else None
+        cuda_stream = (stream.cuda_stream or 1) if stream is not None else None
         wp.launch(
             create_marker_transforms_kernel,
             len(indices),
@@ -1593,10 +1613,10 @@ class OVRTXMarkers:
                 tensors=xform_tensor_from_warp(self._transforms),
                 is_array=False,
                 semantic=ovstage.AttributeSemantic.MATRIX,
-                cuda_stream=stream.cuda_stream or 1,
+                cuda_stream=cuda_stream,
             ).wait()
         else:
-            self._binding.write(self._transforms, data_access=DataAccess.ASYNC, cuda_stream=stream.cuda_stream or 1)
+            self._binding.write(self._transforms, data_access=DataAccess.ASYNC, cuda_stream=cuda_stream)
 
     def close(self) -> None:
         """Release bindings and geometry before the renderer's native scene closes."""
@@ -1615,27 +1635,29 @@ _BufferT = TypeVar("_BufferT", wp.array, SceneDataFormat.TransposedMatrix44d)
 
 
 class _AsyncWriteBuffers(Generic[_BufferT]):
-    """Retain GPU buffers until native writes finish; reuse them in submission order."""
+    """Retain buffers until native writes finish; reuse them in submission order."""
 
     def __init__(self, buffers: Iterable[_BufferT] = ()):
         self._writes: deque[tuple[_BufferT, Operation[bool] | None, wp.Stream | None]] = deque(
             (buffer, None, None) for buffer in buffers
         )
 
-    def acquire(self, stream: wp.Stream) -> _BufferT:
+    def acquire(self, stream: wp.Stream | None) -> _BufferT:
         """Wait until the next buffer is writable on the given stream."""
         buffer, operation, producer = self._writes[0]
         if operation is not None:
             operation.wait()
-            if producer != stream:
+            if stream is not None and producer is not None and producer != stream:
                 stream.wait_stream(producer)
         return buffer
 
     def submit(
-        self, binding: AttributeBinding, values: wp.array | list[wp.array], stream: wp.Stream
+        self, binding: AttributeBinding, values: wp.array | list[wp.array], stream: wp.Stream | None
     ) -> Operation[bool]:
         """Submit a write and retain its inputs; a failed submission does not advance the buffers."""
-        operation = binding.write_async(values, data_access=DataAccess.ASYNC, cuda_stream=stream.cuda_stream or 1)
+        operation = binding.write_async(
+            values, data_access=DataAccess.ASYNC, cuda_stream=(stream.cuda_stream or 1) if stream is not None else None
+        )
         self._writes[0] = (self._writes[0][0], operation, stream)
         self._writes.rotate(-1)
         return operation
@@ -1646,5 +1668,6 @@ class _AsyncWriteBuffers(Generic[_BufferT]):
             writes.callback(self._writes.clear)
             for _, operation, producer in self._writes:
                 if operation is not None:
-                    writes.callback(wp.synchronize_stream, producer)
+                    if producer is not None:
+                        writes.callback(wp.synchronize_stream, producer)
                     writes.callback(operation.wait)
