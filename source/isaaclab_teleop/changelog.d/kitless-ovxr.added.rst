@@ -7,8 +7,8 @@
   :class:`~isaaclab.renderers.BaseRenderer` that publishes the simulation's scene to its own OVStage
   and OVRTX engine on CUDA and CPU simulation devices. It lends them to Isaac Capture's render worker,
   with a single-use render-thread ownership transfer, deferred Stage preparation, ordered scene
-  publication (including dirty visual materials) and ordered cleanup. It renders no camera sensors;
-  cameras keep their own renderers.
+  publication (including dirty visual materials) and ordered cleanup. It produces no camera images;
+  cameras other than the session's camera panels keep their own renderers.
 * Added :class:`~isaaclab_teleop.OvLibrariesXrCfg` in :mod:`isaaclab_teleop.ovxr_cfg`, which
   imports without the native OVXR packages.
 * Added tracking and debug-visualization markers to the OVXR eye views; they do not need an ordinary
